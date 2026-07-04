@@ -1495,6 +1495,11 @@
       "whyNow": [
         "The single-DB baseline makes each Redis use case land as a targeted fix rather than 'add Redis because it's fast'."
       ],
+      "probeLinks": [
+        "redis-data-types",
+        "shopify-storefront-cache",
+        "tinder-elasticache"
+      ],
       "recap": {
         "before": "Nothing.",
         "after": "All features work against one RDBMS.",
@@ -1555,6 +1560,13 @@
       ],
       "whyNow": [
         "Sessions and cache are the highest-volume reads; fixing them first removes most DB read load before anything else."
+      ],
+      "probeLinks": [
+        "redis-strings",
+        "redis-distributed-locks",
+        "kleppmann-locking",
+        "stripe-idempotency",
+        "shopify-storefront-cache"
       ],
       "recap": {
         "before": "Sessions and product reads hit the DB every request.",
@@ -1697,6 +1709,11 @@
       "whyNow": [
         "Counting and ID generation are the write-side twin of step 2's read caching — both remove hot-row DB pressure."
       ],
+      "probeLinks": [
+        "redis-incr",
+        "redis-observability",
+        "elasticache-metrics"
+      ],
       "recap": {
         "before": "Counts and IDs contended on hot DB rows/sequences.",
         "after": "Atomic INCR handles views, rate limits, and unique IDs in memory.",
@@ -1817,6 +1834,12 @@
       "whyNow": [
         "The cart is the most-edited per-user object; a hash gives field-level edits the earlier string cache can't."
       ],
+      "probeLinks": [
+        "redis-hashes",
+        "redis-memory-optimization",
+        "stripe-idempotency",
+        "transactional-outbox"
+      ],
       "recap": {
         "before": "Cart edits were row-level DB writes or whole-object rewrites.",
         "after": "The cart is one hash with cheap field-level HSET/HINCRBY/HDEL.",
@@ -1874,6 +1897,11 @@
       ],
       "whyNow": [
         "Ranking was the last heavy per-request DB sort; a ZSET makes it an incremental in-memory read."
+      ],
+      "probeLinks": [
+        "redis-sorted-sets",
+        "redis-observability",
+        "elasticache-metrics"
       ],
       "recap": {
         "before": "Trending/leaderboards were per-request DB sorts.",
@@ -2073,6 +2101,14 @@
       "whyNow": [
         "These remove the last inline side effect (email) and add analytics the earlier structures couldn't express cheaply."
       ],
+      "probeLinks": [
+        "redis-streams",
+        "redis-lmove",
+        "redis-bitmaps",
+        "github-resque",
+        "transactional-outbox",
+        "stripe-idempotency"
+      ],
       "recap": {
         "before": "Email was inline and DAU/retention had no cheap representation.",
         "after": "An outbox-fed queue (Streams recommended, or a hardened List) offloads side effects with retry/DLQ semantics; daily bitmaps make DAU/retention trivial.",
@@ -2222,6 +2258,17 @@
       ],
       "whyNow": [
         "Having put load-bearing state in Redis, durability, failover, and sharding are what keep it from becoming a single point of failure."
+      ],
+      "probeLinks": [
+        "redis-persistence",
+        "redis-replication",
+        "redis-cluster-spec",
+        "redis-eviction",
+        "redis-observability",
+        "elasticache-metrics",
+        "elasticache-resharding",
+        "tinder-elasticache",
+        "twitter-twemproxy"
       ],
       "recap": {
         "before": "Redis was a single, volatile node holding load-bearing state.",
@@ -2530,5 +2577,253 @@
     "How do you size and shard the Redis cluster, and how do you keep co-accessed keys in the same slot (hash tags)?",
     "What exactly is lost on a failover, and how do you set per-key-family RPO so committed orders stay correct despite async replication?",
     "How do you keep DAU/retention bitmaps correct with sparse or UUID user IDs (offset mapping), and when is a HyperLogLog the better tool?"
-  ]
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "redis-data-types",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis data types",
+        "url": "https://redis.io/docs/latest/develop/data-types/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Overview of Redis as a data structure server, useful for comparing strings, hashes, sorted sets, streams, and bitmaps before mapping them to features."
+      },
+      {
+        "id": "redis-strings",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis Strings",
+        "url": "https://redis.io/docs/latest/develop/data-types/strings/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Shows string operations, TTL use, and counter-style commands that underpin sessions, cache-aside values, and simple locks."
+      },
+      {
+        "id": "redis-incr",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "INCR",
+        "url": "https://redis.io/docs/latest/commands/incr/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Command reference for atomic integer increments, including the counter and rate-limiter pattern used in the counter step."
+      },
+      {
+        "id": "redis-hashes",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis hashes",
+        "url": "https://redis.io/docs/latest/develop/data-types/hashes/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Covers hash fields and commands that make a per-user cart cheaper and less racy than a whole JSON string."
+      },
+      {
+        "id": "redis-memory-optimization",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Memory optimization",
+        "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/memory-optimization/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Explains compact encodings and memory tradeoffs that matter when millions of small carts or similar hashes are stored in RAM."
+      },
+      {
+        "id": "redis-sorted-sets",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis sorted sets",
+        "url": "https://redis.io/docs/latest/develop/data-types/sorted-sets/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Details score-ordered members and range queries, the core mechanism behind trending products and leaderboards."
+      },
+      {
+        "id": "redis-streams",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis Streams",
+        "url": "https://redis.io/docs/latest/develop/data-types/streams/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Covers append-only streams, consumer groups, acknowledgements, and pending entries for a more robust Redis-backed work queue."
+      },
+      {
+        "id": "redis-lmove",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "LMOVE",
+        "url": "https://redis.io/docs/latest/commands/lmove/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Shows the atomic pop-and-push operation used to harden a list queue with a processing list and retry reaper."
+      },
+      {
+        "id": "redis-bitmaps",
+        "group": "Redis Data Structures and Command Patterns",
+        "groupDescription": "Official Redis references for choosing and operating the data structures used in the walkthrough.",
+        "title": "Redis bitmaps",
+        "url": "https://redis.io/docs/latest/develop/data-types/strings/bitmaps/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Explains SETBIT, BITCOUNT, and BITOP for exact DAU and retention calculations at one bit per user."
+      },
+      {
+        "id": "redis-distributed-locks",
+        "group": "Correctness: Locks, Idempotency, and Outbox",
+        "groupDescription": "References for separating Redis coordination from the durable correctness boundary in checkout and async work.",
+        "title": "Distributed Locks with Redis",
+        "url": "https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Defines the SET NX EX lock pattern and Redlock algorithm so readers can evaluate when a Redis lock is only a duplicate-work guard."
+      },
+      {
+        "id": "kleppmann-locking",
+        "group": "Correctness: Locks, Idempotency, and Outbox",
+        "groupDescription": "References for separating Redis coordination from the durable correctness boundary in checkout and async work.",
+        "title": "How to do distributed locking",
+        "url": "https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html",
+        "source": "Martin Kleppmann",
+        "type": "Explainer",
+        "year": "2016",
+        "why": "Explains fencing tokens, pause/clock assumptions, and why Redis locks should not be the sole correctness mechanism for money-critical writes."
+      },
+      {
+        "id": "stripe-idempotency",
+        "group": "Correctness: Locks, Idempotency, and Outbox",
+        "groupDescription": "References for separating Redis coordination from the durable correctness boundary in checkout and async work.",
+        "title": "Idempotent requests",
+        "url": "https://docs.stripe.com/api/idempotent_requests",
+        "source": "Stripe",
+        "type": "Docs",
+        "why": "Production API reference for retry-safe mutating requests, matching the checkout idempotency-key design in the walkthrough."
+      },
+      {
+        "id": "transactional-outbox",
+        "group": "Correctness: Locks, Idempotency, and Outbox",
+        "groupDescription": "References for separating Redis coordination from the durable correctness boundary in checkout and async work.",
+        "title": "Pattern: Transactional outbox",
+        "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+        "source": "microservices.io",
+        "type": "Pattern",
+        "why": "Describes writing messages into the same database transaction as business state, the pattern used before dispatching jobs into Redis."
+      },
+      {
+        "id": "github-resque",
+        "group": "Production Redis at Scale",
+        "groupDescription": "Production cases and repositories showing Redis-backed caches, queues, routing, and migrations under real load.",
+        "title": "Introducing Resque",
+        "url": "https://github.blog/news-insights/the-library/introducing-resque/",
+        "source": "GitHub",
+        "type": "Case study",
+        "year": "2009",
+        "why": "Early production case study of Redis-backed background jobs, queue visibility, worker behavior, and why DB-backed queues became too expensive."
+      },
+      {
+        "id": "twitter-twemproxy",
+        "group": "Production Redis at Scale",
+        "groupDescription": "Production cases and repositories showing Redis-backed caches, queues, routing, and migrations under real load.",
+        "title": "twemproxy",
+        "url": "https://github.com/twitter/twemproxy",
+        "source": "Twitter",
+        "type": "Repository",
+        "why": "Open-source Redis/memcached proxy that illustrates routing, connection pooling, and sharded cache operations around many Redis nodes."
+      },
+      {
+        "id": "shopify-storefront-cache",
+        "group": "Production Redis at Scale",
+        "groupDescription": "Production cases and repositories showing Redis-backed caches, queues, routing, and migrations under real load.",
+        "title": "Simplify, Batch, and Cache: How We Optimized Server-side Storefront Rendering",
+        "url": "https://shopify.engineering/simplify-batch-cache-optimized-server-side-storefront-rendering",
+        "source": "Shopify Engineering",
+        "type": "Case study",
+        "year": "2020",
+        "why": "Shows a commerce storefront using Redis-backed cache layers, batching, and memoization to reduce backend round trips and tail latency."
+      },
+      {
+        "id": "tinder-elasticache",
+        "group": "Production Redis at Scale",
+        "groupDescription": "Production cases and repositories showing Redis-backed caches, queues, routing, and migrations under real load.",
+        "title": "Building resiliency at scale at Tinder with Amazon ElastiCache",
+        "url": "https://aws.amazon.com/blogs/database/building-resiliency-at-scale-at-tinder-with-amazon-elasticache/",
+        "source": "Tinder / AWS Database Blog",
+        "type": "Case study",
+        "year": "2020",
+        "why": "Production migration story covering Redis cache failover, shard rebalancing, fork-write cache warming, and managed operations."
+      },
+      {
+        "id": "redis-persistence",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Redis persistence",
+        "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Explains RDB snapshots, AOF, fsync tradeoffs, and restart recovery for Redis state that is no longer disposable."
+      },
+      {
+        "id": "redis-replication",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Redis replication",
+        "url": "https://redis.io/docs/latest/operate/oss_and_stack/management/replication/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Covers asynchronous primary-replica replication, a key input to the RPO discussion for sessions, queues, counters, and committed orders."
+      },
+      {
+        "id": "redis-cluster-spec",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Redis cluster specification",
+        "url": "https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Defines hash slots, hash tags, redirects, asynchronous replication, failover, and the write-safety limits of Redis Cluster."
+      },
+      {
+        "id": "redis-eviction",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Key eviction",
+        "url": "https://redis.io/docs/latest/develop/reference/eviction/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Explains maxmemory and eviction policies, directly supporting the split between evictable cache keys and non-evictable sessions/queues/carts."
+      },
+      {
+        "id": "redis-observability",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Redis Software observability and monitoring guidance",
+        "url": "https://redis.io/docs/latest/operate/rs/monitoring/observability/",
+        "source": "Redis",
+        "type": "Docs",
+        "why": "Lists the Redis signals to monitor: memory, CPU, cache hit rate, eviction rate, latency, hot keys, connections, and synchronization."
+      },
+      {
+        "id": "elasticache-metrics",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Metrics for Valkey and Redis OSS",
+        "url": "https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/CacheMetrics.Redis.html",
+        "source": "Amazon ElastiCache",
+        "type": "Docs",
+        "why": "Provider-specific metrics reference for memory, evictions, command volume, replication lag, CPU, and network signals in managed Redis fleets."
+      },
+      {
+        "id": "elasticache-resharding",
+        "group": "Persistence, HA, Sharding, and Operations",
+        "groupDescription": "Operational references for making Redis durable enough, available enough, observable, and memory-bounded for load-bearing hot paths.",
+        "title": "Online cluster resizing",
+        "url": "https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/best-practices-online-resharding.html",
+        "source": "Amazon ElastiCache",
+        "type": "Docs",
+        "why": "Operational guardrails for adding shards and rebalancing slots without surprising CPU, memory, timeout, or connection side effects."
+      }
+    ]
+  }
 }
