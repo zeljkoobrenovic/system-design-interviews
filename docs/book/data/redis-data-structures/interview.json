@@ -1,0 +1,1662 @@
+{
+  "title": "Redis as the Primary Data Platform \u2014 System Design",
+  "description": "Design a social e-commerce app (browse, cart, checkout, trending, and retention analytics) that leans on Redis for almost every hot path. The organizing idea: each core feature maps to the Redis data structure that fits it best \u2014 Strings for sessions/cache/locks, Integers (INCR) for counters/rate limits/IDs, Hashes for the cart, Sorted Sets for leaderboards, Lists for a work queue, and Bitmaps for daily-active-user retention \u2014 all backed by a durable system of record.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Client",
+        "label": "Web / Mobile App",
+        "type": "client",
+        "category": "boundary",
+        "traits": [],
+        "description": "Shopper's browser or mobile app; logs in, browses, adds to cart, checks out."
+      },
+      {
+        "id": "LB",
+        "label": "API Gateway / LB",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Terminates TLS, authenticates the session cookie, and routes to the app tier."
+      },
+      {
+        "id": "App",
+        "label": "Application Service",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Stateless business logic; reads and writes Redis and the database."
+      },
+      {
+        "id": "Session",
+        "label": "Redis \u2014 Strings (Sessions/Cache/Lock)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "String keys: session tokens, cached product JSON, and SET NX distributed locks."
+      },
+      {
+        "id": "Counters",
+        "label": "Redis \u2014 Integers (Counters/RateLimit/ID)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Integer keys via INCR: view counters, rate-limit windows, and a global ID generator."
+      },
+      {
+        "id": "Cart",
+        "label": "Redis \u2014 Hashes (Cart)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "One hash per user (cart:{uid}) mapping product_id -> quantity."
+      },
+      {
+        "id": "Ranking",
+        "label": "Redis \u2014 Sorted Sets (Leaderboard)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "ZSETs scored by sales/views for trending products and seller leaderboards."
+      },
+      {
+        "id": "Queue",
+        "label": "Redis \u2014 Lists (Work Queue)",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Lists used as a queue (LPUSH/BRPOP) for order confirmation emails and fulfillment jobs."
+      },
+      {
+        "id": "Retention",
+        "label": "Redis \u2014 Bitmaps (Retention)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "One bitmap per day (dau:{date}); SETBIT user_id marks a user active for DAU/retention."
+      },
+      {
+        "id": "Worker",
+        "label": "Async Worker",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Pops jobs from the Redis list and sends emails / triggers fulfillment."
+      },
+      {
+        "id": "DB",
+        "label": "System of Record (RDBMS)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Durable source of truth for users, products, and committed orders."
+      },
+      {
+        "id": "Metrics",
+        "label": "Metrics & Alerting",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Tracks hit rate, memory, evictions, queue depth, replica lag; drives alerts."
+      }
+    ],
+    "links": [
+      {
+        "id": "client-lb",
+        "from": "Client",
+        "to": "LB",
+        "label": "HTTPS + cookie"
+      },
+      {
+        "id": "lb-app",
+        "from": "LB",
+        "to": "App",
+        "label": "route request"
+      },
+      {
+        "id": "app-db",
+        "from": "App",
+        "to": "DB",
+        "label": "read/write of record"
+      },
+      {
+        "id": "app-session",
+        "from": "App",
+        "to": "Session",
+        "label": "get/set session, cache, lock"
+      },
+      {
+        "id": "app-counters",
+        "from": "App",
+        "to": "Counters",
+        "label": "INCR view/limit/id"
+      },
+      {
+        "id": "app-cart",
+        "from": "App",
+        "to": "Cart",
+        "label": "HSET/HGETALL cart"
+      },
+      {
+        "id": "app-ranking",
+        "from": "App",
+        "to": "Ranking",
+        "label": "ZADD/ZREVRANGE"
+      },
+      {
+        "id": "app-queue",
+        "from": "App",
+        "to": "Queue",
+        "label": "LPUSH job"
+      },
+      {
+        "id": "app-retention",
+        "from": "App",
+        "to": "Retention",
+        "label": "SETBIT active user"
+      },
+      {
+        "id": "worker-queue",
+        "from": "Worker",
+        "to": "Queue",
+        "label": "BRPOP job"
+      },
+      {
+        "id": "worker-db",
+        "from": "Worker",
+        "to": "DB",
+        "label": "persist result"
+      },
+      {
+        "id": "app-metrics",
+        "from": "App",
+        "to": "Metrics",
+        "label": "hit rate, p99"
+      },
+      {
+        "id": "session-metrics",
+        "from": "Session",
+        "to": "Metrics",
+        "label": "memory, evictions"
+      },
+      {
+        "id": "queue-metrics",
+        "from": "Queue",
+        "to": "Metrics",
+        "label": "queue depth, lag"
+      },
+      {
+        "id": "session-db",
+        "from": "Session",
+        "to": "DB",
+        "label": "load on cache miss"
+      }
+    ],
+    "types": [
+      {
+        "id": "redis-tier",
+        "label": "Redis Data Platform",
+        "nodes": [
+          "Session",
+          "Counters",
+          "Cart",
+          "Ranking",
+          "Queue",
+          "Retention"
+        ]
+      },
+      {
+        "id": "async",
+        "label": "Async Processing",
+        "nodes": [
+          "Queue",
+          "Worker"
+        ]
+      },
+      {
+        "id": "control",
+        "label": "Record & Ops",
+        "nodes": [
+          "DB",
+          "Metrics"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  User[Shopper]",
+    "  Browse[Browse + cache]",
+    "  Cart[Add to cart]",
+    "  Checkout[Checkout + queue]",
+    "  Trend[Trending + leaderboard]",
+    "  Analytics[DAU / retention]",
+    "  User --> Browse",
+    "  User --> Cart",
+    "  Cart --> Checkout",
+    "  User --> Trend",
+    "  User --> Analytics"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  R[Reads ~200k/s]",
+    "  W[Writes ~20k/s]",
+    "  Mem[100s GB RAM]",
+    "  R --> Mem",
+    "  W --> Mem"
+  ],
+  "requirements": {
+    "functional": [
+      "Authenticate users and keep a login session across requests.",
+      "Browse products fast, serving hot product data from cache.",
+      "Add/update/remove items in a per-user shopping cart.",
+      "Count product views and enforce per-user rate limits.",
+      "Generate globally unique order IDs without a DB round trip.",
+      "Show trending products and seller leaderboards ranked in real time.",
+      "Process order confirmations and fulfillment asynchronously.",
+      "Report daily-active users and N-day retention."
+    ],
+    "nonFunctional": [
+      "Sub-millisecond reads on hot paths; p99 low under load.",
+      "Read-heavy: browses and cart reads vastly outnumber writes.",
+      "Durable for money-critical data (orders) \u2014 Redis is not the only source of truth.",
+      "Available across a node failure without dropping sessions or the queue.",
+      "Memory-bounded: the working set must fit RAM with a clear eviction story."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Peak reads/sec",
+      "value": "~200,000",
+      "note": "Browse, cart reads, session lookups \u2014 mostly Redis."
+    },
+    {
+      "label": "Peak writes/sec",
+      "value": "~20,000",
+      "note": "Cart edits, view counters, cart -> order commits."
+    },
+    {
+      "label": "Active sessions",
+      "value": "~10M",
+      "note": "String keys with TTL; ~1 KB each \u2248 10 GB."
+    },
+    {
+      "label": "Cart hashes",
+      "value": "~5M live",
+      "note": "Hash per active cart; small, TTL'd for abandonment."
+    },
+    {
+      "label": "Redis memory",
+      "value": "100s of GB",
+      "note": "Sessions + cache + carts + ranking + counters; drives cluster sizing."
+    },
+    {
+      "label": "Queue throughput",
+      "value": "~10k jobs/s",
+      "note": "LPUSH/BRPOP order + fulfillment jobs at peak."
+    },
+    {
+      "label": "DAU bitmap size",
+      "value": "~1.2 MB/day",
+      "note": "One bit per user; 10M users \u2248 1.25 MB per daily key \u2014 cheap retention."
+    }
+  ],
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/login",
+      "description": "Authenticate and create a session; returns a session cookie.",
+      "request": "{ \"email\": \"...\", \"password\": \"...\" }",
+      "response": "Set-Cookie: sid=...; { \"userId\": \"...\" }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/products/{id}",
+      "description": "Fetch a product; served from the string cache on a hit, DB + backfill on a miss. Also INCRs the view counter.",
+      "request": "(id in path, sid cookie)",
+      "response": "{ \"id\": \"...\", \"name\": \"...\", \"price\": ... }"
+    },
+    {
+      "method": "PUT",
+      "path": "/v1/cart/{productId}",
+      "description": "Add or update a cart line; HSET on the user's cart hash.",
+      "request": "{ \"qty\": 2 }",
+      "response": "{ \"cart\": { \"p42\": 2, \"p99\": 1 } }"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/checkout",
+      "description": "Take a distributed lock on the cart, mint a global order ID, persist the order, enqueue confirmation, and clear the cart.",
+      "request": "(sid cookie)",
+      "response": "{ \"orderId\": 100453221 }",
+      "sequence": {
+        "participants": [
+          {
+            "id": "App"
+          },
+          {
+            "id": "Session",
+            "label": "Strings (lock)"
+          },
+          {
+            "id": "Counters",
+            "label": "Integers (ID)"
+          },
+          {
+            "id": "Cart",
+            "label": "Hashes (cart)"
+          },
+          {
+            "id": "DB",
+            "label": "Record"
+          },
+          {
+            "id": "Queue",
+            "label": "Lists (queue)"
+          }
+        ],
+        "messages": [
+          {
+            "from": "App",
+            "to": "Session",
+            "arrow": "->>",
+            "label": "SET lock:cart:{uid} NX EX 10"
+          },
+          {
+            "type": "alt",
+            "label": "lock acquired",
+            "messages": [
+              {
+                "from": "App",
+                "to": "Counters",
+                "arrow": "->>",
+                "label": "INCR order:id"
+              },
+              {
+                "from": "App",
+                "to": "Cart",
+                "arrow": "->>",
+                "label": "HGETALL cart:{uid}"
+              },
+              {
+                "from": "App",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "persist order (durable)"
+              },
+              {
+                "from": "App",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "LPUSH email+fulfill job"
+              },
+              {
+                "from": "App",
+                "to": "Cart",
+                "arrow": "->>",
+                "label": "DEL cart:{uid}"
+              },
+              {
+                "from": "App",
+                "to": "Session",
+                "arrow": "->>",
+                "label": "DEL lock (release)"
+              }
+            ],
+            "else": {
+              "label": "lock held (double-submit)",
+              "messages": [
+                {
+                  "from": "Session",
+                  "to": "App",
+                  "arrow": "-->>",
+                  "label": "reject / retry"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/v1/trending",
+      "description": "Top-N trending products.",
+      "request": "(none)",
+      "response": "ZREVRANGE trending 0 9 WITHSCORES"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "session (String)",
+      "note": "Key sid:{token} -> user + metadata JSON, TTL.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "sid:{token}"
+        },
+        {
+          "name": "value",
+          "type": "json { userId, roles, csrf }"
+        },
+        {
+          "name": "ttl",
+          "type": "e.g. 30 min sliding"
+        }
+      ]
+    },
+    {
+      "name": "product cache (String)",
+      "note": "Key prod:{id} -> serialized product, TTL + jitter.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "prod:{id}"
+        },
+        {
+          "name": "value",
+          "type": "json (serialized product)"
+        },
+        {
+          "name": "ttl",
+          "type": "e.g. 5 min + jitter"
+        }
+      ]
+    },
+    {
+      "name": "cart (Hash)",
+      "note": "cart:{uid} field=product_id value=qty.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "cart:{uid}"
+        },
+        {
+          "name": "field",
+          "type": "product_id"
+        },
+        {
+          "name": "value",
+          "type": "quantity (int)"
+        }
+      ]
+    },
+    {
+      "name": "trending (Sorted Set)",
+      "note": "member=product_id, score=weighted sales/views.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "trending:{window}"
+        },
+        {
+          "name": "member",
+          "type": "product_id"
+        },
+        {
+          "name": "score",
+          "type": "float (decayed)"
+        }
+      ]
+    },
+    {
+      "name": "order queue (List)",
+      "note": "queue:orders holds serialized jobs; BRPOP by workers.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "queue:orders"
+        },
+        {
+          "name": "element",
+          "type": "json { orderId, userId, type }"
+        }
+      ]
+    },
+    {
+      "name": "dau (Bitmap)",
+      "note": "dau:{date} bit at offset user_id = active.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "dau:{yyyy-mm-dd}"
+        },
+        {
+          "name": "offset",
+          "type": "user_id (int)"
+        },
+        {
+          "name": "bit",
+          "type": "1 = active that day"
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "name": "String cache-aside + lock",
+      "what": "GET/SET strings for sessions and cached JSON; SET NX EX as a distributed lock.",
+      "whenToUse": "Login sessions, hot read cache, and guarding a critical section like checkout.",
+      "steps": [
+        "strings"
+      ]
+    },
+    {
+      "name": "Atomic counters (INCR)",
+      "what": "Single-command atomic increment for counts, windows, and IDs.",
+      "whenToUse": "View counts, rate limiting, and generating monotonic unique IDs.",
+      "steps": [
+        "integers"
+      ]
+    },
+    {
+      "name": "Hash-per-entity",
+      "what": "Store an object's fields in one Redis hash for partial reads/writes.",
+      "whenToUse": "A shopping cart or any small mutable object keyed by owner.",
+      "steps": [
+        "hashes"
+      ]
+    },
+    {
+      "name": "Sorted-set leaderboard",
+      "what": "ZADD scores and ZREVRANGE for real-time ranking.",
+      "whenToUse": "Trending products, seller leaderboards, top-N of anything.",
+      "steps": [
+        "sorted-sets"
+      ]
+    },
+    {
+      "name": "List as a work queue",
+      "what": "LPUSH producers, BRPOP consumers for async jobs.",
+      "whenToUse": "Order emails, fulfillment, any fire-and-forget background work.",
+      "steps": [
+        "lists-bitmaps"
+      ]
+    },
+    {
+      "name": "Bitmap analytics",
+      "what": "One bit per user per day; BITCOUNT/BITOP for DAU and retention.",
+      "whenToUse": "Cardinality-style analytics where a bit per entity is cheap.",
+      "steps": [
+        "lists-bitmaps"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: One RDBMS for Everything (the baseline)",
+      "description": [
+        "Start with the simplest thing that works: a single relational database backs every feature. Sessions live in a sessions table, the cart in a cart table, product reads are SELECTs, view counts are UPDATE ... SET views = views + 1, trending is an ORDER BY over an aggregate, and background emails are sent inline during the checkout request.",
+        "It's correct and easy to reason about, and it makes the bottlenecks obvious. Every product view is a disk-backed read and a row UPDATE; the counter UPDATE serializes on a single hot row; ranking is a heavy sort over a growing table on every page load; and sending email inline makes checkout slow and fragile.",
+        "Each of those pains maps cleanly to a Redis data structure that removes it \u2014 which is exactly the tour the next steps take."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "DB"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-db"
+        ],
+        "caption": "Everything \u2014 sessions, cart, views, ranking, email \u2014 runs through one relational database.",
+        "highlight": [
+          "App",
+          "DB"
+        ]
+      },
+      "decisionPrompt": "At 200k reads/sec, what happens to the DB when every product view is a SELECT plus a counter UPDATE on a hot row?",
+      "whyNow": [
+        "The single-DB baseline makes each Redis use case land as a targeted fix rather than 'add Redis because it's fast'."
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "All features work against one RDBMS.",
+        "newRisk": "Hot reads, serialized counter updates, heavy ranking sorts, and inline email overwhelm the DB and slow every request."
+      },
+      "traps": [
+        {
+          "trap": "Shipping the single-DB design as good enough.",
+          "why": "Session lookups, per-view counter updates, and per-request ranking sorts saturate the DB long before the business scales.",
+          "instead": "Move each hot path onto the Redis structure that fits it, keeping the DB as the durable record."
+        }
+      ]
+    },
+    {
+      "id": "strings",
+      "title": "2. Strings \u2014 Sessions, Cache, and a Distributed Lock",
+      "description": [
+        "The Redis String is the workhorse: an opaque value under a key, with an optional TTL. Three idiomatic uses cover most of the read path.",
+        "Sessions: on login, SET sid:{token} to the user JSON with EXPIRE (a sliding TTL). The gateway validates the cookie with one GET instead of a DB query per request.",
+        "Cache-aside: product reads GET prod:{id}; on a miss, load from the DB and SET with a short TTL plus jitter (so keys don't all expire together). Hot products now serve from memory.",
+        "Distributed lock: SET lock:{resource} {token} NX EX 10 acquires a lock only if absent, auto-expiring so a crashed holder can't deadlock. Release by deleting only if the token matches (a small Lua script) so you never delete someone else's lock. This guards checkout against a double-submit."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Session",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "app-session",
+          "session-db",
+          "app-db",
+          "session-metrics"
+        ],
+        "caption": "Strings back sessions and a product cache-aside layer, plus SET NX locks; the DB is only touched on a cache miss or a durable write.",
+        "highlight": [
+          "Session"
+        ]
+      },
+      "decisionPrompt": "What's the failure mode of a distributed lock with no expiry, and how does SET NX EX fix it?",
+      "concepts": [
+        {
+          "term": "SET NX EX (lock)",
+          "definition": "Set a key only if it doesn't exist, with an expiry, atomically.",
+          "whyItMatters": "Gives a self-healing distributed lock: a crashed holder's lock expires instead of deadlocking.",
+          "example": "SET lock:cart:42 tok NX EX 10 -> guards the checkout critical section."
+        },
+        {
+          "term": "TTL + jitter",
+          "definition": "Expire cache entries after a bounded, randomized time.",
+          "whyItMatters": "Bounds staleness and prevents a synchronized expiry stampede onto the DB.",
+          "example": "SET prod:99 {...} EX 300 with \u00b110% jitter."
+        }
+      ],
+      "patterns": [
+        "String cache-aside + lock"
+      ],
+      "whyNow": [
+        "Sessions and cache are the highest-volume reads; fixing them first removes most DB read load before anything else."
+      ],
+      "recap": {
+        "before": "Sessions and product reads hit the DB every request.",
+        "after": "Sessions, hot products, and a checkout lock all live in Redis strings.",
+        "newRisk": "Counting and ID generation still hammer hot DB rows \u2014 the next fix is atomic integers."
+      },
+      "traps": [
+        {
+          "trap": "A lock with no expiry (or DEL without a token check).",
+          "why": "A crashed holder deadlocks the resource; a blind DEL can release a lock a different request now holds.",
+          "instead": "SET NX EX for auto-release, and release with a compare-and-delete Lua script."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Session",
+                "label": "Redis Strings"
+              },
+              {
+                "id": "DB"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "GET /products/99"
+              },
+              {
+                "from": "App",
+                "to": "Session",
+                "arrow": "->>",
+                "label": "GET prod:99"
+              },
+              {
+                "type": "alt",
+                "label": "cache hit",
+                "messages": [
+                  {
+                    "from": "Session",
+                    "to": "App",
+                    "arrow": "-->>",
+                    "label": "product JSON"
+                  }
+                ],
+                "else": {
+                  "label": "miss",
+                  "messages": [
+                    {
+                      "from": "App",
+                      "to": "DB",
+                      "arrow": "->>",
+                      "label": "SELECT product"
+                    },
+                    {
+                      "from": "App",
+                      "to": "Session",
+                      "arrow": "->>",
+                      "label": "SET prod:99 EX 300 (+jitter)"
+                    },
+                    {
+                      "from": "App",
+                      "to": "Client",
+                      "arrow": "-->>",
+                      "label": "product JSON"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "name": "Product read \u2014 string cache-aside",
+          "note": "A hit returns from memory; a miss loads from the DB and backfills the string with a jittered TTL.",
+          "highlight": [
+            "Session"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "integers",
+      "title": "3. Integers \u2014 Counters, Rate Limiting, and Global IDs",
+      "description": [
+        "A String that holds a number is a Redis integer, and INCR/INCRBY are atomic \u2014 no read-modify-write race, no hot-row lock in the DB.",
+        "View counters: INCR views:{productId} on every view. It's a single in-memory op; a background job periodically flushes the totals to the DB so the durable record stays roughly current without paying per-view write cost.",
+        "Rate limiting: a fixed-window limiter is INCR rl:{userId}:{minute} with EXPIRE 60 on first hit; if the value exceeds the limit, reject. A sliding-window or token-bucket variant uses a short Lua script for exactness. This throttles abusive clients before they reach the DB.",
+        "Global unique IDs: INCR order:id returns a monotic counter shared across all app instances \u2014 a DB-free ID generator. Hand out ranges (INCRBY 1000) per instance to cut round trips, or seed the counter high to reserve a namespace."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Counters",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "app-counters",
+          "app-db",
+          "app-metrics"
+        ],
+        "caption": "INCR drives view counts, rate-limit windows, and a global ID generator; totals flush to the DB in the background.",
+        "highlight": [
+          "Counters"
+        ]
+      },
+      "decisionPrompt": "Why is INCR safe under concurrency where SELECT ... then UPDATE ... +1 in the app is not?",
+      "concepts": [
+        {
+          "term": "Atomic INCR",
+          "definition": "Increment a key's integer value in a single atomic command.",
+          "whyItMatters": "No lost updates under concurrency and no hot-row contention in the DB.",
+          "example": "INCR views:99 -> 15321 with no lock."
+        },
+        {
+          "term": "Fixed-window rate limit",
+          "definition": "Count requests per user per time bucket and reject over a threshold.",
+          "whyItMatters": "Cheap abuse protection at the edge of the app, before load reaches the DB.",
+          "example": "INCR rl:42:1701 -> if > 100, 429."
+        },
+        {
+          "term": "Counter-based ID",
+          "definition": "A shared monotonic INCR counter as a unique-ID source.",
+          "whyItMatters": "Generates unique order IDs without a DB sequence round trip; ranges cut chatter.",
+          "example": "INCRBY order:id 1000 -> reserve a block per instance."
+        }
+      ],
+      "patterns": [
+        "Atomic counters (INCR)"
+      ],
+      "whyNow": [
+        "Counting and ID generation are the write-side twin of step 2's read caching \u2014 both remove hot-row DB pressure."
+      ],
+      "recap": {
+        "before": "Counts and IDs contended on hot DB rows/sequences.",
+        "after": "Atomic INCR handles views, rate limits, and unique IDs in memory.",
+        "newRisk": "The cart is still a relational table with a row per line \u2014 a structure Redis models better as a hash."
+      },
+      "traps": [
+        {
+          "trap": "Read-modify-write counters in app code.",
+          "why": "Two concurrent requests read the same value and both write value+1, losing an increment.",
+          "instead": "Use atomic INCR/INCRBY so the increment happens server-side in one step."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Counters",
+                "label": "Redis Integers"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "request"
+              },
+              {
+                "from": "App",
+                "to": "Counters",
+                "arrow": "->>",
+                "label": "INCR rl:{uid}:{min}"
+              },
+              {
+                "type": "alt",
+                "label": "count > limit",
+                "messages": [
+                  {
+                    "from": "App",
+                    "to": "Client",
+                    "arrow": "-->>",
+                    "label": "429 Too Many Requests"
+                  }
+                ],
+                "else": {
+                  "label": "under limit",
+                  "messages": [
+                    {
+                      "from": "App",
+                      "to": "Counters",
+                      "arrow": "->>",
+                      "label": "INCR views:{pid}"
+                    },
+                    {
+                      "from": "App",
+                      "to": "Client",
+                      "arrow": "-->>",
+                      "label": "200 OK"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "name": "Rate limit + view count",
+          "note": "One INCR enforces the per-user window; another counts the view \u2014 both atomic and DB-free.",
+          "highlight": [
+            "Counters"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hashes",
+      "title": "4. Hashes \u2014 The Shopping Cart",
+      "description": [
+        "A cart is a small map of product_id -> quantity owned by one user \u2014 exactly a Redis Hash. Store it as cart:{uid} with HSET product_id qty.",
+        "Field-level operations are the win: HSET to add/update one line, HINCRBY to bump a quantity, HDEL to remove a line, HGETALL to render the cart, HLEN for a badge count \u2014 all without serializing and rewriting the whole object as you would with a single JSON string.",
+        "Set a TTL on the cart key so abandoned carts expire automatically (abandonment analytics can snapshot them first). At checkout, HGETALL reads the cart, the order is committed to the DB, and DEL clears it.",
+        "Hashes are also memory-efficient: small hashes use a compact encoding, so millions of little carts stay cheap."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Cart",
+          "DB"
+        ],
+        "links": [
+          "app-cart",
+          "app-db"
+        ],
+        "caption": "Each user's cart is one Redis hash (cart:{uid}) with a field per product; checkout reads it and commits to the DB.",
+        "highlight": [
+          "Cart"
+        ]
+      },
+      "decisionPrompt": "Why is a hash better than a single JSON string for a cart that's edited one line at a time?",
+      "concepts": [
+        {
+          "term": "Hash-per-entity",
+          "definition": "Model a mutable object as one hash with a field per attribute.",
+          "whyItMatters": "Partial reads/writes (one field) avoid rewriting the whole object and cut contention.",
+          "example": "HINCRBY cart:42 p99 1 bumps one line's quantity."
+        }
+      ],
+      "patterns": [
+        "Hash-per-entity"
+      ],
+      "whyNow": [
+        "The cart is the most-edited per-user object; a hash gives field-level edits the earlier string cache can't."
+      ],
+      "recap": {
+        "before": "Cart edits were row-level DB writes or whole-object rewrites.",
+        "after": "The cart is one hash with cheap field-level HSET/HINCRBY/HDEL.",
+        "newRisk": "Ranking (trending, leaderboards) is still a heavy DB sort per request."
+      },
+      "traps": [
+        {
+          "trap": "Storing the cart as one JSON string.",
+          "why": "Every line edit reads, deserializes, mutates, and rewrites the whole value \u2014 racy and wasteful.",
+          "instead": "Use a hash so each line is an independent field updated atomically."
+        }
+      ]
+    },
+    {
+      "id": "sorted-sets",
+      "title": "5. Sorted Sets \u2014 Trending & Leaderboards",
+      "description": [
+        "Ranking wants the top-N by score, updated continuously. A Redis Sorted Set (ZSET) keeps members ordered by a float score, so 'top 10 trending products' or 'top sellers this week' is a single O(log n) range read.",
+        "Update on the fly: ZINCRBY trending {weight} {productId} on a view or sale nudges a product's score; ZREVRANGE trending 0 9 WITHSCORES reads the leaderboard instantly \u2014 no sort over a growing table.",
+        "Time-decay keeps 'trending' fresh: either periodically multiply scores down, or bucket by window (trending:{hour}) and ZUNIONSTORE recent buckets with decaying weights. ZREMRANGEBYRANK trims the set so it can't grow unbounded.",
+        "The same structure powers any leaderboard: sellers by revenue, products by rating, users by points \u2014 all ZADD/ZINCRBY writes and ZRANGE/ZRANK reads."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Ranking",
+          "DB"
+        ],
+        "links": [
+          "app-ranking",
+          "app-db"
+        ],
+        "caption": "Trending and leaderboards are Redis sorted sets: ZINCRBY on activity, ZREVRANGE to read the top-N in log time.",
+        "highlight": [
+          "Ranking"
+        ]
+      },
+      "decisionPrompt": "How does a ZSET turn a per-request ORDER BY over a big table into an O(log n) read?",
+      "concepts": [
+        {
+          "term": "Sorted set (ZSET)",
+          "definition": "A set of members each with a float score, kept in score order.",
+          "whyItMatters": "Top-N and rank queries are O(log n) with no table sort, and updates are incremental.",
+          "example": "ZINCRBY trending 1 p99 then ZREVRANGE trending 0 9."
+        },
+        {
+          "term": "Time decay",
+          "definition": "Reduce old scores over time so 'trending' reflects recent activity.",
+          "whyItMatters": "Keeps rankings current without a full recompute.",
+          "example": "Windowed keys trending:{hour} combined with decaying weights via ZUNIONSTORE."
+        }
+      ],
+      "patterns": [
+        "Sorted-set leaderboard"
+      ],
+      "whyNow": [
+        "Ranking was the last heavy per-request DB sort; a ZSET makes it an incremental in-memory read."
+      ],
+      "recap": {
+        "before": "Trending/leaderboards were per-request DB sorts.",
+        "after": "Ranking is incremental ZINCRBY writes and O(log n) ZREVRANGE reads.",
+        "newRisk": "Checkout still sends email inline, and we have no cheap way to measure DAU/retention."
+      },
+      "traps": [
+        {
+          "trap": "Recomputing ranking with ORDER BY on every request.",
+          "why": "The sort cost grows with the table and dominates read latency at scale.",
+          "instead": "Maintain a ZSET incrementally and read the top-N directly."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Ranking",
+                "label": "Redis Sorted Set"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "view / buy product 99"
+              },
+              {
+                "from": "App",
+                "to": "Ranking",
+                "arrow": "->>",
+                "label": "ZINCRBY trending w 99"
+              },
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "GET /trending"
+              },
+              {
+                "from": "App",
+                "to": "Ranking",
+                "arrow": "->>",
+                "label": "ZREVRANGE trending 0 9 WITHSCORES"
+              },
+              {
+                "from": "Ranking",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "top-10 products"
+              }
+            ]
+          },
+          "name": "Update + read trending",
+          "note": "Activity nudges scores with ZINCRBY; the leaderboard read is a single range query.",
+          "highlight": [
+            "Ranking"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lists-bitmaps",
+      "title": "6. Lists & Bitmaps \u2014 Work Queue and Retention",
+      "description": [
+        "Two more structures close out the tour: Lists for async work and Bitmaps for cheap analytics.",
+        "List as a queue: instead of sending order email inline, the app LPUSHes a job onto queue:orders and returns immediately; a pool of workers BRPOPs (blocking pop) and processes jobs \u2014 emails, fulfillment, inventory updates. This decouples checkout latency from slow side effects. For at-least-once safety, use BRPOPLPUSH into a per-worker processing list and remove the job only after success, so a crashed worker's job is recoverable.",
+        "Bitmap for retention: a bitmap is a string addressed at the bit level. Keep one key per day, dau:{date}, and SETBIT dau:{date} {userId} 1 when a user is active. BITCOUNT dau:{date} gives that day's active users; BITOP AND over consecutive days (then BITCOUNT) gives N-day retention \u2014 all in a couple of kilobytes per day for millions of users.",
+        "Between them, Lists give ordered producer/consumer work and Bitmaps give set-membership analytics at one bit per user."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Queue",
+          "Worker",
+          "Retention",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "app-queue",
+          "worker-queue",
+          "worker-db",
+          "app-retention",
+          "queue-metrics"
+        ],
+        "caption": "Checkout LPUSHes jobs that workers BRPOP and complete; SETBIT on a daily bitmap tracks active users for DAU and retention.",
+        "highlight": [
+          "Queue",
+          "Worker",
+          "Retention"
+        ],
+        "groups": [
+          "async"
+        ]
+      },
+      "options": [
+        {
+          "name": "List queue (LPUSH/BRPOP)",
+          "description": "A plain Redis list as a producer/consumer queue with blocking pop.",
+          "pros": [
+            "Dead simple: LPUSH to enqueue, BRPOP to block-and-consume \u2014 no extra infrastructure.",
+            "Very low latency and high throughput for fire-and-forget jobs.",
+            "BRPOPLPUSH gives an at-least-once processing list for crash recovery."
+          ],
+          "cons": [
+            "No built-in consumer groups, acks, or replay \u2014 you build delivery guarantees yourself.",
+            "A slow consumer lets the list grow unbounded and eat memory.",
+            "No native retry/dead-letter; you add those by hand."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Queue",
+              "Worker",
+              "DB"
+            ],
+            "links": [
+              "app-queue",
+              "worker-queue",
+              "worker-db"
+            ],
+            "caption": "A list is the queue: App LPUSHes, Worker BRPOPs and persists the result.",
+            "highlight": [
+              "Queue"
+            ],
+            "groups": [
+              "async"
+            ]
+          }
+        },
+        {
+          "name": "Redis Streams / dedicated broker",
+          "description": "Use Redis Streams (consumer groups, acks) or an external broker like Kafka/SQS when you need stronger delivery semantics.",
+          "pros": [
+            "Consumer groups, acknowledgements, and replay are built in.",
+            "Better backpressure and observability for high-volume pipelines.",
+            "Scales to many partitions/consumers without hand-rolled coordination."
+          ],
+          "cons": [
+            "More moving parts and operational surface than a plain list.",
+            "Overkill for simple fire-and-forget side effects.",
+            "An external broker adds another system to run and secure."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Queue",
+              "Worker",
+              "DB"
+            ],
+            "links": [
+              "app-queue",
+              "worker-queue",
+              "worker-db"
+            ],
+            "caption": "The same queue role, upgraded to Streams/consumer-groups or an external broker when guarantees matter.",
+            "highlight": [
+              "Queue",
+              "Worker"
+            ],
+            "groups": [
+              "async"
+            ]
+          }
+        }
+      ],
+      "decisionPrompt": "When do you outgrow a plain list queue and reach for Redis Streams or a real broker?",
+      "concepts": [
+        {
+          "term": "List as queue",
+          "definition": "LPUSH to enqueue and (B)RPOP to dequeue, optionally via BRPOPLPUSH.",
+          "whyItMatters": "Decouples slow side effects from the request path with almost no infrastructure.",
+          "example": "LPUSH queue:orders {job}; worker BRPOP queue:orders 5."
+        },
+        {
+          "term": "Bitmap analytics",
+          "definition": "A bit per entity in a string, addressed with SETBIT/BITCOUNT/BITOP.",
+          "whyItMatters": "DAU and N-day retention for millions of users in a few KB per day.",
+          "example": "SETBIT dau:2026-07-04 42 1; BITCOUNT dau:2026-07-04."
+        }
+      ],
+      "patterns": [
+        "List as a work queue",
+        "Bitmap analytics"
+      ],
+      "whyNow": [
+        "These remove the last inline side effect (email) and add analytics the earlier structures couldn't express cheaply."
+      ],
+      "recap": {
+        "before": "Email was inline and DAU/retention had no cheap representation.",
+        "after": "A list queue offloads side effects; daily bitmaps make DAU/retention trivial.",
+        "newRisk": "Now that orders, sessions, and the queue all live in Redis, a node loss or full disk is a data-loss and availability problem \u2014 persistence and HA come next."
+      },
+      "traps": [
+        {
+          "trap": "Treating a plain list queue as exactly-once.",
+          "why": "A worker that crashes mid-job loses it unless the job is held in a processing list until acked.",
+          "instead": "Use BRPOPLPUSH into a per-worker list and remove only on success, or move to Streams for real acks."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "App"
+              },
+              {
+                "id": "Queue",
+                "label": "Redis List"
+              },
+              {
+                "id": "Worker"
+              },
+              {
+                "id": "DB"
+              }
+            ],
+            "messages": [
+              {
+                "from": "App",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "LPUSH queue:orders {job}"
+              },
+              {
+                "from": "Worker",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "BRPOPLPUSH -> processing"
+              },
+              {
+                "from": "Worker",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "send email / persist result"
+              },
+              {
+                "from": "Worker",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "LREM processing (ack)"
+              }
+            ]
+          },
+          "name": "Async job via list queue",
+          "note": "The job sits in a processing list until the worker finishes, so a crash mid-job is recoverable.",
+          "highlight": [
+            "Queue",
+            "Worker"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scale-ha",
+      "title": "7. Scale & Survive \u2014 Persistence, HA, and Cluster",
+      "description": [
+        "Once Redis holds sessions, carts, counters, the queue, and analytics, it's no longer a disposable cache \u2014 losing it is an outage and, for orders in flight, potential data loss. Three concerns make it production-grade.",
+        "Durability: enable AOF (append-only file, fsync everysecond) and/or RDB snapshots so a restart reloads recent state. Money-critical facts (committed orders) are still written to the durable RDBMS as the true source of record; Redis durability is about not cold-starting sessions/queue on restart.",
+        "High availability: run primary + replicas with automatic failover (Sentinel, or Cluster's built-in failover / a managed service). Clients reconnect and reads can fan out to replicas. Because replication is asynchronous, a failover can lose the last few writes \u2014 acceptable for a view counter, not for an order, which is why the DB stays authoritative for money.",
+        "Sharding for memory + throughput: Redis Cluster hash-slots the keyspace across nodes so total RAM and ops/sec scale horizontally. Keep keys that must be operated on together (a Lua lock + counter, MULTI over one cart) in the same slot using hash tags like cart:{uid}. Watch memory: set maxmemory + an eviction policy for the pure-cache keys (product cache) while protecting non-evictable keys (sessions, queue) \u2014 often by separating them into different logical instances."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Session",
+          "Counters",
+          "Cart",
+          "Ranking",
+          "Queue",
+          "Retention",
+          "Worker",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-session",
+          "app-counters",
+          "app-cart",
+          "app-ranking",
+          "app-queue",
+          "app-retention",
+          "worker-queue",
+          "worker-db",
+          "app-db",
+          "app-metrics",
+          "session-metrics",
+          "queue-metrics"
+        ],
+        "caption": "The full platform: every Redis structure in play, backed by a durable RDBMS, made highly available with replication/failover and scaled with cluster sharding.",
+        "highlight": [
+          "Session",
+          "Counters",
+          "Cart",
+          "Ranking",
+          "Queue",
+          "Retention"
+        ],
+        "groups": [
+          "redis-tier",
+          "async",
+          "control"
+        ]
+      },
+      "decisionPrompt": "Which Redis keys can you safely evict under memory pressure, and which must never be evicted?",
+      "concepts": [
+        {
+          "term": "AOF vs RDB",
+          "definition": "Append-only log of writes vs periodic point-in-time snapshots.",
+          "whyItMatters": "Controls how much state a restart recovers and the durability/latency trade-off.",
+          "example": "AOF everysec for near-durability; RDB for fast reloads and backups."
+        },
+        {
+          "term": "Hash tags / slots",
+          "definition": "Force related keys into one cluster slot with {...} in the key.",
+          "whyItMatters": "Multi-key ops (Lua, MULTI) require all keys on the same node in Cluster mode.",
+          "example": "lock:{cart:42} and cart:{cart:42} share a slot."
+        },
+        {
+          "term": "maxmemory policy",
+          "definition": "What Redis does when it hits its memory cap.",
+          "whyItMatters": "Pure cache keys should be evictable (allkeys-lru); sessions/queue must not be.",
+          "example": "Separate cache and durable keyspaces so eviction never drops a session."
+        }
+      ],
+      "whyNow": [
+        "Having put load-bearing state in Redis, durability, failover, and sharding are what keep it from becoming a single point of failure."
+      ],
+      "recap": {
+        "before": "Redis was a single, volatile node holding load-bearing state.",
+        "after": "Persistence, replication/failover, and cluster sharding make it durable, available, and scalable.",
+        "newRisk": "Operational: replica lag, failover windows, memory pressure, and slot migrations must be watched and rehearsed."
+      },
+      "traps": [
+        {
+          "trap": "Treating Redis as the sole source of truth for money.",
+          "why": "Async replication can lose the last writes on failover \u2014 unacceptable for committed orders.",
+          "instead": "Keep the durable RDBMS authoritative for orders; use Redis for speed and derived/ephemeral state."
+        }
+      ]
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design \u2014 Redis as the Primary Data Platform",
+    "description": "Stateless app instances front a Redis data platform where each feature uses the fitting structure \u2014 Strings (sessions, cache, locks), Integers (counters, rate limits, IDs), Hashes (cart), Sorted Sets (trending/leaderboards), Lists (async queue), Bitmaps (DAU/retention) \u2014 with an async worker pool draining the queue and a durable RDBMS as the authoritative record. Persistence, replication/failover, and cluster sharding make the Redis tier production-grade.",
+    "view": {
+      "nodes": [
+        "Client",
+        "LB",
+        "App",
+        "Session",
+        "Counters",
+        "Cart",
+        "Ranking",
+        "Queue",
+        "Retention",
+        "Worker",
+        "DB",
+        "Metrics"
+      ],
+      "links": [
+        "client-lb",
+        "lb-app",
+        "app-session",
+        "app-counters",
+        "app-cart",
+        "app-ranking",
+        "app-queue",
+        "app-retention",
+        "worker-queue",
+        "worker-db",
+        "app-db",
+        "session-db",
+        "app-metrics",
+        "session-metrics",
+        "queue-metrics"
+      ],
+      "caption": "Every Redis data structure mapped to the feature it fits best, backed by a durable system of record.",
+      "groups": [
+        "redis-tier",
+        "async",
+        "control"
+      ]
+    },
+    "flows": [
+      {
+        "sequence": {
+          "participants": [
+            {
+              "id": "Client"
+            },
+            {
+              "id": "App"
+            },
+            {
+              "id": "Session",
+              "label": "Strings/lock"
+            },
+            {
+              "id": "Counters",
+              "label": "ID"
+            },
+            {
+              "id": "Cart",
+              "label": "Hash"
+            },
+            {
+              "id": "DB"
+            },
+            {
+              "id": "Queue",
+              "label": "List"
+            }
+          ],
+          "messages": [
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "POST /checkout"
+            },
+            {
+              "from": "App",
+              "to": "Session",
+              "arrow": "->>",
+              "label": "SET lock NX EX"
+            },
+            {
+              "from": "App",
+              "to": "Counters",
+              "arrow": "->>",
+              "label": "INCR order:id"
+            },
+            {
+              "from": "App",
+              "to": "Cart",
+              "arrow": "->>",
+              "label": "HGETALL cart:{uid}"
+            },
+            {
+              "from": "App",
+              "to": "DB",
+              "arrow": "->>",
+              "label": "persist order (durable)"
+            },
+            {
+              "from": "App",
+              "to": "Queue",
+              "arrow": "->>",
+              "label": "LPUSH confirmation job"
+            },
+            {
+              "from": "App",
+              "to": "Cart",
+              "arrow": "->>",
+              "label": "DEL cart:{uid}"
+            },
+            {
+              "from": "App",
+              "to": "Client",
+              "arrow": "-->>",
+              "label": "orderId"
+            }
+          ]
+        },
+        "name": "Checkout \u2014 five structures in one path",
+        "note": "A single checkout touches a string lock, an integer ID, a hash cart, the durable DB, and a list queue.",
+        "highlight": [
+          "Session",
+          "Counters",
+          "Cart",
+          "Queue"
+        ]
+      }
+    ]
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Keep a login session across requests",
+        "how": "Session token in a string key with sliding TTL; one GET per request.",
+        "steps": [
+          "strings"
+        ]
+      },
+      {
+        "requirement": "Serve hot product data fast",
+        "how": "Cache-aside over string keys with jittered TTL.",
+        "steps": [
+          "strings"
+        ]
+      },
+      {
+        "requirement": "Add/update/remove cart items",
+        "how": "One hash per user with field-level HSET/HINCRBY/HDEL.",
+        "steps": [
+          "hashes"
+        ]
+      },
+      {
+        "requirement": "Count views and rate-limit users",
+        "how": "Atomic INCR for view counters and per-window rate limits.",
+        "steps": [
+          "integers"
+        ]
+      },
+      {
+        "requirement": "Generate globally unique order IDs",
+        "how": "Shared monotonic INCR counter, optionally ranged.",
+        "steps": [
+          "integers"
+        ]
+      },
+      {
+        "requirement": "Trending products and leaderboards",
+        "how": "Sorted sets with ZINCRBY updates and ZREVRANGE reads.",
+        "steps": [
+          "sorted-sets"
+        ]
+      },
+      {
+        "requirement": "Process orders asynchronously",
+        "how": "List queue: LPUSH jobs, workers BRPOP and complete.",
+        "steps": [
+          "lists-bitmaps"
+        ]
+      },
+      {
+        "requirement": "Report DAU and retention",
+        "how": "Daily bitmaps with SETBIT/BITCOUNT/BITOP.",
+        "steps": [
+          "lists-bitmaps"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Sub-millisecond hot reads",
+        "how": "In-memory Redis structures on every hot path.",
+        "steps": [
+          "strings",
+          "integers",
+          "hashes",
+          "sorted-sets"
+        ]
+      },
+      {
+        "requirement": "Durable for money-critical data",
+        "how": "Orders committed to the RDBMS; Redis persistence for warm recovery.",
+        "steps": [
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Available across a node failure",
+        "how": "Replication + automatic failover; clients reconnect.",
+        "steps": [
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Memory-bounded with clear eviction",
+        "how": "maxmemory + LRU for cache keys, non-evictable sessions/queue separated.",
+        "steps": [
+          "scale-ha"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Frame it as a read-heavy social e-commerce app: sessions, browse, cart, checkout, trending, and retention analytics.",
+        "State the twist explicitly: Redis is the primary hot-path data platform, with a durable RDBMS as the source of record for money."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 3 min",
+      "say": [
+        "Start with one RDBMS for everything and name the bottlenecks: hot reads, serialized counters, per-request ranking sorts, inline email."
+      ]
+    },
+    {
+      "phase": "Structure tour",
+      "time": "next 15 min",
+      "say": [
+        "Walk each feature onto the fitting structure: Strings (session/cache/lock), Integers (counter/limit/ID), Hashes (cart), Sorted Sets (ranking), Lists (queue), Bitmaps (retention).",
+        "For each, say the command and why that structure \u2014 e.g. INCR is atomic so no lost updates; ZSET makes top-N O(log n)."
+      ]
+    },
+    {
+      "phase": "Make it real",
+      "time": "final 5 min",
+      "say": [
+        "Close on persistence (AOF/RDB), HA (replica + failover), and cluster sharding.",
+        "Emphasize what Redis is NOT authoritative for (committed orders) and why."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Uses Redis as a cache and knows GET/SET with TTL.",
+        "Maps at least a few features to the right structure (cart = hash, leaderboard = sorted set)."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Covers all six structures with correct commands and reasons (INCR atomicity, ZSET top-N, bitmap DAU).",
+        "Handles the distributed lock correctly (SET NX EX + compare-and-delete)."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Draws the line between Redis and the durable RDBMS for money-critical data.",
+        "Addresses persistence, failover semantics (async replication can lose writes), cluster slots/hash-tags, and eviction policy per keyspace."
+      ]
+    }
+  ],
+  "followUps": [
+    "How do you make the distributed lock correct under clock skew and long GC pauses (fencing tokens, Redlock caveats)?",
+    "Fixed-window vs sliding-window vs token-bucket rate limiting \u2014 which and why, and how do you make it exact with Lua?",
+    "How do you keep the trending sorted set fresh without unbounded growth (time decay, windowed keys, ZREMRANGEBYRANK)?",
+    "How do you get at-least-once (or exactly-once) semantics from a Redis list queue, and when do you switch to Streams or Kafka?",
+    "How do you size and shard the Redis cluster, and how do you keep co-accessed keys in the same slot?",
+    "What exactly is lost on a failover, and how do you keep committed orders correct despite async replication?"
+  ]
+}

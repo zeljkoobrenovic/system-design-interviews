@@ -281,6 +281,11 @@
           "id": "url-shortener",
           "name": "URL Shortener",
           "path": "data/url-shortener/interview.json"
+        },
+        {
+          "id": "redis-data-structures",
+          "name": "Redis as a Data Platform",
+          "path": "data/redis-data-structures/interview.json"
         }
       ]
     },
