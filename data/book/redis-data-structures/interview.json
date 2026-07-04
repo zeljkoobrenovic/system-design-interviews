@@ -1,6 +1,6 @@
 {
-  "title": "Redis as the Primary Data Platform \u2014 System Design",
-  "description": "Design a social e-commerce app (browse, cart, checkout, trending, and retention analytics) that leans on Redis for almost every hot path. The organizing idea: each core feature maps to the Redis data structure that fits it best \u2014 Strings for sessions/cache/locks, Integers (INCR) for counters/rate limits/IDs, Hashes for the cart, Sorted Sets for leaderboards, Lists for a work queue, and Bitmaps for daily-active-user retention \u2014 all backed by a durable system of record.",
+  "title": "Redis as the Primary Data Platform — System Design",
+  "description": "Design a social e-commerce app (browse, cart, checkout, trending, and retention analytics) that leans on Redis for almost every hot path. The organizing idea: each core feature maps to the Redis data structure that fits it best — Strings for sessions/cache/locks, Integers (INCR) for counters/rate limits/IDs, Hashes for the cart, Sorted Sets for leaderboards, Lists for a work queue, and Bitmaps for daily-active-user retention — all backed by a durable system of record.",
   "highLevelArchitecture": {
     "nodes": [
       {
@@ -33,7 +33,7 @@
       },
       {
         "id": "Session",
-        "label": "Redis \u2014 Strings (Sessions/Cache/Lock)",
+        "label": "Redis — Strings (Sessions/Cache/Lock)",
         "type": "cache",
         "category": "state",
         "traits": [
@@ -43,7 +43,7 @@
       },
       {
         "id": "Counters",
-        "label": "Redis \u2014 Integers (Counters/RateLimit/ID)",
+        "label": "Redis — Integers (Counters/RateLimit/ID)",
         "type": "cache",
         "category": "state",
         "traits": [
@@ -53,7 +53,7 @@
       },
       {
         "id": "Cart",
-        "label": "Redis \u2014 Hashes (Cart)",
+        "label": "Redis — Hashes (Cart)",
         "type": "cache",
         "category": "state",
         "traits": [
@@ -63,7 +63,7 @@
       },
       {
         "id": "Ranking",
-        "label": "Redis \u2014 Sorted Sets (Leaderboard)",
+        "label": "Redis — Sorted Sets (Leaderboard)",
         "type": "cache",
         "category": "state",
         "traits": [
@@ -83,7 +83,7 @@
       },
       {
         "id": "Retention",
-        "label": "Redis \u2014 Bitmaps (Retention)",
+        "label": "Redis — Bitmaps (Retention)",
         "type": "cache",
         "category": "state",
         "traits": [
@@ -283,7 +283,7 @@
     "nonFunctional": [
       "Sub-millisecond reads on hot paths, with a low p99 under load.",
       "Read-heavy: browses and cart reads vastly outnumber writes.",
-      "Durable for money-critical data (orders): RPO 0 \u2014 committed orders survive any Redis failover because the RDBMS is authoritative.",
+      "Durable for money-critical data (orders): RPO 0 — committed orders survive any Redis failover because the RDBMS is authoritative.",
       "Available across a node failure with per-family RPO: sessions/queue tolerate seconds of loss (async replication); orders tolerate none.",
       "Memory-bounded: the working set must fit RAM with a clear eviction story."
     ]
@@ -292,22 +292,22 @@
     {
       "label": "Peak business reads/sec",
       "value": "~200,000",
-      "note": "Browse, cart reads, session lookups \u2014 mostly served from Redis."
+      "note": "Browse, cart reads, session lookups — mostly served from Redis."
     },
     {
       "label": "Peak business writes/sec",
       "value": "~20,000",
-      "note": "Cart edits, rate-limit windows, cart -> order commits \u2014 the durable/state-changing writes, NOT counting derived view counters (see below)."
+      "note": "Cart edits, rate-limit windows, cart -> order commits — the durable/state-changing writes, NOT counting derived view counters (see below)."
     },
     {
       "label": "Derived Redis writes/sec",
       "value": "up to ~200,000",
-      "note": "Every product read INCRs a view counter, so browsing alone can drive up to ~200k counter writes/s \u2014 unless view counts are sampled or locally aggregated and flushed with periodic INCRBY (see Step 3), which cuts this to a small fraction. Size shards for the higher of the raw or batched rate."
+      "note": "Every product read INCRs a view counter, so browsing alone can drive up to ~200k counter writes/s — unless view counts are sampled or locally aggregated and flushed with periodic INCRBY (see Step 3), which cuts this to a small fraction. Size shards for the higher of the raw or batched rate."
     },
     {
       "label": "Active sessions",
       "value": "~10M",
-      "note": "String keys with TTL; ~1 KB each \u2248 10 GB."
+      "note": "String keys with TTL; ~1 KB each ≈ 10 GB."
     },
     {
       "label": "Cart hashes",
@@ -316,33 +316,33 @@
     },
     {
       "label": "Ops per product read",
-      "value": "~2\u20133 Redis ops",
-      "note": "session GET + product GET + view INCR; +1 DB read/backfill only on a cache miss. At 200k reads/s that's ~400\u2013600k Redis ops/s just for browse."
+      "value": "~2–3 Redis ops",
+      "note": "session GET + product GET + view INCR; +1 DB read/backfill only on a cache miss. At 200k reads/s that's ~400–600k Redis ops/s just for browse."
     },
     {
       "label": "Redis memory (by family)",
-      "value": "~150\u2013200 GB",
-      "note": "sessions ~10 GB (10M\u00d71 KB) + product cache ~20\u201340 GB (hot set) + carts ~5\u201310 GB (5M small hashes) + ranking/counters a few GB + queue/bitmaps small. Round up ~2\u00d7 for fragmentation + replication buffers."
+      "value": "~150–200 GB",
+      "note": "sessions ~10 GB (10M×1 KB) + product cache ~20–40 GB (hot set) + carts ~5–10 GB (5M small hashes) + ranking/counters a few GB + queue/bitmaps small. Round up ~2× for fragmentation + replication buffers."
     },
     {
       "label": "Queue throughput + backlog",
       "value": "~10k jobs/s",
-      "note": "If workers stall 5 min at ~1 KB/job, backlog \u2248 10k\u00d7300\u00d71 KB \u2248 3 GB \u2014 bound it and alert; shed or spill low-priority jobs before it grows unbounded."
+      "note": "If workers stall 5 min at ~1 KB/job, backlog ≈ 10k×300×1 KB ≈ 3 GB — bound it and alert; shed or spill low-priority jobs before it grows unbounded."
     },
     {
       "label": "Replica + AOF overhead",
-      "value": "\u00d7(1 + replicas) RAM; AOF write-amp",
-      "note": "Each replica holds a full copy, so 2 replicas \u2248 3\u00d7 the RAM above. AOF (appendfsync everysec) adds sequential write load \u2248 the write rate \u00d7 record size; RDB forks briefly double RSS via copy-on-write."
+      "value": "×(1 + replicas) RAM; AOF write-amp",
+      "note": "Each replica holds a full copy, so 2 replicas ≈ 3× the RAM above. AOF (appendfsync everysec) adds sequential write load ≈ the write rate × record size; RDB forks briefly double RSS via copy-on-write."
     },
     {
       "label": "Shards / replicas",
-      "value": "~6\u201310 primaries \u00d7 (1 primary + 2 replicas)",
-      "note": "~180 GB working set / ~25\u201330 GB usable per node \u2248 6\u201310 primary shards for RAM headroom; +2 replicas each for failover. Also size for ops throughput, not just RAM: browse ops (~400\u2013600k/s) plus derived counter writes push total ops well past what one primary handles, which is a second reason to shard. Split evictable cache keys from non-evictable sessions/queue/carts across separate clusters."
+      "value": "~6–10 primaries × (1 primary + 2 replicas)",
+      "note": "~180 GB working set / ~25–30 GB usable per node ≈ 6–10 primary shards for RAM headroom; +2 replicas each for failover. Also size for ops throughput, not just RAM: browse ops (~400–600k/s) plus derived counter writes push total ops well past what one primary handles, which is a second reason to shard. Split evictable cache keys from non-evictable sessions/queue/carts across separate clusters."
     },
     {
       "label": "DAU bitmap size",
       "value": "~1.2 MB/day",
-      "note": "One bit per user; 10M users \u2248 1.25 MB per daily key \u2014 cheap retention (assumes dense user_id offsets)."
+      "note": "One bit per user; 10M users ≈ 1.25 MB per daily key — cheap retention (assumes dense user_id offsets)."
     }
   ],
   "api": [
@@ -681,6 +681,739 @@
       ]
     }
   ],
+  "technologyChoices": [
+    {
+      "concern": "API gateway, load balancing, and request admission",
+      "steps": [
+        "naive",
+        "strings",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Nginx",
+          "icon": "assets/tech-icons/nginx.png"
+        },
+        {
+          "name": "Envoy",
+          "icon": "assets/tech-icons/envoy.png"
+        },
+        {
+          "name": "HAProxy",
+          "icon": "assets/tech-icons/haproxy.png"
+        },
+        {
+          "name": "Kong",
+          "icon": "assets/tech-icons/kong.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "API Gateway",
+            "icon": "assets/tech-icons/Arch_Amazon-API-Gateway_64.png"
+          },
+          {
+            "name": "ALB",
+            "icon": "assets/tech-icons/Arch_Elastic-Load-Balancing_64.png"
+          },
+          {
+            "name": "AWS WAF",
+            "icon": "assets/tech-icons/Arch_AWS-WAF_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Load Balancing",
+            "icon": "assets/tech-icons/Networking-512-color.png"
+          },
+          {
+            "name": "Cloud Endpoints",
+            "icon": "assets/tech-icons/Networking-512-color.png"
+          },
+          {
+            "name": "Cloud Armor",
+            "icon": "assets/tech-icons/Networking-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Front Door",
+            "icon": "assets/tech-icons/10073-icon-service-Front-Door-and-CDN-Profiles.svg"
+          },
+          {
+            "name": "Application Gateway",
+            "icon": "assets/tech-icons/10076-icon-service-Application-Gateways.svg"
+          },
+          {
+            "name": "API Management",
+            "icon": "assets/tech-icons/10042-icon-service-API-Management-Services.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Keep the edge layer stateless: TLS termination, coarse admission control, routing, health checks, and request-size limits belong here.",
+        "Per-user sessions, fine-grained rate counters, cart state, and locks still belong in Redis or the database so the edge does not become a hidden state store."
+      ],
+      "makesIrrelevant": "A managed edge service with health checks, WAF integration, and autoscaling removes most hand-built reverse-proxy failover and L7 load-balancer operations."
+    },
+    {
+      "concern": "Redis-compatible hot key-value tier for sessions, cache, and locks",
+      "steps": [
+        "strings",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "KeyDB",
+          "icon": "assets/tech-icons/keydb.png"
+        },
+        {
+          "name": "Dragonfly",
+          "icon": "assets/tech-icons/dragonfly.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "MemoryDB",
+            "icon": "assets/tech-icons/Arch_Amazon-MemoryDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Azure Cache for Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Self-hosted Redis-compatible stores give tight control over eviction, persistence, modules, and version rollout.",
+        "Managed Redis-compatible services remove most node replacement, patching, failover, and backup operations, but you still own key design, memory sizing, and client retry behavior.",
+        "Use Redis locks only as duplicate-work guards; correctness for checkout remains in the durable idempotency row."
+      ],
+      "makesIrrelevant": "A managed multi-AZ Redis service removes most Sentinel/failover automation, but it does not remove the need to split evictable cache keys from non-evictable sessions, carts, and queues."
+    },
+    {
+      "concern": "Atomic counters, rate limits, and global ID allocation",
+      "steps": [
+        "integers",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "Dragonfly",
+          "icon": "assets/tech-icons/dragonfly.png"
+        },
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "MemoryDB",
+            "icon": "assets/tech-icons/Arch_Amazon-MemoryDB_64.png"
+          },
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Cloud Spanner",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Firestore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          },
+          {
+            "name": "SQL Database",
+            "icon": "assets/tech-icons/10130-icon-service-SQL-Database.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Redis-compatible INCR is the lowest-latency fit for view counters, fixed-window limits, and request IDs when bounded failover loss is acceptable.",
+        "Durable databases or conditional-write key-value stores are better when the counter itself is a correctness boundary rather than derived state.",
+        "For product views, local aggregation and periodic INCRBY can reduce the derived Redis write rate by orders of magnitude."
+      ],
+      "makesIrrelevant": "A store with native atomic increment plus TTL support removes app-side read-modify-write counters and most cleanup jobs for expiring rate-limit windows."
+    },
+    {
+      "concern": "Mutable cart state and checkout idempotency boundary",
+      "steps": [
+        "hashes",
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "CockroachDB",
+          "icon": "assets/tech-icons/cockroach.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "MemoryDB",
+            "icon": "assets/tech-icons/Arch_Amazon-MemoryDB_64.png"
+          },
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          },
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Cloud Spanner",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          },
+          {
+            "name": "SQL Database",
+            "icon": "assets/tech-icons/10130-icon-service-SQL-Database.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Redis hashes are ideal for hot, abandoned-cart state because line-item mutations are atomic and cheap.",
+        "The checkout idempotency key, order rows, and outbox need a durable transaction or conditional write, not an in-memory lock.",
+        "A durable key-value store can own carts directly, but usually adds read latency and cost to the highest-volume path."
+      ],
+      "makesIrrelevant": "A transactional database with a unique idempotency key removes the need to make a Redis lock responsible for exactly-once order creation."
+    },
+    {
+      "concern": "Real-time ranking and top-N leaderboards",
+      "steps": [
+        "sorted-sets",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "KeyDB",
+          "icon": "assets/tech-icons/keydb.png"
+        },
+        {
+          "name": "Dragonfly",
+          "icon": "assets/tech-icons/dragonfly.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "MemoryDB",
+            "icon": "assets/tech-icons/Arch_Amazon-MemoryDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Azure Cache for Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Sorted sets are the right fit when the product needs fresh top-N reads with incremental score updates.",
+        "For long-horizon analytics, backfill a warehouse from events; do not make Redis the only copy of historical ranking inputs.",
+        "Very large multi-dimensional leaderboards need careful key partitioning, score decay, and TTL windows to avoid unbounded memory growth."
+      ],
+      "makesIrrelevant": "A managed Redis-compatible cluster removes most node operations for leaderboard shards, but not the need to design windowed keys and memory caps."
+    },
+    {
+      "concern": "Async queue and outbox dispatch",
+      "steps": [
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis Streams",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "RabbitMQ",
+          "icon": "assets/tech-icons/rabbitmq.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Redpanda",
+          "icon": "assets/tech-icons/redpanda.png"
+        },
+        {
+          "name": "NATS (JetStream)",
+          "icon": "assets/tech-icons/nats.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "SQS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Queue-Service_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          },
+          {
+            "name": "Kinesis",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          },
+          {
+            "name": "EventBridge",
+            "icon": "assets/tech-icons/Arch_Amazon-EventBridge_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          },
+          {
+            "name": "Managed Service for Apache Kafka",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Cloud Tasks",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          },
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Redis Streams or a broker fit the order path because acknowledgements, replay, consumer groups, and lag metrics are built in.",
+        "A Redis List is simpler for fire-and-forget work, but durable delivery requires a processing list, reaper, retry counters, and dead-letter handling.",
+        "Managed queues reduce broker operations, but workers still need idempotent side effects because delivery remains at-least-once."
+      ],
+      "makesIrrelevant": "A managed queue with native DLQ, visibility timeout, consumer scaling, and lag metrics removes most hand-built BRPOPLPUSH recovery code."
+    },
+    {
+      "concern": "Daily-active-user retention analytics",
+      "steps": [
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "ClickHouse",
+          "icon": "assets/tech-icons/clickhouse.png"
+        },
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "Redshift",
+            "icon": "assets/tech-icons/Arch_Amazon-Redshift_64.png"
+          },
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "BigQuery",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Dataflow",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Azure Synapse Analytics",
+            "icon": "assets/tech-icons/00606-icon-service-Azure-Synapse-Analytics.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Redis bitmaps are extremely compact for dense user IDs and short DAU or retention windows.",
+        "A warehouse or analytical store is better for long retention history, ad hoc dimensions, and privacy-governed reporting.",
+        "Approximate cardinality sketches reduce memory for unique counts, but they cannot answer exact N-day intersection questions as directly as bitmaps."
+      ],
+      "makesIrrelevant": "An event pipeline into a warehouse removes many long-window bitmap calculations from Redis, while keeping Redis bitmaps for hot exact daily counters."
+    },
+    {
+      "concern": "Durable system of record, idempotency, and transactional outbox",
+      "steps": [
+        "naive",
+        "hashes",
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "MySQL",
+          "icon": "assets/tech-icons/mysql.png"
+        },
+        {
+          "name": "MariaDB",
+          "icon": "assets/tech-icons/mariadb.png"
+        },
+        {
+          "name": "CockroachDB",
+          "icon": "assets/tech-icons/cockroach.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          },
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Cloud Spanner",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          },
+          {
+            "name": "SQL Database",
+            "icon": "assets/tech-icons/10130-icon-service-SQL-Database.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A relational database is the cleanest fit for order, order_items, idempotency, and outbox rows because one transaction defines the correctness boundary.",
+        "A conditional-write key-value store can work when the order model is simple, but cross-entity invariants and reporting joins become harder.",
+        "Redis should accelerate and coordinate; the DB owns RPO 0 for committed money state."
+      ],
+      "makesIrrelevant": "A managed HA database with backups, point-in-time restore, and read replicas removes much of the custom database failover and backup plumbing around the order path."
+    },
+    {
+      "concern": "Redis persistence, replication, clustering, and memory governance",
+      "steps": [
+        "strings",
+        "integers",
+        "hashes",
+        "sorted-sets",
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Valkey",
+          "icon": "assets/tech-icons/valkey.png"
+        },
+        {
+          "name": "KeyDB",
+          "icon": "assets/tech-icons/keydb.png"
+        },
+        {
+          "name": "Kubernetes",
+          "icon": "assets/tech-icons/kubernetes.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ElastiCache",
+            "icon": "assets/tech-icons/Arch_Amazon-ElastiCache_64.png"
+          },
+          {
+            "name": "MemoryDB",
+            "icon": "assets/tech-icons/Arch_Amazon-MemoryDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Memorystore",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          },
+          {
+            "name": "Azure Cache for Redis",
+            "icon": "assets/tech-icons/10137-icon-service-Cache-Redis.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Self-hosting gives full control over AOF/RDB policy, shard count, hash tags, eviction policy, and maintenance windows.",
+        "Managed Redis-compatible services simplify failover, replacement, patching, and backups, but still require careful memory sizing and client-side resilience.",
+        "Separate clusters or databases by durability class: evictable product cache should not share eviction policy with carts, sessions, queues, and counters."
+      ],
+      "makesIrrelevant": "A managed Redis cluster removes most Sentinel, backup scheduling, and node-replacement code, but not key-family isolation or capacity planning."
+    },
+    {
+      "concern": "Operational visibility for Redis and async paths",
+      "steps": [
+        "strings",
+        "integers",
+        "lists-bitmaps",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "Jaeger",
+          "icon": "assets/tech-icons/jaeger.png"
+        },
+        {
+          "name": "ELK Stack",
+          "icon": "assets/tech-icons/elasticsearch.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "Managed Grafana",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Grafana_64.png"
+          },
+          {
+            "name": "Managed Service for Prometheus",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Service-for-Prometheus_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          },
+          {
+            "name": "Cloud Logging",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          },
+          {
+            "name": "Cloud Trace",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          },
+          {
+            "name": "Application Insights",
+            "icon": "assets/tech-icons/00012-icon-service-Application-Insights.svg"
+          },
+          {
+            "name": "Azure Managed Grafana",
+            "icon": "assets/tech-icons/02905-icon-service-Azure-Managed-Grafana.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Self-hosted observability gives maximum control over retention, labels, and dashboards, but it becomes another stateful platform to run.",
+        "Cloud-native monitoring integrates quickly with managed Redis, queues, and databases, but cross-cloud or self-hosted Redis visibility may require custom exporters.",
+        "Alert on symptoms tied to the interview design: memory fragmentation, evictions, hit rate, p99, queue age, retry/DLQ rate, AOF fsync latency, and replica lag."
+      ],
+      "makesIrrelevant": "Managed telemetry with Redis and queue integrations removes much of the custom scraping and dashboard plumbing, but not SLO definition or incident runbooks."
+    }
+  ],
   "patterns": [
     {
       "name": "String cache-aside + lock",
@@ -738,7 +1471,7 @@
       "description": [
         "Start with the simplest thing that works: a single relational database backs every feature. Sessions live in a sessions table, the cart in a cart table, product reads are SELECTs, view counts are UPDATE ... SET views = views + 1, trending is an ORDER BY over an aggregate, and background emails are sent inline during the checkout request.",
         "It's correct and easy to reason about, and it makes the bottlenecks obvious. Every product view is a disk-backed read and a row UPDATE; the counter UPDATE serializes on a single hot row; ranking is a heavy sort over a growing table on every page load; and sending email inline makes checkout slow and fragile.",
-        "Each of those pains maps cleanly to a Redis data structure that removes it \u2014 which is exactly the tour the next steps take."
+        "Each of those pains maps cleanly to a Redis data structure that removes it — which is exactly the tour the next steps take."
       ],
       "view": {
         "nodes": [
@@ -752,7 +1485,7 @@
           "lb-app",
           "app-db"
         ],
-        "caption": "Everything \u2014 sessions, cart, views, ranking, email \u2014 runs through one relational database.",
+        "caption": "Everything — sessions, cart, views, ranking, email — runs through one relational database.",
         "highlight": [
           "App",
           "DB"
@@ -777,7 +1510,7 @@
     },
     {
       "id": "strings",
-      "title": "2. Strings \u2014 Sessions, Cache, and a Distributed Lock",
+      "title": "2. Strings — Sessions, Cache, and a Distributed Lock",
       "description": [
         "The Redis String is the workhorse: an opaque value under a key, with an optional TTL. Three idiomatic uses cover most of the read path.",
         "Sessions: on login, SET sid:{token} to the user JSON with EXPIRE (a sliding TTL). The token must be a long random value, delivered in a Secure, HttpOnly, SameSite cookie, rotated on privilege change, and revocable by DEL; never derive it from user data. The gateway validates the cookie with one GET instead of a DB query per request.",
@@ -814,7 +1547,7 @@
           "term": "TTL + jitter",
           "definition": "Expire cache entries after a bounded, randomized time.",
           "whyItMatters": "Bounds staleness and prevents a synchronized expiry stampede onto the DB.",
-          "example": "SET prod:99 {...} EX 300 with \u00b110% jitter."
+          "example": "SET prod:99 {...} EX 300 with ±10% jitter."
         }
       ],
       "patterns": [
@@ -826,7 +1559,7 @@
       "recap": {
         "before": "Sessions and product reads hit the DB every request.",
         "after": "Sessions, hot products, and a checkout lock all live in Redis strings.",
-        "newRisk": "Counting and ID generation still hammer hot DB rows \u2014 the next fix is atomic integers."
+        "newRisk": "Counting and ID generation still hammer hot DB rows — the next fix is atomic integers."
       },
       "traps": [
         {
@@ -903,7 +1636,7 @@
               }
             ]
           },
-          "name": "Product read \u2014 string cache-aside",
+          "name": "Product read — string cache-aside",
           "note": "A hit returns from memory; a miss loads from the DB and backfills the string with a jittered TTL.",
           "highlight": [
             "Session"
@@ -913,12 +1646,12 @@
     },
     {
       "id": "integers",
-      "title": "3. Integers \u2014 Counters, Rate Limiting, and Global IDs",
+      "title": "3. Integers — Counters, Rate Limiting, and Global IDs",
       "description": [
-        "A String that holds a number is a Redis integer, and INCR/INCRBY are atomic \u2014 no read-modify-write race, no hot-row lock in the DB.",
+        "A String that holds a number is a Redis integer, and INCR/INCRBY are atomic — no read-modify-write race, no hot-row lock in the DB.",
         "View counters: INCR views:{productId} on a view. It's a single in-memory op; a background job periodically flushes the totals to the DB so the durable record stays roughly current without paying per-view write cost. At 200k reads/s a naive per-read INCR is 200k extra Redis writes/s (the 'derived Redis writes' line in the capacity table), which dominates write load — so at this scale you sample (INCR 1-in-N and scale up), or aggregate counts per-instance in memory and flush with a periodic INCRBY, or feed views through a stream and aggregate; any of these cuts the counter write rate to a small fraction and keeps shard sizing driven by real business writes.",
         "Rate limiting: a fixed-window limiter is INCR rl:{userId}:{minute} with EXPIRE 60 on first hit; if the value exceeds the limit, reject. Make the INCR-then-EXPIRE atomic on the first hit (a two-line Lua script, or SET NX EX to seed the window) so a crash between the two commands can't leave a window with no TTL that blocks the user forever. Note fixed windows are bursty at the boundary — a client can spend a full quota at :59 and another at :00; a sliding-window or token-bucket variant (also a short Lua script) smooths that. This throttles abusive clients before they reach the DB.",
-        "Global unique IDs: INCR order:id returns a monotonic counter shared across all app instances \u2014 a DB-free ID generator. Hand out ranges (INCRBY 1000) per instance to cut round trips, or seed the counter high to reserve a namespace. Treat this as an order-request id, not proof of a committed order: the durable DB row (with a unique idempotency key) is what makes order creation idempotent — exactly-once per idempotency key — while the async work stays at-least-once."
+        "Global unique IDs: INCR order:id returns a monotonic counter shared across all app instances — a DB-free ID generator. Hand out ranges (INCRBY 1000) per instance to cut round trips, or seed the counter high to reserve a namespace. Treat this as an order-request id, not proof of a committed order: the durable DB row (with a unique idempotency key) is what makes order creation idempotent — exactly-once per idempotency key — while the async work stays at-least-once."
       ],
       "view": {
         "nodes": [
@@ -962,12 +1695,12 @@
         "Atomic counters (INCR)"
       ],
       "whyNow": [
-        "Counting and ID generation are the write-side twin of step 2's read caching \u2014 both remove hot-row DB pressure."
+        "Counting and ID generation are the write-side twin of step 2's read caching — both remove hot-row DB pressure."
       ],
       "recap": {
         "before": "Counts and IDs contended on hot DB rows/sequences.",
         "after": "Atomic INCR handles views, rate limits, and unique IDs in memory.",
-        "newRisk": "The cart is still a relational table with a row per line \u2014 a structure Redis models better as a hash."
+        "newRisk": "The cart is still a relational table with a row per line — a structure Redis models better as a hash."
       },
       "traps": [
         {
@@ -1036,7 +1769,7 @@
             ]
           },
           "name": "Rate limit + view count",
-          "note": "One INCR enforces the per-user window; another counts the view \u2014 both atomic and DB-free.",
+          "note": "One INCR enforces the per-user window; another counts the view — both atomic and DB-free.",
           "highlight": [
             "Counters"
           ]
@@ -1045,14 +1778,14 @@
     },
     {
       "id": "hashes",
-      "title": "4. Hashes \u2014 The Shopping Cart",
+      "title": "4. Hashes — The Shopping Cart",
       "description": [
-        "A cart is a small map of product_id -> quantity owned by one user \u2014 exactly a Redis Hash. Store it as cart:{uid} with HSET product_id qty.",
-        "Field-level operations are the win: HSET to add/update one line, HINCRBY to bump a quantity, HDEL to remove a line, HGETALL to render the cart, HLEN for a badge count \u2014 all without serializing and rewriting the whole object as you would with a single JSON string.",
+        "A cart is a small map of product_id -> quantity owned by one user — exactly a Redis Hash. Store it as cart:{uid} with HSET product_id qty.",
+        "Field-level operations are the win: HSET to add/update one line, HINCRBY to bump a quantity, HDEL to remove a line, HGETALL to render the cart, HLEN for a badge count — all without serializing and rewriting the whole object as you would with a single JSON string.",
         "Set a TTL on the cart key so abandoned carts expire automatically (abandonment analytics can snapshot them first).",
         "Cap the cart (HLEN limit) and validate each product_id against the live catalog before adding, so the Redis cart can't drift from real products. The cart holds only product_id -> qty; do NOT trust a client-supplied price. At checkout, HGETALL reads the cart, the app snapshots the current price per line from the catalog, and writes durable order_items rows to the DB inside the order transaction — the Redis cart is ephemeral input, the DB order_items are the record. Idempotency lives here too: that same transaction inserts a checkout_idempotency row keyed by the client's Idempotency-Key with a unique constraint, so a retried checkout returns the existing order instead of creating a second one.",
-      "Hashes are also memory-efficient: small hashes use a compact encoding, so millions of little carts stay cheap.",
-      "Scope note: payment authorization/capture and inventory reservation are out of scope for this Redis-focused chapter. In a real checkout they would sit in the same DB transaction (or a saga) — e.g. payment_authorizations and inventory_reservations rows — and gate the order's move from created to paid; here we assume that boundary exists and focus on the Redis structures. It matters because that's what actually moves an order to paid and prevents oversell; we call it out so the created -> paid -> fulfilled states aren't ambiguous."
+        "Hashes are also memory-efficient: small hashes use a compact encoding, so millions of little carts stay cheap.",
+        "Scope note: payment authorization/capture and inventory reservation are out of scope for this Redis-focused chapter. In a real checkout they would sit in the same DB transaction (or a saga) — e.g. payment_authorizations and inventory_reservations rows — and gate the order's move from created to paid; here we assume that boundary exists and focus on the Redis structures. It matters because that's what actually moves an order to paid and prevents oversell; we call it out so the created -> paid -> fulfilled states aren't ambiguous."
       ],
       "view": {
         "nodes": [
@@ -1092,19 +1825,19 @@
       "traps": [
         {
           "trap": "Storing the cart as one JSON string.",
-          "why": "Every line edit reads, deserializes, mutates, and rewrites the whole value \u2014 racy and wasteful.",
+          "why": "Every line edit reads, deserializes, mutates, and rewrites the whole value — racy and wasteful.",
           "instead": "Use a hash so each line is an independent field updated atomically."
         }
       ]
     },
     {
       "id": "sorted-sets",
-      "title": "5. Sorted Sets \u2014 Trending & Leaderboards",
+      "title": "5. Sorted Sets — Trending & Leaderboards",
       "description": [
         "Ranking wants the top-N by score, updated continuously. A Redis Sorted Set (ZSET) keeps members ordered by a float score, so 'top 10 trending products' or 'top sellers this week' is a ZREVRANGE that costs O(log n + m) — the log to find the start plus m for the m items returned. Keep m small (top-10, not top-10k) and this stays cheap; a full ZRANGE 0 -1 is O(n) and defeats the point.",
-        "Update on the fly: ZINCRBY trending {weight} {productId} on a view or sale nudges a product's score; ZREVRANGE trending 0 9 WITHSCORES reads the leaderboard instantly \u2014 no sort over a growing table.",
+        "Update on the fly: ZINCRBY trending {weight} {productId} on a view or sale nudges a product's score; ZREVRANGE trending 0 9 WITHSCORES reads the leaderboard instantly — no sort over a growing table.",
         "Time-decay keeps 'trending' fresh: either periodically multiply scores down, or bucket by window (trending:{hour}) and ZUNIONSTORE recent buckets with decaying weights. ZREMRANGEBYRANK trims the set so it can't grow unbounded.",
-        "The same structure powers any leaderboard: sellers by revenue, products by rating, users by points \u2014 all ZADD/ZINCRBY writes and ZRANGE/ZRANK reads."
+        "The same structure powers any leaderboard: sellers by revenue, products by rating, users by points — all ZADD/ZINCRBY writes and ZRANGE/ZRANK reads."
       ],
       "view": {
         "nodes": [
@@ -1212,13 +1945,13 @@
     },
     {
       "id": "lists-bitmaps",
-      "title": "6. Lists & Bitmaps \u2014 Work Queue and Retention",
+      "title": "6. Lists & Bitmaps — Work Queue and Retention",
       "description": [
         "Two more structures close out the tour: Lists for async work and Bitmaps for cheap analytics.",
-        "List as a queue: instead of sending order email inline, the app LPUSHes a job onto queue:orders and returns immediately; a pool of workers BRPOPs (blocking pop) and processes jobs \u2014 emails, fulfillment, inventory updates. This decouples checkout latency from slow side effects.",
-      "The enqueue itself is the sharp edge. A bare LPUSH after the DB commit can be lost if the app crashes between commit and push, or duplicated if the push succeeds but the response is lost and the client retries. Make it a transactional outbox: the checkout DB transaction writes the order AND an outbox_jobs row atomically, and a dispatcher (polling the outbox or a CDC stream) LPUSHes to Redis after commit and marks the row dispatched. Now the DB is the source of truth for pending work; Redis is a fast delivery buffer that can be rebuilt from the outbox.",
-      "Hardening the List into a real queue takes machinery Redis doesn't give for free: BRPOPLPUSH (or BLMOVE) into a per-worker processing list so an in-flight job survives a worker crash; a reaper that scans processing lists and re-queues jobs older than a visibility timeout; a retry count with exponential backoff; a dead-letter list for poison messages that exceed max retries; a bounded backlog with an alert (and admission control / shedding low-priority jobs) when workers fall behind; and worker idempotency keyed on jobId/orderId so a redelivered job is a no-op. At ~10k jobs/s with a no-drop requirement, this is the minimum \u2014 which is exactly why the option comparison below leans toward Streams/a broker when you want these guarantees built in.",
-        "Bitmap for retention: a bitmap is a string addressed at the bit level. Keep one key per day, dau:{date}, and SETBIT dau:{date} {userId} 1 when a user is active. BITCOUNT dau:{date} gives that day's active users; BITOP AND over consecutive days (then BITCOUNT) gives N-day retention \u2014 a bit over a megabyte per day for 10M users. This assumes dense, small integer user IDs: SETBIT at offset 5,000,000,000 allocates a 625 MB string, so a bitmap needs a compact user_id -> offset mapping, not a raw UUID. If you only need approximate distinct counts (DAU without per-user retention math), a HyperLogLog (PFADD/PFCOUNT) is ~12 KB regardless of user count and sidesteps the offset problem \u2014 trade exactness for size. Retention data is user-level activity; apply your retention/privacy policy (expire old daily keys, honor deletion requests) rather than keeping bitmaps forever.",
+        "List as a queue: instead of sending order email inline, the app LPUSHes a job onto queue:orders and returns immediately; a pool of workers BRPOPs (blocking pop) and processes jobs — emails, fulfillment, inventory updates. This decouples checkout latency from slow side effects.",
+        "The enqueue itself is the sharp edge. A bare LPUSH after the DB commit can be lost if the app crashes between commit and push, or duplicated if the push succeeds but the response is lost and the client retries. Make it a transactional outbox: the checkout DB transaction writes the order AND an outbox_jobs row atomically, and a dispatcher (polling the outbox or a CDC stream) LPUSHes to Redis after commit and marks the row dispatched. Now the DB is the source of truth for pending work; Redis is a fast delivery buffer that can be rebuilt from the outbox.",
+        "Hardening the List into a real queue takes machinery Redis doesn't give for free: BRPOPLPUSH (or BLMOVE) into a per-worker processing list so an in-flight job survives a worker crash; a reaper that scans processing lists and re-queues jobs older than a visibility timeout; a retry count with exponential backoff; a dead-letter list for poison messages that exceed max retries; a bounded backlog with an alert (and admission control / shedding low-priority jobs) when workers fall behind; and worker idempotency keyed on jobId/orderId so a redelivered job is a no-op. At ~10k jobs/s with a no-drop requirement, this is the minimum — which is exactly why the option comparison below leans toward Streams/a broker when you want these guarantees built in.",
+        "Bitmap for retention: a bitmap is a string addressed at the bit level. Keep one key per day, dau:{date}, and SETBIT dau:{date} {userId} 1 when a user is active. BITCOUNT dau:{date} gives that day's active users; BITOP AND over consecutive days (then BITCOUNT) gives N-day retention — a bit over a megabyte per day for 10M users. This assumes dense, small integer user IDs: SETBIT at offset 5,000,000,000 allocates a 625 MB string, so a bitmap needs a compact user_id -> offset mapping, not a raw UUID. If you only need approximate distinct counts (DAU without per-user retention math), a HyperLogLog (PFADD/PFCOUNT) is ~12 KB regardless of user count and sidesteps the offset problem — trade exactness for size. Retention data is user-level activity; apply your retention/privacy policy (expire old daily keys, honor deletion requests) rather than keeping bitmaps forever.",
         "Between them, Lists give ordered producer/consumer work and Bitmaps give set-membership analytics at one bit per user."
       ],
       "view": {
@@ -1252,14 +1985,14 @@
           "name": "Redis Streams / dedicated broker (recommended)",
           "description": "Use Redis Streams (consumer groups, acks, PEL) or an external broker like Kafka/SQS for the order path, fed by the DB outbox. This is the recommended default at ~10k jobs/s with a no-drop requirement.",
           "pros": [
-            "Consumer groups, acknowledgements (XACK), and replay are built in \u2014 the delivery guarantees the order path needs.",
+            "Consumer groups, acknowledgements (XACK), and replay are built in — the delivery guarantees the order path needs.",
             "XAUTOCLAIM/PEL give native visibility-timeout reclaim and a dead-letter path instead of hand-rolled reapers.",
             "Better backpressure and observability, and scales to many partitions/consumers without hand-rolled coordination."
           ],
           "cons": [
             "More moving parts and operational surface than a plain list.",
             "An external broker adds another system to run and secure.",
-            "Still needs worker idempotency \u2014 delivery is at-least-once, not exactly-once."
+            "Still needs worker idempotency — delivery is at-least-once, not exactly-once."
           ],
           "view": {
             "nodes": [
@@ -1285,14 +2018,14 @@
         },
         {
           "name": "Hardened List queue (LPUSH/BRPOPLPUSH)",
-          "description": "A Redis list as a producer/consumer queue with blocking pop \u2014 fine for low-stakes fire-and-forget work, but for the order path it needs processing lists, a reaper, retries, and a dead-letter list bolted on by hand.",
+          "description": "A Redis list as a producer/consumer queue with blocking pop — fine for low-stakes fire-and-forget work, but for the order path it needs processing lists, a reaper, retries, and a dead-letter list bolted on by hand.",
           "pros": [
-            "Dead simple to start: LPUSH to enqueue, BRPOP to block-and-consume \u2014 no extra infrastructure.",
+            "Dead simple to start: LPUSH to enqueue, BRPOP to block-and-consume — no extra infrastructure.",
             "Very low latency and high throughput for fire-and-forget jobs.",
             "BRPOPLPUSH gives an at-least-once processing list for crash recovery."
           ],
           "cons": [
-            "No built-in consumer groups, acks, or replay \u2014 you build every delivery guarantee yourself.",
+            "No built-in consumer groups, acks, or replay — you build every delivery guarantee yourself.",
             "A slow consumer lets the list grow unbounded and eat memory; needs a bounded backlog + admission control.",
             "No native retry/dead-letter/visibility-timeout; a reaper, retry counters, and a DLQ list are all hand-rolled."
           ],
@@ -1343,12 +2076,12 @@
       "recap": {
         "before": "Email was inline and DAU/retention had no cheap representation.",
         "after": "An outbox-fed queue (Streams recommended, or a hardened List) offloads side effects with retry/DLQ semantics; daily bitmaps make DAU/retention trivial.",
-        "newRisk": "Now that orders, sessions, and the queue all live in Redis, a node loss or full disk is a data-loss and availability problem \u2014 persistence and HA come next."
+        "newRisk": "Now that orders, sessions, and the queue all live in Redis, a node loss or full disk is a data-loss and availability problem — persistence and HA come next."
       },
       "traps": [
         {
           "trap": "Enqueuing order work with a bare LPUSH right after the DB commit.",
-          "why": "A crash between commit and LPUSH loses the job; a lost response makes the client retry and duplicate it \u2014 the queue and the order state drift.",
+          "why": "A crash between commit and LPUSH loses the job; a lost response makes the client retry and duplicate it — the queue and the order state drift.",
           "instead": "Write the job to a DB outbox in the same transaction as the order, dispatch to Redis after commit, and make workers idempotent on jobId/orderId."
         },
         {
@@ -1413,12 +2146,12 @@
     },
     {
       "id": "scale-ha",
-      "title": "7. Scale & Survive \u2014 Persistence, HA, and Cluster",
+      "title": "7. Scale & Survive — Persistence, HA, and Cluster",
       "description": [
-        "Once Redis holds sessions, carts, counters, the queue, and analytics, it's no longer a disposable cache \u2014 losing it is an outage and, for orders in flight, potential data loss. Three concerns make it production-grade.",
+        "Once Redis holds sessions, carts, counters, the queue, and analytics, it's no longer a disposable cache — losing it is an outage and, for orders in flight, potential data loss. Three concerns make it production-grade.",
         "Durability: enable AOF (append-only file, fsync every second) and/or RDB snapshots so a restart reloads recent state. Money-critical facts (committed orders) are still written to the durable RDBMS as the true source of record; Redis durability is about not cold-starting sessions/queue on restart.",
-        "High availability: run primary + replicas with automatic failover (Sentinel, or Cluster's built-in failover / a managed service). Clients reconnect and reads can fan out to replicas. Because replication is asynchronous, a failover can lose the last few writes, so define RPO per key family: a view counter tolerates seconds of loss (RPO ~seconds), a session or a queued job tolerates a little, but a committed order tolerates none (RPO 0) \u2014 which is exactly why that fact lives in the durable RDBMS and the outbox, not in Redis alone.",
-        "Sharding for memory + throughput: Redis Cluster hash-slots the keyspace across nodes so total RAM and ops/sec scale horizontally. Keep keys that must be operated on together (a Lua lock + counter, MULTI over one cart) in the same slot using hash tags like cart:{uid}. Watch memory: set maxmemory + an eviction policy for the pure-cache keys (product cache) while protecting non-evictable keys (sessions, queue) \u2014 often by separating them into different logical instances."
+        "High availability: run primary + replicas with automatic failover (Sentinel, or Cluster's built-in failover / a managed service). Clients reconnect and reads can fan out to replicas. Because replication is asynchronous, a failover can lose the last few writes, so define RPO per key family: a view counter tolerates seconds of loss (RPO ~seconds), a session or a queued job tolerates a little, but a committed order tolerates none (RPO 0) — which is exactly why that fact lives in the durable RDBMS and the outbox, not in Redis alone.",
+        "Sharding for memory + throughput: Redis Cluster hash-slots the keyspace across nodes so total RAM and ops/sec scale horizontally. Keep keys that must be operated on together (a Lua lock + counter, MULTI over one cart) in the same slot using hash tags like cart:{uid}. Watch memory: set maxmemory + an eviction policy for the pure-cache keys (product cache) while protecting non-evictable keys (sessions, queue) — often by separating them into different logical instances."
       ],
       "view": {
         "nodes": [
@@ -1498,15 +2231,15 @@
       "traps": [
         {
           "trap": "Treating Redis as the sole source of truth for money.",
-          "why": "Async replication can lose the last writes on failover \u2014 unacceptable for committed orders.",
+          "why": "Async replication can lose the last writes on failover — unacceptable for committed orders.",
           "instead": "Keep the durable RDBMS authoritative for orders; use Redis for speed and derived/ephemeral state."
         }
       ]
     }
   ],
   "finalDesign": {
-    "title": "Final Design \u2014 Redis as the Primary Data Platform",
-    "description": "Stateless app instances front a Redis data platform where each feature uses the fitting structure \u2014 Strings (sessions, cache, locks), Integers (counters, rate limits, IDs), Hashes (cart), Sorted Sets (trending/leaderboards), a queue (async work), Bitmaps (DAU/retention) \u2014 with an async worker pool draining the queue and a durable RDBMS as the authoritative record. Redis accelerates and coordinates; the DB owns correctness for money. Checkout is idempotent — exactly-once order creation per idempotency key, effectively-once from the client's view — via a durable idempotency key, and writes order + order_items + an outbox job in one transaction; a dispatcher feeds the queue after commit. The async work stays at-least-once with idempotent worker side effects. For the order path we default to Redis Streams (or a broker) \u2014 consumer groups, XACK, and PEL reclaim give the retry/visibility-timeout/dead-letter semantics a 10k-jobs/s no-drop queue needs, which a plain List only gets with hand-rolled machinery; a hardened List is acceptable for low-stakes fire-and-forget work. Workers are idempotent on jobId/orderId and reconcile against the DB. Persistence (AOF everysec + RDB), replication/failover, and cluster sharding make the Redis tier production-grade, with cache-like keys split from non-evictable sessions/queue/carts by durability class. Async replication means a failover can lose the last few writes \u2014 fine for a view counter (RPO ~seconds), never for a committed order (RPO 0, which is why the DB is authoritative). Monitor memory, evictions, queue age, retry rate, AOF fsync latency, replica lag, and failover events.",
+    "title": "Final Design — Redis as the Primary Data Platform",
+    "description": "Stateless app instances front a Redis data platform where each feature uses the fitting structure — Strings (sessions, cache, locks), Integers (counters, rate limits, IDs), Hashes (cart), Sorted Sets (trending/leaderboards), a queue (async work), Bitmaps (DAU/retention) — with an async worker pool draining the queue and a durable RDBMS as the authoritative record. Redis accelerates and coordinates; the DB owns correctness for money. Checkout is idempotent — exactly-once order creation per idempotency key, effectively-once from the client's view — via a durable idempotency key, and writes order + order_items + an outbox job in one transaction; a dispatcher feeds the queue after commit. The async work stays at-least-once with idempotent worker side effects. For the order path we default to Redis Streams (or a broker) — consumer groups, XACK, and PEL reclaim give the retry/visibility-timeout/dead-letter semantics a 10k-jobs/s no-drop queue needs, which a plain List only gets with hand-rolled machinery; a hardened List is acceptable for low-stakes fire-and-forget work. Workers are idempotent on jobId/orderId and reconcile against the DB. Persistence (AOF everysec + RDB), replication/failover, and cluster sharding make the Redis tier production-grade, with cache-like keys split from non-evictable sessions/queue/carts by durability class. Async replication means a failover can lose the last few writes — fine for a view counter (RPO ~seconds), never for a committed order (RPO 0, which is why the DB is authoritative). Monitor memory, evictions, queue age, retry rate, AOF fsync latency, replica lag, and failover events.",
     "view": {
       "nodes": [
         "Client",
@@ -1627,8 +2360,8 @@
             }
           ]
         },
-        "name": "Checkout \u2014 idempotent, outbox-dispatched",
-        "note": "The lock only guards duplicate concurrent work; correctness comes from the durable idempotency key. The DB transaction writes order + order_items + an outbox job atomically, and a dispatcher feeds the queue after commit \u2014 so no job is lost or duplicated.",
+        "name": "Checkout — idempotent, outbox-dispatched",
+        "note": "The lock only guards duplicate concurrent work; correctness comes from the durable idempotency key. The DB transaction writes order + order_items + an outbox job atomically, and a dispatcher feeds the queue after commit — so no job is lost or duplicated.",
         "highlight": [
           "Session",
           "Counters",
@@ -1752,7 +2485,7 @@
       "time": "next 15 min",
       "say": [
         "Walk each feature onto the fitting structure: Strings (session/cache/lock), Integers (counter/limit/ID), Hashes (cart), Sorted Sets (ranking), Lists (queue), Bitmaps (retention).",
-        "For each, say the command and why that structure \u2014 e.g. INCR is atomic so no lost updates; ZSET makes top-N O(log n + m)."
+        "For each, say the command and why that structure — e.g. INCR is atomic so no lost updates; ZSET makes top-N O(log n + m)."
       ]
     },
     {
@@ -1790,7 +2523,7 @@
   ],
   "followUps": [
     "How do you make the distributed lock correct under clock skew and long GC pauses (fencing tokens, Redlock caveats)?",
-    "Fixed-window vs sliding-window vs token-bucket rate limiting \u2014 which and why, and how do you make it exact with Lua?",
+    "Fixed-window vs sliding-window vs token-bucket rate limiting — which and why, and how do you make it exact with Lua?",
     "How do you keep the trending sorted set fresh without unbounded growth (time decay, windowed keys, ZREMRANGEBYRANK)?",
     "How do you get at-least-once (or exactly-once) semantics from a Redis list queue, and when do you switch to Streams (consumer groups, XACK, PEL) or Kafka?",
     "How do you make checkout effectively-once end to end — exactly-once order creation per Idempotency-Key via a durable idempotency row, plus a transactional outbox and idempotent workers for the at-least-once async side — when the Redis lock alone can't prove it?",
