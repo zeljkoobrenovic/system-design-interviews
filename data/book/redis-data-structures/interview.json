@@ -281,8 +281,8 @@
     "nonFunctional": [
       "Sub-millisecond reads on hot paths; p99 low under load.",
       "Read-heavy: browses and cart reads vastly outnumber writes.",
-      "Durable for money-critical data (orders) \u2014 Redis is not the only source of truth.",
-      "Available across a node failure without dropping sessions or the queue.",
+      "Durable for money-critical data (orders): RPO 0 \u2014 committed orders survive any Redis failover because the RDBMS is authoritative.",
+      "Available across a node failure with per-family RPO: sessions/queue tolerate seconds of loss (async replication); orders tolerate none.",
       "Memory-bounded: the working set must fit RAM with a clear eviction story."
     ]
   },
@@ -308,19 +308,34 @@
       "note": "Hash per active cart; small, TTL'd for abandonment."
     },
     {
-      "label": "Redis memory",
-      "value": "100s of GB",
-      "note": "Sessions + cache + carts + ranking + counters; drives cluster sizing."
+      "label": "Ops per product read",
+      "value": "~2\u20133 Redis ops",
+      "note": "session GET + product GET + view INCR; +1 DB read/backfill only on a cache miss. At 200k reads/s that's ~400\u2013600k Redis ops/s just for browse."
     },
     {
-      "label": "Queue throughput",
+      "label": "Redis memory (by family)",
+      "value": "~150\u2013200 GB",
+      "note": "sessions ~10 GB (10M\u00d71 KB) + product cache ~20\u201340 GB (hot set) + carts ~5\u201310 GB (5M small hashes) + ranking/counters a few GB + queue/bitmaps small. Round up ~2\u00d7 for fragmentation + replication buffers."
+    },
+    {
+      "label": "Queue throughput + backlog",
       "value": "~10k jobs/s",
-      "note": "LPUSH/BRPOP order + fulfillment jobs at peak."
+      "note": "If workers stall 5 min at ~1 KB/job, backlog \u2248 10k\u00d7300\u00d71 KB \u2248 3 GB \u2014 bound it and alert; shed or spill low-priority jobs before it grows unbounded."
+    },
+    {
+      "label": "Replica + AOF overhead",
+      "value": "\u00d7(1 + replicas) RAM; AOF write-amp",
+      "note": "Each replica holds a full copy, so 2 replicas \u2248 3\u00d7 the RAM above. AOF (appendfsync everysec) adds sequential write load \u2248 the write rate \u00d7 record size; RDB forks briefly double RSS via copy-on-write."
+    },
+    {
+      "label": "Shards / replicas",
+      "value": "~6\u201310 primaries \u00d7 (1 primary + 2 replicas)",
+      "note": "~180 GB working set / ~25\u201330 GB usable per node \u2248 6\u201310 primary shards for RAM headroom; +2 replicas each for failover. Split evictable cache keys from non-evictable sessions/queue/carts across separate clusters."
     },
     {
       "label": "DAU bitmap size",
       "value": "~1.2 MB/day",
-      "note": "One bit per user; 10M users \u2248 1.25 MB per daily key \u2014 cheap retention."
+      "note": "One bit per user; 10M users \u2248 1.25 MB per daily key \u2014 cheap retention (assumes dense user_id offsets)."
     }
   ],
   "api": [
@@ -339,18 +354,32 @@
       "response": "{ \"id\": \"...\", \"name\": \"...\", \"price\": ... }"
     },
     {
+      "method": "GET",
+      "path": "/v1/cart",
+      "description": "Read the current cart; HGETALL on the user's cart hash.",
+      "request": "(sid cookie)",
+      "response": "{ \"cart\": { \"p42\": 2, \"p99\": 1 } }"
+    },
+    {
       "method": "PUT",
       "path": "/v1/cart/{productId}",
-      "description": "Add or update a cart line; HSET on the user's cart hash.",
+      "description": "Add or update a cart line; HSET on the user's cart hash. qty:0 removes the line (equivalent to DELETE). Validated against the live catalog and capped at a max line count.",
       "request": "{ \"qty\": 2 }",
       "response": "{ \"cart\": { \"p42\": 2, \"p99\": 1 } }"
     },
     {
+      "method": "DELETE",
+      "path": "/v1/cart/{productId}",
+      "description": "Remove a cart line; HDEL on the user's cart hash.",
+      "request": "(sid cookie)",
+      "response": "{ \"cart\": { \"p99\": 1 } }"
+    },
+    {
       "method": "POST",
       "path": "/v1/checkout",
-      "description": "Take a distributed lock on the cart, mint a global order ID, persist the order, enqueue confirmation, and clear the cart.",
-      "request": "(sid cookie)",
-      "response": "{ \"orderId\": 100453221 }",
+      "description": "Idempotent checkout. Requires an Idempotency-Key header. Takes a cart lock (latency guard, not the correctness boundary), then in one DB transaction inserts the idempotency row (unique constraint), the order + order_items with snapshotted prices, and an outbox job; a dispatcher enqueues to Redis after commit. A retry with the same key returns the existing order.",
+      "request": "Idempotency-Key: <uuid> (sid cookie)",
+      "response": "{ \"orderId\": 100453221, \"status\": \"created\" }  // same body on retry",
       "sequence": {
         "participants": [
           {
@@ -370,11 +399,11 @@
           },
           {
             "id": "DB",
-            "label": "Record"
+            "label": "Record + outbox"
           },
           {
             "id": "Queue",
-            "label": "Lists (queue)"
+            "label": "Streams/List (queue)"
           }
         ],
         "messages": [
@@ -382,17 +411,17 @@
             "from": "App",
             "to": "Session",
             "arrow": "->>",
-            "label": "SET lock:cart:{uid} NX EX 10"
+            "label": "SET lock:cart:{uid} NX EX 10 (dup-work guard)"
           },
           {
             "type": "alt",
-            "label": "lock acquired",
+            "label": "new Idempotency-Key",
             "messages": [
               {
                 "from": "App",
                 "to": "Counters",
                 "arrow": "->>",
-                "label": "INCR order:id"
+                "label": "INCR order:id (order-request id)"
               },
               {
                 "from": "App",
@@ -404,13 +433,7 @@
                 "from": "App",
                 "to": "DB",
                 "arrow": "->>",
-                "label": "persist order (durable)"
-              },
-              {
-                "from": "App",
-                "to": "Queue",
-                "arrow": "->>",
-                "label": "LPUSH email+fulfill job"
+                "label": "TX: idempotency(uniq) + order + order_items + outbox_job"
               },
               {
                 "from": "App",
@@ -423,16 +446,22 @@
                 "to": "Session",
                 "arrow": "->>",
                 "label": "DEL lock (release)"
+              },
+              {
+                "from": "DB",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "dispatcher enqueues outbox job (post-commit)"
               }
             ],
             "else": {
-              "label": "lock held (double-submit)",
+              "label": "key seen before (retry)",
               "messages": [
                 {
-                  "from": "Session",
+                  "from": "DB",
                   "to": "App",
                   "arrow": "-->>",
-                  "label": "reject / retry"
+                  "label": "return existing order (no duplicate)"
                 }
               ]
             }
@@ -443,9 +472,16 @@
     {
       "method": "GET",
       "path": "/v1/trending",
-      "description": "Top-N trending products.",
-      "request": "(none)",
-      "response": "ZREVRANGE trending 0 9 WITHSCORES"
+      "description": "Top-N trending products for a window/category/seller dimension; reads the matching ZSET key (e.g. trending:day:{category}).",
+      "request": "?window=day&category=shoes&limit=10",
+      "response": "ZREVRANGE trending:day:shoes 0 9 WITHSCORES"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/metrics/retention",
+      "description": "Admin/reporting endpoint for DAU and N-day retention over the daily bitmaps; BITCOUNT for DAU, BITOP AND + BITCOUNT for N-day retention. Auth-gated; honors the data-retention window on old daily keys.",
+      "request": "?date=2026-07-04&window=7 (admin token)",
+      "response": "{ \"dau\": 812344, \"retention7d\": 0.41 }"
     }
   ],
   "dataModel": [
@@ -545,11 +581,95 @@
         },
         {
           "name": "offset",
-          "type": "user_id (int)"
+          "type": "user_id (int, dense-mapped)"
         },
         {
           "name": "bit",
           "type": "1 = active that day"
+        }
+      ]
+    },
+    {
+      "name": "orders (RDBMS)",
+      "note": "Durable order record and its state machine. States: created -> paid -> queued -> fulfilled, or failed. Redis never owns this.",
+      "fields": [
+        {
+          "name": "order_id",
+          "type": "bigint PK (from INCR)"
+        },
+        {
+          "name": "user_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "status",
+          "type": "enum(created,paid,queued,fulfilled,failed)"
+        },
+        {
+          "name": "total_cents",
+          "type": "int (snapshotted)"
+        }
+      ]
+    },
+    {
+      "name": "order_items (RDBMS)",
+      "note": "One row per line, with the price snapshotted at checkout — the durable counterpart of the ephemeral Redis cart hash.",
+      "fields": [
+        {
+          "name": "order_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "product_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "qty",
+          "type": "int"
+        },
+        {
+          "name": "unit_price_cents",
+          "type": "int (snapshot)"
+        }
+      ]
+    },
+    {
+      "name": "checkout_idempotency (RDBMS)",
+      "note": "Makes checkout exactly-once. Unique constraint on idempotency_key; a retry finds the row and returns the same order.",
+      "fields": [
+        {
+          "name": "idempotency_key",
+          "type": "uuid UNIQUE"
+        },
+        {
+          "name": "user_id",
+          "type": "bigint"
+        },
+        {
+          "name": "order_id",
+          "type": "bigint FK"
+        }
+      ]
+    },
+    {
+      "name": "outbox_jobs (RDBMS)",
+      "note": "Transactional outbox written in the same TX as the order; a dispatcher LPUSHes/XADDs to Redis after commit and marks dispatched. Source of truth for pending async work.",
+      "fields": [
+        {
+          "name": "job_id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "order_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "type",
+          "type": "enum(confirm_email,fulfill)"
+        },
+        {
+          "name": "state",
+          "type": "enum(pending,dispatched,done,dead)"
         }
       ]
     }
@@ -653,9 +773,9 @@
       "title": "2. Strings \u2014 Sessions, Cache, and a Distributed Lock",
       "description": [
         "The Redis String is the workhorse: an opaque value under a key, with an optional TTL. Three idiomatic uses cover most of the read path.",
-        "Sessions: on login, SET sid:{token} to the user JSON with EXPIRE (a sliding TTL). The gateway validates the cookie with one GET instead of a DB query per request.",
+        "Sessions: on login, SET sid:{token} to the user JSON with EXPIRE (a sliding TTL). The token must be a long random value, delivered in a Secure, HttpOnly, SameSite cookie, rotated on privilege change, and revocable by DEL; never derive it from user data. The gateway validates the cookie with one GET instead of a DB query per request.",
         "Cache-aside: product reads GET prod:{id}; on a miss, load from the DB and SET with a short TTL plus jitter (so keys don't all expire together). Hot products now serve from memory.",
-        "Distributed lock: SET lock:{resource} {token} NX EX 10 acquires a lock only if absent, auto-expiring so a crashed holder can't deadlock. Release by deleting only if the token matches (a small Lua script) so you never delete someone else's lock. This guards checkout against a double-submit."
+        "Distributed lock: SET lock:{resource} {token} NX EX 10 acquires a lock only if absent, auto-expiring so a crashed holder can't deadlock. Release by deleting only if the token matches (a small Lua script) so you never delete someone else's lock. This reduces duplicate concurrent work on checkout — a fast double-submit hits a held lock. But it is not the correctness boundary: if the holder pauses (GC, slow disk) past the 10s expiry, a second request can acquire the same lock and both proceed. Exactly-once checkout comes from a durable idempotency key in the DB with a unique constraint (Step 4 / final design), not the lock. Redis coordinates and accelerates; the DB owns correctness for money."
       ],
       "view": {
         "nodes": [
@@ -790,8 +910,8 @@
       "description": [
         "A String that holds a number is a Redis integer, and INCR/INCRBY are atomic \u2014 no read-modify-write race, no hot-row lock in the DB.",
         "View counters: INCR views:{productId} on every view. It's a single in-memory op; a background job periodically flushes the totals to the DB so the durable record stays roughly current without paying per-view write cost.",
-        "Rate limiting: a fixed-window limiter is INCR rl:{userId}:{minute} with EXPIRE 60 on first hit; if the value exceeds the limit, reject. A sliding-window or token-bucket variant uses a short Lua script for exactness. This throttles abusive clients before they reach the DB.",
-        "Global unique IDs: INCR order:id returns a monotic counter shared across all app instances \u2014 a DB-free ID generator. Hand out ranges (INCRBY 1000) per instance to cut round trips, or seed the counter high to reserve a namespace."
+        "Rate limiting: a fixed-window limiter is INCR rl:{userId}:{minute} with EXPIRE 60 on first hit; if the value exceeds the limit, reject. Make the INCR-then-EXPIRE atomic on the first hit (a two-line Lua script, or SET NX EX to seed the window) so a crash between the two commands can't leave a window with no TTL that blocks the user forever. Note fixed windows are bursty at the boundary — a client can spend a full quota at :59 and another at :00; a sliding-window or token-bucket variant (also a short Lua script) smooths that. This throttles abusive clients before they reach the DB.",
+        "Global unique IDs: INCR order:id returns a monotonic counter shared across all app instances \u2014 a DB-free ID generator. Hand out ranges (INCRBY 1000) per instance to cut round trips, or seed the counter high to reserve a namespace. Treat this as an order-request id, not proof of a committed order: the durable DB row (with a unique idempotency key) is what makes checkout exactly-once."
       ],
       "view": {
         "nodes": [
@@ -923,7 +1043,8 @@
         "A cart is a small map of product_id -> quantity owned by one user \u2014 exactly a Redis Hash. Store it as cart:{uid} with HSET product_id qty.",
         "Field-level operations are the win: HSET to add/update one line, HINCRBY to bump a quantity, HDEL to remove a line, HGETALL to render the cart, HLEN for a badge count \u2014 all without serializing and rewriting the whole object as you would with a single JSON string.",
         "Set a TTL on the cart key so abandoned carts expire automatically (abandonment analytics can snapshot them first). At checkout, HGETALL reads the cart, the order is committed to the DB, and DEL clears it.",
-        "Hashes are also memory-efficient: small hashes use a compact encoding, so millions of little carts stay cheap."
+        "Cap the cart (HLEN limit) and validate each product_id against the live catalog before adding, so the Redis cart can't drift from real products. The cart holds only product_id -> qty; do NOT trust a client-supplied price. At checkout, HGETALL reads the cart, the app snapshots the current price per line from the catalog, and writes durable order_items rows to the DB inside the order transaction — the Redis cart is ephemeral input, the DB order_items are the record. Idempotency lives here too: that same transaction inserts a checkout_idempotency row keyed by the client's Idempotency-Key with a unique constraint, so a retried checkout returns the existing order instead of creating a second one.",
+      "Hashes are also memory-efficient: small hashes use a compact encoding, so millions of little carts stay cheap."
       ],
       "view": {
         "nodes": [
@@ -972,7 +1093,7 @@
       "id": "sorted-sets",
       "title": "5. Sorted Sets \u2014 Trending & Leaderboards",
       "description": [
-        "Ranking wants the top-N by score, updated continuously. A Redis Sorted Set (ZSET) keeps members ordered by a float score, so 'top 10 trending products' or 'top sellers this week' is a single O(log n) range read.",
+        "Ranking wants the top-N by score, updated continuously. A Redis Sorted Set (ZSET) keeps members ordered by a float score, so 'top 10 trending products' or 'top sellers this week' is a ZREVRANGE that costs O(log n + m) — the log to find the start plus m for the m items returned. Keep m small (top-10, not top-10k) and this stays cheap; a full ZRANGE 0 -1 is O(n) and defeats the point.",
         "Update on the fly: ZINCRBY trending {weight} {productId} on a view or sale nudges a product's score; ZREVRANGE trending 0 9 WITHSCORES reads the leaderboard instantly \u2014 no sort over a growing table.",
         "Time-decay keeps 'trending' fresh: either periodically multiply scores down, or bucket by window (trending:{hour}) and ZUNIONSTORE recent buckets with decaying weights. ZREMRANGEBYRANK trims the set so it can't grow unbounded.",
         "The same structure powers any leaderboard: sellers by revenue, products by rating, users by points \u2014 all ZADD/ZINCRBY writes and ZRANGE/ZRANK reads."
@@ -1086,8 +1207,10 @@
       "title": "6. Lists & Bitmaps \u2014 Work Queue and Retention",
       "description": [
         "Two more structures close out the tour: Lists for async work and Bitmaps for cheap analytics.",
-        "List as a queue: instead of sending order email inline, the app LPUSHes a job onto queue:orders and returns immediately; a pool of workers BRPOPs (blocking pop) and processes jobs \u2014 emails, fulfillment, inventory updates. This decouples checkout latency from slow side effects. For at-least-once safety, use BRPOPLPUSH into a per-worker processing list and remove the job only after success, so a crashed worker's job is recoverable.",
-        "Bitmap for retention: a bitmap is a string addressed at the bit level. Keep one key per day, dau:{date}, and SETBIT dau:{date} {userId} 1 when a user is active. BITCOUNT dau:{date} gives that day's active users; BITOP AND over consecutive days (then BITCOUNT) gives N-day retention \u2014 all in a couple of kilobytes per day for millions of users.",
+        "List as a queue: instead of sending order email inline, the app LPUSHes a job onto queue:orders and returns immediately; a pool of workers BRPOPs (blocking pop) and processes jobs \u2014 emails, fulfillment, inventory updates. This decouples checkout latency from slow side effects.",
+      "The enqueue itself is the sharp edge. A bare LPUSH after the DB commit can be lost if the app crashes between commit and push, or duplicated if the push succeeds but the response is lost and the client retries. Make it a transactional outbox: the checkout DB transaction writes the order AND an outbox_jobs row atomically, and a dispatcher (polling the outbox or a CDC stream) LPUSHes to Redis after commit and marks the row dispatched. Now the DB is the source of truth for pending work; Redis is a fast delivery buffer that can be rebuilt from the outbox.",
+      "Hardening the List into a real queue takes machinery Redis doesn't give for free: BRPOPLPUSH (or BLMOVE) into a per-worker processing list so an in-flight job survives a worker crash; a reaper that scans processing lists and re-queues jobs older than a visibility timeout; a retry count with exponential backoff; a dead-letter list for poison messages that exceed max retries; a bounded backlog with an alert (and admission control / shedding low-priority jobs) when workers fall behind; and worker idempotency keyed on jobId/orderId so a redelivered job is a no-op. At ~10k jobs/s with a no-drop requirement, this is the minimum \u2014 which is exactly why the option comparison below leans toward Streams/a broker when you want these guarantees built in.",
+        "Bitmap for retention: a bitmap is a string addressed at the bit level. Keep one key per day, dau:{date}, and SETBIT dau:{date} {userId} 1 when a user is active. BITCOUNT dau:{date} gives that day's active users; BITOP AND over consecutive days (then BITCOUNT) gives N-day retention \u2014 a bit over a megabyte per day for 10M users. This assumes dense, small integer user IDs: SETBIT at offset 5,000,000,000 allocates a 625 MB string, so a bitmap needs a compact user_id -> offset mapping, not a raw UUID. If you only need approximate distinct counts (DAU without per-user retention math), a HyperLogLog (PFADD/PFCOUNT) is ~12 KB regardless of user count and sidesteps the offset problem \u2014 trade exactness for size. Retention data is user-level activity; apply your retention/privacy policy (expire old daily keys, honor deletion requests) rather than keeping bitmaps forever.",
         "Between them, Lists give ordered producer/consumer work and Bitmaps give set-membership analytics at one bit per user."
       ],
       "view": {
@@ -1118,51 +1241,17 @@
       },
       "options": [
         {
-          "name": "List queue (LPUSH/BRPOP)",
-          "description": "A plain Redis list as a producer/consumer queue with blocking pop.",
+          "name": "Redis Streams / dedicated broker (recommended)",
+          "description": "Use Redis Streams (consumer groups, acks, PEL) or an external broker like Kafka/SQS for the order path, fed by the DB outbox. This is the recommended default at ~10k jobs/s with a no-drop requirement.",
           "pros": [
-            "Dead simple: LPUSH to enqueue, BRPOP to block-and-consume \u2014 no extra infrastructure.",
-            "Very low latency and high throughput for fire-and-forget jobs.",
-            "BRPOPLPUSH gives an at-least-once processing list for crash recovery."
-          ],
-          "cons": [
-            "No built-in consumer groups, acks, or replay \u2014 you build delivery guarantees yourself.",
-            "A slow consumer lets the list grow unbounded and eat memory.",
-            "No native retry/dead-letter; you add those by hand."
-          ],
-          "view": {
-            "nodes": [
-              "App",
-              "Queue",
-              "Worker",
-              "DB"
-            ],
-            "links": [
-              "app-queue",
-              "worker-queue",
-              "worker-db"
-            ],
-            "caption": "A list is the queue: App LPUSHes, Worker BRPOPs and persists the result.",
-            "highlight": [
-              "Queue"
-            ],
-            "groups": [
-              "async"
-            ]
-          }
-        },
-        {
-          "name": "Redis Streams / dedicated broker",
-          "description": "Use Redis Streams (consumer groups, acks) or an external broker like Kafka/SQS when you need stronger delivery semantics.",
-          "pros": [
-            "Consumer groups, acknowledgements, and replay are built in.",
-            "Better backpressure and observability for high-volume pipelines.",
-            "Scales to many partitions/consumers without hand-rolled coordination."
+            "Consumer groups, acknowledgements (XACK), and replay are built in \u2014 the delivery guarantees the order path needs.",
+            "XAUTOCLAIM/PEL give native visibility-timeout reclaim and a dead-letter path instead of hand-rolled reapers.",
+            "Better backpressure and observability, and scales to many partitions/consumers without hand-rolled coordination."
           ],
           "cons": [
             "More moving parts and operational surface than a plain list.",
-            "Overkill for simple fire-and-forget side effects.",
-            "An external broker adds another system to run and secure."
+            "An external broker adds another system to run and secure.",
+            "Still needs worker idempotency \u2014 delivery is at-least-once, not exactly-once."
           ],
           "view": {
             "nodes": [
@@ -1176,7 +1265,7 @@
               "worker-queue",
               "worker-db"
             ],
-            "caption": "The same queue role, upgraded to Streams/consumer-groups or an external broker when guarantees matter.",
+            "caption": "The order path as Streams/consumer-groups (or an external broker), fed by the DB outbox; XACK/PEL give reclaim and dead-lettering.",
             "highlight": [
               "Queue",
               "Worker"
@@ -1185,9 +1274,43 @@
               "async"
             ]
           }
+        },
+        {
+          "name": "Hardened List queue (LPUSH/BRPOPLPUSH)",
+          "description": "A Redis list as a producer/consumer queue with blocking pop \u2014 fine for low-stakes fire-and-forget work, but for the order path it needs processing lists, a reaper, retries, and a dead-letter list bolted on by hand.",
+          "pros": [
+            "Dead simple to start: LPUSH to enqueue, BRPOP to block-and-consume \u2014 no extra infrastructure.",
+            "Very low latency and high throughput for fire-and-forget jobs.",
+            "BRPOPLPUSH gives an at-least-once processing list for crash recovery."
+          ],
+          "cons": [
+            "No built-in consumer groups, acks, or replay \u2014 you build every delivery guarantee yourself.",
+            "A slow consumer lets the list grow unbounded and eat memory; needs a bounded backlog + admission control.",
+            "No native retry/dead-letter/visibility-timeout; a reaper, retry counters, and a DLQ list are all hand-rolled."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Queue",
+              "Worker",
+              "DB"
+            ],
+            "links": [
+              "app-queue",
+              "worker-queue",
+              "worker-db"
+            ],
+            "caption": "A list is the queue: App LPUSHes, Worker BRPOPLPUSHes into a processing list and persists, then LREMs on success.",
+            "highlight": [
+              "Queue"
+            ],
+            "groups": [
+              "async"
+            ]
+          }
         }
       ],
-      "decisionPrompt": "When do you outgrow a plain list queue and reach for Redis Streams or a real broker?",
+      "decisionPrompt": "At ~10k jobs/s with a no-drop requirement, do you harden a Redis List (processing list, reaper, retries, DLQ) or reach for Streams / a broker that gives those for free?",
       "concepts": [
         {
           "term": "List as queue",
@@ -1211,14 +1334,19 @@
       ],
       "recap": {
         "before": "Email was inline and DAU/retention had no cheap representation.",
-        "after": "A list queue offloads side effects; daily bitmaps make DAU/retention trivial.",
+        "after": "An outbox-fed queue (Streams recommended, or a hardened List) offloads side effects with retry/DLQ semantics; daily bitmaps make DAU/retention trivial.",
         "newRisk": "Now that orders, sessions, and the queue all live in Redis, a node loss or full disk is a data-loss and availability problem \u2014 persistence and HA come next."
       },
       "traps": [
         {
+          "trap": "Enqueuing order work with a bare LPUSH right after the DB commit.",
+          "why": "A crash between commit and LPUSH loses the job; a lost response makes the client retry and duplicate it \u2014 the queue and the order state drift.",
+          "instead": "Write the job to a DB outbox in the same transaction as the order, dispatch to Redis after commit, and make workers idempotent on jobId/orderId."
+        },
+        {
           "trap": "Treating a plain list queue as exactly-once.",
-          "why": "A worker that crashes mid-job loses it unless the job is held in a processing list until acked.",
-          "instead": "Use BRPOPLPUSH into a per-worker list and remove only on success, or move to Streams for real acks."
+          "why": "A worker that crashes mid-job loses it unless the job is held in a processing list until acked, and redelivery duplicates side effects.",
+          "instead": "BRPOPLPUSH into a per-worker list with a reaper + DLQ (or move to Streams for real acks), and dedupe side effects on jobId."
         }
       ],
       "flows": [
@@ -1280,8 +1408,8 @@
       "title": "7. Scale & Survive \u2014 Persistence, HA, and Cluster",
       "description": [
         "Once Redis holds sessions, carts, counters, the queue, and analytics, it's no longer a disposable cache \u2014 losing it is an outage and, for orders in flight, potential data loss. Three concerns make it production-grade.",
-        "Durability: enable AOF (append-only file, fsync everysecond) and/or RDB snapshots so a restart reloads recent state. Money-critical facts (committed orders) are still written to the durable RDBMS as the true source of record; Redis durability is about not cold-starting sessions/queue on restart.",
-        "High availability: run primary + replicas with automatic failover (Sentinel, or Cluster's built-in failover / a managed service). Clients reconnect and reads can fan out to replicas. Because replication is asynchronous, a failover can lose the last few writes \u2014 acceptable for a view counter, not for an order, which is why the DB stays authoritative for money.",
+        "Durability: enable AOF (append-only file, fsync every second) and/or RDB snapshots so a restart reloads recent state. Money-critical facts (committed orders) are still written to the durable RDBMS as the true source of record; Redis durability is about not cold-starting sessions/queue on restart.",
+        "High availability: run primary + replicas with automatic failover (Sentinel, or Cluster's built-in failover / a managed service). Clients reconnect and reads can fan out to replicas. Because replication is asynchronous, a failover can lose the last few writes, so define RPO per key family: a view counter tolerates seconds of loss (RPO ~seconds), a session or a queued job tolerates a little, but a committed order tolerates none (RPO 0) \u2014 which is exactly why that fact lives in the durable RDBMS and the outbox, not in Redis alone.",
         "Sharding for memory + throughput: Redis Cluster hash-slots the keyspace across nodes so total RAM and ops/sec scale horizontally. Keep keys that must be operated on together (a Lua lock + counter, MULTI over one cart) in the same slot using hash tags like cart:{uid}. Watch memory: set maxmemory + an eviction policy for the pure-cache keys (product cache) while protecting non-evictable keys (sessions, queue) \u2014 often by separating them into different logical instances."
       ],
       "view": {
@@ -1370,7 +1498,7 @@
   ],
   "finalDesign": {
     "title": "Final Design \u2014 Redis as the Primary Data Platform",
-    "description": "Stateless app instances front a Redis data platform where each feature uses the fitting structure \u2014 Strings (sessions, cache, locks), Integers (counters, rate limits, IDs), Hashes (cart), Sorted Sets (trending/leaderboards), Lists (async queue), Bitmaps (DAU/retention) \u2014 with an async worker pool draining the queue and a durable RDBMS as the authoritative record. Persistence, replication/failover, and cluster sharding make the Redis tier production-grade.",
+    "description": "Stateless app instances front a Redis data platform where each feature uses the fitting structure \u2014 Strings (sessions, cache, locks), Integers (counters, rate limits, IDs), Hashes (cart), Sorted Sets (trending/leaderboards), a queue (async work), Bitmaps (DAU/retention) \u2014 with an async worker pool draining the queue and a durable RDBMS as the authoritative record. Redis accelerates and coordinates; the DB owns correctness for money. Checkout is exactly-once via a durable idempotency key and writes order + order_items + an outbox job in one transaction; a dispatcher feeds the queue after commit. For the order path we default to Redis Streams (or a broker) \u2014 consumer groups, XACK, and PEL reclaim give the retry/visibility-timeout/dead-letter semantics a 10k-jobs/s no-drop queue needs, which a plain List only gets with hand-rolled machinery; a hardened List is acceptable for low-stakes fire-and-forget work. Workers are idempotent on jobId/orderId and reconcile against the DB. Persistence (AOF everysec + RDB), replication/failover, and cluster sharding make the Redis tier production-grade, with cache-like keys split from non-evictable sessions/queue/carts by durability class. Async replication means a failover can lose the last few writes \u2014 fine for a view counter (RPO ~seconds), never for a committed order (RPO 0, which is why the DB is authoritative). Monitor memory, evictions, queue age, retry rate, AOF fsync latency, replica lag, and failover events.",
     "view": {
       "nodes": [
         "Client",
@@ -1445,13 +1573,13 @@
               "from": "Client",
               "to": "App",
               "arrow": "->>",
-              "label": "POST /checkout"
+              "label": "POST /checkout (Idempotency-Key)"
             },
             {
               "from": "App",
               "to": "Session",
               "arrow": "->>",
-              "label": "SET lock NX EX"
+              "label": "SET lock NX EX (dup-work guard)"
             },
             {
               "from": "App",
@@ -1469,13 +1597,7 @@
               "from": "App",
               "to": "DB",
               "arrow": "->>",
-              "label": "persist order (durable)"
-            },
-            {
-              "from": "App",
-              "to": "Queue",
-              "arrow": "->>",
-              "label": "LPUSH confirmation job"
+              "label": "TX: idempotency(uniq)+order+items+outbox"
             },
             {
               "from": "App",
@@ -1484,15 +1606,21 @@
               "label": "DEL cart:{uid}"
             },
             {
+              "from": "DB",
+              "to": "Queue",
+              "arrow": "->>",
+              "label": "dispatcher enqueues outbox job (post-commit)"
+            },
+            {
               "from": "App",
               "to": "Client",
               "arrow": "-->>",
-              "label": "orderId"
+              "label": "orderId (same on retry)"
             }
           ]
         },
-        "name": "Checkout \u2014 five structures in one path",
-        "note": "A single checkout touches a string lock, an integer ID, a hash cart, the durable DB, and a list queue.",
+        "name": "Checkout \u2014 idempotent, outbox-dispatched",
+        "note": "The lock only guards duplicate concurrent work; correctness comes from the durable idempotency key. The DB transaction writes order + order_items + an outbox job atomically, and a dispatcher feeds the queue after commit \u2014 so no job is lost or duplicated.",
         "highlight": [
           "Session",
           "Counters",
@@ -1548,7 +1676,7 @@
       },
       {
         "requirement": "Process orders asynchronously",
-        "how": "List queue: LPUSH jobs, workers BRPOP and complete.",
+        "how": "Transactional outbox feeds a queue (Streams recommended, or a hardened List); idempotent workers consume, retry, and dead-letter.",
         "steps": [
           "lists-bitmaps"
         ]
@@ -1623,8 +1751,9 @@
       "phase": "Make it real",
       "time": "final 5 min",
       "say": [
-        "Close on persistence (AOF/RDB), HA (replica + failover), and cluster sharding.",
-        "Emphasize what Redis is NOT authoritative for (committed orders) and why."
+        "Close on persistence (AOF/RDB), HA (replica + failover), and cluster sharding, with per-key-family RPO.",
+        "Make checkout exactly-once: Idempotency-Key + a durable idempotency row + a transactional outbox feeding the queue + idempotent workers — the Redis lock only cuts duplicate concurrent work.",
+        "Emphasize what Redis is NOT authoritative for (committed orders) and why: async replication can lose the last writes on failover."
       ]
     }
   ],
@@ -1646,8 +1775,8 @@
     {
       "level": "Senior",
       "expectations": [
-        "Draws the line between Redis and the durable RDBMS for money-critical data.",
-        "Addresses persistence, failover semantics (async replication can lose writes), cluster slots/hash-tags, and eviction policy per keyspace."
+        "Draws the line between Redis and the durable RDBMS for money-critical data, and makes checkout exactly-once (idempotency key + transactional outbox + idempotent workers) rather than trusting the lock.",
+        "Addresses persistence, per-key-family RPO/failover semantics (async replication can lose writes), cluster slots/hash-tags, capacity/shard sizing, and eviction policy split by durability class."
       ]
     }
   ],
@@ -1655,8 +1784,10 @@
     "How do you make the distributed lock correct under clock skew and long GC pauses (fencing tokens, Redlock caveats)?",
     "Fixed-window vs sliding-window vs token-bucket rate limiting \u2014 which and why, and how do you make it exact with Lua?",
     "How do you keep the trending sorted set fresh without unbounded growth (time decay, windowed keys, ZREMRANGEBYRANK)?",
-    "How do you get at-least-once (or exactly-once) semantics from a Redis list queue, and when do you switch to Streams or Kafka?",
-    "How do you size and shard the Redis cluster, and how do you keep co-accessed keys in the same slot?",
-    "What exactly is lost on a failover, and how do you keep committed orders correct despite async replication?"
+    "How do you get at-least-once (or exactly-once) semantics from a Redis list queue, and when do you switch to Streams (consumer groups, XACK, PEL) or Kafka?",
+    "How do you make checkout exactly-once end to end — Idempotency-Key, durable idempotency row, transactional outbox, and idempotent workers — when the Redis lock alone can't prove it?",
+    "How do you size and shard the Redis cluster, and how do you keep co-accessed keys in the same slot (hash tags)?",
+    "What exactly is lost on a failover, and how do you set per-key-family RPO so committed orders stay correct despite async replication?",
+    "How do you keep DAU/retention bitmaps correct with sparse or UUID user IDs (offset mapping), and when is a HyperLogLog the better tool?"
   ]
 }
