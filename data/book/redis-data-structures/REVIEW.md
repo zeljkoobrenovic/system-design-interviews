@@ -4,179 +4,179 @@ Reviewed file: `data/book/redis-data-structures/interview.json`
 Review date: 2026-07-04
 
 ## Executive Summary
-This is a strong teaching walkthrough for Redis data structures. The sequence is easy to follow, the architecture grows one primitive at a time, and most Redis concepts are introduced exactly when the use case needs them.
+The recent hardening pass materially improved this interview. The biggest old gaps - checkout idempotency, transactional enqueue, queue recovery semantics, durable order records, RPO by key family, API coverage, and capacity math - are now represented directly in the dataset.
 
-The main gap is production realism around the money path. The dataset correctly says the RDBMS remains authoritative for orders, but checkout still depends on a Redis lock, a Redis counter, and a Redis list queue without fully modeling idempotency, transactional coupling, retries, dead letters, or the order state machine. That makes the case excellent as a data-structure tour, but not yet fully credible as a production e-commerce design.
+This is now a strong Redis data-structures chapter and a credible system-design walkthrough. The remaining issues are mostly consistency and precision: the capacity section still undercounts Redis write pressure, the selected queue path mixes List and Streams/broker language, and a few Redis complexity and "exactly-once" phrases should be tightened so candidates do not overstate guarantees.
 
 | Axis | Rating | Notes |
 | --- | --- | --- |
-| System design soundness | 4/5 | Good Redis mapping and HA caveats; checkout and queue guarantees need sharper treatment. |
-| Production realism | 3/5 | Needs idempotency, outbox/transactional enqueue, backpressure, DLQ, inventory/payment failure paths. |
-| Pedagogical flow | 4.5/5 | Clear baseline-to-primitive progression; Step 6 carries two unrelated concepts at once. |
-| Step-to-final coherence | 4/5 | Final design uses every introduced component, but elides operational topology and order workflow details. |
-| Dataset/rendering fit | 4.5/5 | JSON parses, node/link references resolve, and schema usage is mostly clean. |
+| System design soundness | 4.5/5 | Good Redis primitive mapping, durable DB boundary, idempotent checkout, outbox, and RPO language; write-load math needs one correction. |
+| Production realism | 4/5 | Queue hardening and outbox are now realistic; payment/inventory are still implicit or scoped out only by omission. |
+| Pedagogical flow | 4.5/5 | Clear one-primitive-at-a-time progression with useful traps and recaps; Step 6 remains dense because it teaches queues and bitmaps together. |
+| Step-to-final coherence | 4.5/5 | Final design incorporates all steps and the new hardening, but queue labels should match the recommended option. |
+| Dataset/rendering fit | 4.5/5 | JSON parses, references resolve, and schema usage is clean; minor text/model inconsistencies remain. |
 
 ## What Works Well
-- The framing is strong: each bottleneck in the naive RDBMS design maps to a specific Redis structure instead of "add cache because fast."
-- The step order is teachable: Strings, INCR, Hashes, ZSETs, Lists, Bitmaps, then HA/sharding.
-- The dataset repeatedly preserves the durable RDBMS as the source of record for money-critical data, which prevents the "Redis as magic database" misconception.
-- Concepts, traps, decision prompts, and recaps are concise and useful for interview coaching.
-- The final design diagram includes all components introduced in the steps and uses clean node/link references.
+- The dataset keeps its strongest teaching frame: each bottleneck in the naive RDBMS design maps to a specific Redis structure, rather than a vague "add cache" answer.
+- Checkout is now framed correctly: the Redis lock is a duplicate-work guard, while correctness comes from an idempotency key, durable DB uniqueness, order rows, order_items, and a transactional outbox.
+- The queue discussion is much stronger. Step 6 explains why a bare `LPUSH` is unsafe, what machinery a hardened List needs, and why Streams or a dedicated broker are the recommended path at `~10k jobs/s`.
+- The capacity section now includes Redis ops per product read, memory by key family, queue backlog math, replica/AOF overhead, and shard/replica sizing.
+- The data model now includes the durable RDBMS entities the architecture relies on: `orders`, `order_items`, `checkout_idempotency`, and `outbox_jobs`.
+- The scale/HA step now makes the key production point explicit: async Redis replication can lose recent writes, so per-key-family RPO matters and committed orders must remain in the DB.
 
 ## Highest-Impact Issues
-### 1. Checkout needs idempotency and transactional coupling
-The checkout API sequence takes a Redis lock, mints an order ID with `INCR`, writes the order to the DB, pushes a job to the Redis list, clears the cart, and releases the lock. That explains the Redis structures, but it misses the failure cases that dominate a real checkout:
+### 1. Peak write capacity conflicts with per-product view counting
+The capacity table says peak writes are `~20,000/sec`, including "view counters." But `GET /v1/products/{id}` also says every product read `INCR`s the view counter, and the read peak is `~200,000/sec`. That implies at least `~200k/sec` Redis counter writes from browsing alone, before cart edits, rate-limit increments, ZSET updates, session refreshes, or checkout work.
 
-- client retries after timeout
-- app crash after DB commit but before `LPUSH`
-- queue push succeeds but the response is lost
-- lock expires while the first request is still working
-- duplicated jobs reaching fulfillment/email
+Concrete fix: split the capacity section into external business writes and Redis command writes. For example:
 
-Concrete fix: add an `Idempotency-Key` to `POST /v1/checkout`, persist an idempotency/order request row with a unique constraint, and make the durable DB transaction create both the order and an outbox/job record. A dispatcher can enqueue to Redis/Streams/broker after commit, and workers should be idempotent on `orderId`/`jobId`. The Redis lock can remain a latency optimization, but not the correctness boundary.
+- browser reads: `200k/sec`
+- counter increments caused by reads: up to `200k/sec`, or lower if sampled/batched
+- total Redis ops for browse: already stated as `400-600k/sec`
+- cart/order/user writes: separate from derived counter writes
 
-### 2. Redis Lists are presented as the final queue for order work
-Step 6 honestly compares Lists with Streams/dedicated brokers, but the final design still describes a List queue as the order confirmation and fulfillment path. At the stated `~10k jobs/s`, with a requirement to survive node failure without dropping the queue, a plain List needs much more machinery than the current final design shows.
+If the intended design batches view counts, say so in Step 3: local aggregation, periodic `INCRBY`, sampling, or stream-based aggregation. Otherwise the shard sizing should be based on the higher write rate.
 
-Concrete fix: either make Redis Streams or a dedicated broker the recommended final option, or explicitly harden the List design: `BRPOPLPUSH`/`BLMOVE`, processing lists, retry scanner, visibility timeout, poison-message handling, dead-letter list, bounded backlog alerts, worker idempotency, and a DB-backed source of truth for pending jobs.
+### 2. The final queue recommendation and rendered model still disagree
+The prose now recommends "Redis Streams / dedicated broker" for the order path, which is the right production conclusion. But several dataset fields still present the order queue as a Redis List:
 
-### 3. Capacity is useful but too coarse for cluster sizing
-The capacity section gives good headline values, but it does not translate traffic into Redis operations, memory, replication/AOF write load, or shard count. "100s of GB" is plausible but not defensible enough for an interview answer.
+- high-level node label: `Redis - Lists (Work Queue)`
+- high-level links: `LPUSH job`, `BRPOP job`
+- data model entity: `order queue (List)`
+- final checkout flow participant label: `List`
+- Step 6 default view caption: `Checkout LPUSHes jobs that workers BRPOP`
 
-Concrete fix: add a short sizing breakdown:
+This is understandable for a Redis data-structures lesson, but it weakens the final design because the selected production option is no longer the diagrammed/default model.
 
-- per-endpoint Redis ops, e.g. product read = session GET + product GET + possible DB read/backfill + counter INCR
-- memory by key family: sessions, product cache, carts, ZSETs, queues, bitmaps
-- queue backlog math, e.g. 10k jobs/s * average job size * tolerated drain delay
-- replica/AOF overhead and write amplification
-- number of shards/replicas needed for RAM headroom and failover
+Concrete fix: either make the final selected path visibly Streams/broker (`XADD`, `XREADGROUP`, `XACK`, PEL/reclaim, DLQ) or rename the generic node to `Async Queue (Streams/List/Broker)` and reserve the List-specific labels for the hardened-List option. The chapter can still teach Lists, but the final design should render the recommended option.
 
-### 4. The durable data model is underspecified
-The `dataModel` section only lists Redis keys. That fits the chapter's theme, but the design repeatedly relies on the RDBMS for users, products, committed orders, and recovery. Without durable tables and states, the candidate cannot explain what survives Redis failover or how workers reconcile failures.
+### 3. "Exactly-once" wording is a little too broad
+The dataset correctly says workers are at-least-once and must be idempotent, but other fields say `checkout exactly-once` or `checkout_idempotency` "makes checkout exactly-once." In a senior interview answer, that phrase needs precision: the design makes order creation idempotent and effectively-once from the client's perspective; the async work remains at-least-once with idempotent side effects.
 
-Concrete fix: add DB entities such as `users`, `products`, `orders`, `order_items`, `checkout_idempotency`, `outbox_jobs`, and possibly `inventory_reservations`. Include order states like `created`, `paid`, `queued`, `fulfilled`, `failed`, and show which Redis structures are derived or ephemeral.
+Concrete fix: use phrases like "idempotent checkout," "exactly-once order creation under one idempotency key," or "effectively-once user-visible checkout." Keep "at-least-once delivery plus idempotent workers" for queue processing.
+
+### 4. Payment and inventory are still implicit
+The case is a Redis data-structures chapter, so it does not need to become a full commerce platform. Still, it uses checkout, fulfillment, and order states, while payment authorization/capture and inventory reservation are not modeled or explicitly scoped out. That leaves a small realism gap around when an order becomes `paid`, what workers fulfill, and how stock races are prevented.
+
+Concrete fix: add one sentence in requirements or checkout that payments and inventory are out of scope, or add minimal durable entities/states such as `payment_authorizations` and `inventory_reservations`. The goal is not to expand the chapter, only to avoid accidental ambiguity.
 
 ## System Design Soundness
-Requirements are appropriate for a Redis data-structures lesson. The non-functional requirements correctly call out memory bounds, node failure, and durable order data. The weak point is that the availability requirement says the system should survive a node failure without dropping sessions or the queue, while Step 7 also acknowledges asynchronous replication can lose recent writes. That tension should be explicit: define the RPO/RTO for each key family and say which losses are acceptable.
+The requirements are now well chosen for the lesson. They cover sessions, product cache, cart updates, counters, rate limits, IDs, ranking, async processing, and retention analytics. The non-functional requirements now include the critical durability split: orders have RPO 0 in the RDBMS, while sessions, queues, and counters tolerate bounded Redis loss.
 
-The API surface is enough for the tour, but not enough for the product:
+The API is much improved. `POST /v1/checkout` now requires an `Idempotency-Key`, returns a stable order response on retry, and describes a single DB transaction that writes idempotency, order, order_items, and outbox records. The cart API now includes read and delete semantics, `GET /v1/trending` exposes window/category dimensions, and retention has an admin endpoint.
 
-- `POST /v1/checkout` should accept an idempotency key and ideally return stable order state on retry.
-- Cart APIs should include `GET /v1/cart` and `DELETE /v1/cart/{productId}` or describe how `PUT qty:0` deletes.
-- Trending should expose a window/category/seller dimension if leaderboards are a requirement.
-- Analytics/retention is a stated requirement, but there is no API or admin/reporting endpoint for DAU or N-day retention.
+The data model is credible because it no longer pretends Redis owns the money path. Redis key families are documented, and the RDBMS entities describe order state, item price snapshots, idempotency, and outbox jobs. The remaining model issue is the `order queue (List)` entity, which should align with the recommended Streams/broker option or be clearly labeled as the List variant.
 
-The Redis modeling is mostly strong. Strings for sessions/cache/locks, INCR for counters/IDs, Hashes for carts, ZSETs for top-N, Lists/Streams for jobs, and Bitmaps for retention are all valid. The design should add the caveats that make the answer production-grade:
-
-- session tokens should be random, stored/compared safely, expired/rotated, and delivered via secure cookies
-- fixed-window rate limits are bursty; exact sliding windows/token buckets need Lua or another atomic strategy
-- `ZREVRANGE` top-N is not simply `O(log n)`; the returned item count matters
-- bitmaps assume dense integer user IDs or a stable mapping from user IDs to offsets
-- eviction policy should be per key family, often via separate Redis instances/clusters
+Capacity is much stronger than before, but the write-rate contradiction should be fixed. The current sizing uses `400-600k` Redis ops/sec for browsing yet keeps peak writes at `~20k/sec`; this will confuse candidates when they derive shard count, AOF write load, and replication bandwidth.
 
 ## Step-by-Step Pedagogical Review
 ### Step 1: Naive baseline
-This is an effective starting point. It names the DB bottlenecks that Redis will address and makes the rest of the walkthrough feel motivated. A small improvement would be to tie the `200k reads/sec` headline directly to DB reads, counter updates, ranking sorts, and inline checkout latency.
+This remains an effective baseline. It names DB bottlenecks concretely: hot reads, counter updates, ranking sorts, and inline side effects. The decision prompt sets up the whole Redis tour cleanly.
 
 ### Step 2: Strings - Sessions, Cache, and Lock
-This step is strong and includes the important compare-and-delete lock release caveat. It should also state that the Redis lock is not sufficient for checkout correctness. For a senior-level answer, the lock needs fencing/idempotency or a DB uniqueness guarantee because expiry, pauses, and retries can still duplicate work.
+This step is now strong. It covers secure session cookies, TTL and jitter, cache-aside behavior, `SET NX EX`, token-checked release, and the crucial limitation that a Redis lock is not the checkout correctness boundary.
 
 ### Step 3: Integers - Counters, Rate Limiting, and IDs
-The INCR explanations are clear and practical. Add a note that rate-limit `INCR` plus `EXPIRE` should be made atomic on first hit, commonly with Lua or a careful `SET NX EX` pattern. Also fix the typo "monotic" to "monotonic."
+The INCR material is clear and now includes rate-limit atomicity, fixed-window burstiness, token-bucket/sliding-window alternatives, and the fact that an `INCR` order ID is not proof of a committed order. The remaining improvement is capacity alignment: if product reads always `INCR`, the write rate must reflect that or the step should explain batching/sampling.
 
-### Step 4: Hashes - Cart
-The hash-per-cart model is a good fit and the partial-update explanation is useful. To make it more realistic, add cart limits, validation against the current product catalog, price snapshotting at checkout, and the boundary between Redis cart state and durable order items.
+### Step 4: Hashes - The Shopping Cart
+This is a solid teaching step. It explains why a hash beats a JSON blob for line-item mutation and now adds cart caps, catalog validation, price snapshotting, durable order_items, and idempotency at checkout.
 
-### Step 5: Sorted Sets - Trending and Leaderboards
-The ZSET step teaches the right commands and introduces decay/windowing. It should be more precise about complexity and bounded cardinality. `ZREMRANGEBYRANK` trimming is mentioned, but the final answer should also choose a retention/window strategy so old scores do not pollute "trending."
+### Step 5: Sorted Sets - Trending & Leaderboards
+The main explanation is good: ZSETs replace per-request DB sorts with incremental score updates and top-N reads. Some supporting text still says top-N is simply `O(log n)`. The description already gives the more accurate `O(log n + m)`, so update the decision prompt, concept note, recap, and interview script to match.
 
 ### Step 6: Lists & Bitmaps - Work Queue and Retention
-This is the densest step and would benefit from separation. Lists and Bitmaps solve unrelated problems, and only the queue receives an option comparison. Consider splitting this into two steps or adding a bitmap-specific caveat section covering dense IDs, privacy/retention policy, and alternatives such as HyperLogLog when approximate cardinality is enough.
+This step improved the most. It teaches Lists as a queue, explains why bare `LPUSH` is unsafe after a DB commit, introduces a transactional outbox, details processing lists/reapers/retries/DLQ/backpressure, and recommends Streams/broker for the production order path. Bitmap analytics also includes dense ID mapping, HyperLogLog as an approximate alternative, and privacy/retention caveats.
 
-For the queue half, either choose Streams/broker in the recommended path or make the List queue recovery workflow explicit. A production queue story needs retries, dead letters, visibility timeout/reclaim, and idempotent side effects.
+The trade-off is density. Lists and Bitmaps solve unrelated problems, and the queue half is now sophisticated enough to dominate the step. If book pacing allows, split queue and retention into separate steps; if not, the current version is still workable.
 
 ### Step 7: Scale & Survive
-This is a strong closing step. It correctly calls out AOF/RDB, async replication loss, cluster slots, hash tags, and eviction policy. Improvements: fix "everysecond" to "every second," define per-key-family RPO, and show a topology that separates cache keys from non-evictable sessions/queues/carts.
+This is now a strong closing step. It covers AOF/RDB, async replication loss, per-family RPO, cluster hash slots, hash tags, maxmemory policy, eviction separation, and operational risks. This is the right final move after all Redis structures have been introduced.
 
 ## Final Design Review
-The final design integrates all primitives well and keeps the RDBMS in the diagram. The main issue is that it describes the result as "production-grade" before the order workflow is production-grade. The final design should add:
+The final design now integrates the hardening from the steps. It keeps the RDBMS authoritative, uses durable idempotency and outbox records, makes workers idempotent, discusses Streams/broker vs hardened Lists, and includes persistence, replication/failover, sharding, eviction separation, and monitoring.
 
-- durable checkout idempotency and order state
-- DB outbox or pending-job table
-- queue retry/dead-letter path
-- worker idempotency and reconciliation against the DB
-- Redis topology split by eviction/durability class
-- explicit monitoring for memory, evictions, queue age, retry rate, AOF fsync latency, replica lag, and failover events
+The main final-design issue is visual/text consistency. The final prose selects Streams or a broker for the order path, while the final flow and high-level node labels still show a List. Aligning that would make the final answer much easier for candidates to draw and defend.
 
 ## Concept Introduction and Learning Flow
-The concept staging is one of the dataset's best parts. Every primitive appears with a concrete product feature and command examples. The traps are realistic and short enough to be useful in an interview.
+The concept staging remains one of the dataset's best qualities. Redis concepts arrive just in time:
 
-The one flow issue is that the chapter's stated goal is Redis as a "primary data platform," while some concepts are deliberately simplified to teach structures. Add a repeated phrase such as "Redis accelerates or coordinates this path; the DB owns correctness for money" in checkout, queueing, and final design sections so learners do not overgeneralize.
+- Strings solve sessions, cache, and locks.
+- INCR solves counters, rate limits, and ID generation.
+- Hashes solve mutable cart lines.
+- ZSETs solve top-N rankings.
+- Lists/Streams/broker solve async work.
+- Bitmaps solve retention analytics.
+- AOF/RDB, replication, cluster slots, and eviction policy close the production story.
+
+The traps are now especially useful because they target common interview overclaims: locks without expiry, app-side counters, JSON cart blobs, bare `LPUSH`, exactly-once List queues, and Redis as the sole source of truth for money.
 
 ## Step-to-Final-Design Coherence
-The steps build cleanly toward the final diagram:
+The steps build cleanly toward `finalDesign`:
 
-- Step 2 introduces `Session`
-- Step 3 introduces `Counters`
-- Step 4 introduces `Cart`
-- Step 5 introduces `Ranking`
-- Step 6 introduces `Queue`, `Worker`, and `Retention`
-- Step 7 joins all Redis structures with `DB` and `Metrics`
+- Step 2 introduces `Session`.
+- Step 3 introduces `Counters`.
+- Step 4 introduces `Cart`.
+- Step 5 introduces `Ranking`.
+- Step 6 introduces `Queue`, `Worker`, and `Retention`.
+- Step 7 ties all Redis structures to `DB` and `Metrics`.
 
-Coherence would improve if the final design explicitly selected the default option from Step 6. Today the option says "Streams / dedicated broker" may be better for stronger semantics, but the final design still lands on a Redis List without restating why that is acceptable.
+The final design also now carries forward the important non-diagram concepts: idempotency, outbox dispatch, worker idempotency, per-key-family RPO, and eviction separation. The only coherence gap is that the queue's rendered identity remains List-first while the final prose is Streams/broker-first.
 
 ## Realism Compared With Production Systems
-The realism is good for Redis primitives and weaker for e-commerce operations. The design should address:
+For a Redis-focused interview, the production realism is now good. It addresses most of the failure cases that matter:
 
-- idempotent checkout and retried client requests
-- payment authorization/capture or a stated decision to exclude payments
-- inventory reservation and stock race handling
-- durable outbox for post-order work
-- worker retries, backoff, DLQ, and poison messages
-- queue backlog admission control when workers fall behind
-- multi-AZ failover behavior and what data can be lost
-- data retention and privacy for DAU/retention analytics
-- backup/restore testing and cluster resharding operations
+- client retries after timeout
+- app crash between DB commit and enqueue
+- duplicate job delivery
+- worker crash mid-job
+- poison messages and DLQ
+- queue backlog and admission control
+- async replication loss
+- memory pressure and eviction policy
+- dense bitmap offset assumptions
+- session cookie safety
 
-These do not need to dominate the chapter, but the final step and final design should acknowledge them so the system-design answer remains credible.
+The remaining realism gaps are bounded. Payment and inventory should be either explicitly out of scope or represented minimally. Operationally, the design could also mention backup/restore drills, cluster resharding, and failover game days, but those are follow-up-level topics rather than core chapter blockers.
 
 ## Dataset and Renderer-Facing Observations
 - `interview.json` parses as valid JSON.
 - Step `view.nodes` references resolve against `highLevelArchitecture.nodes`.
 - Step `view.links` references resolve against `highLevelArchitecture.links`.
+- Flow participant/message references resolve against declared participants and canonical nodes.
 - `satisfies[*].steps[*]` references resolve to real step IDs.
 - `patterns[*].steps[*]` references resolve to real step IDs.
-- Canonical node types are used correctly (`client`, `edge`, `service`, `cache`, `queue`, `worker`, `database`, `observability`).
-- Options use `name`, which the renderer supports.
-- No generated assets are present under this dataset; no docs rebuild is needed for this review file alone.
+- Canonical node types are used appropriately (`client`, `edge`, `service`, `cache`, `queue`, `worker`, `database`, `observability`).
+- No generated docs rebuild is needed for this `REVIEW.md` update.
 
 Minor authoring polish:
 
-- Fix "monotic" in Step 3.
-- Fix "everysecond" in Step 7.
-- Consider adding further-reading/probe links for Redis locks, Streams, persistence, Cluster hash slots, and bitmap analytics.
+- Replace remaining `O(log n)` shorthand for ZSET top-N reads with `O(log n + m)` or "logarithmic seek plus returned item count."
+- Align queue labels and captions with the recommended Streams/broker final path.
+- Consider replacing broad "exactly-once checkout" wording with "idempotent checkout" or "exactly-once order creation per idempotency key."
 
 ## Recommended Edits, Prioritized
-### P1: Make checkout correctness explicit
-Add idempotency key handling, durable order/idempotency records, outbox-based enqueue, and worker idempotency. Make clear that Redis locks reduce duplicate concurrent work but do not prove exactly-once checkout.
+### P1: Fix the capacity write-rate contradiction
+Reconcile `~20k writes/sec` with `200k reads/sec` that each `INCR` a view counter. Either count derived Redis writes explicitly or add batching/sampling/aggregation.
 
-### P1: Decide the production queue recommendation
-Either make Redis Streams/dedicated broker the recommended final path for order work, or fully specify the hardened Redis List design with retry, reclaim, DLQ, and backpressure.
+### P1: Align the final queue representation
+Make the final queue node, data model, flow labels, and captions match the recommended Streams/broker path, or explicitly show a generic queue abstraction with List as one implementation option.
 
-### P2: Expand capacity and topology
-Derive Redis ops, memory, backlog, replica/AOF overhead, and shard count from the stated traffic. Separate cache-like keys from non-evictable/load-bearing keys in the architecture.
+### P2: Tighten delivery and exactly-once language
+Use precise wording: idempotent checkout/order creation, at-least-once queue delivery, idempotent worker side effects, and optional effectively-once user-visible semantics.
 
-### P2: Add the durable model and missing APIs
-Add DB tables/states for orders and outbox jobs. Add cart read/delete, checkout idempotency, trending dimensions, and analytics/retention APIs or explicitly scope them out.
+### P2: Scope or minimally model payment and inventory
+Add a short scope note or a minimal durable model for payment authorization/capture and inventory reservation so checkout/fulfillment states are not ambiguous.
 
-### P3: Polish Redis caveats and wording
-Tighten ZSET complexity, bitmap offset assumptions, rate-limit atomicity, session security, and the small typos.
+### P3: Polish ZSET complexity wording
+Update the decision prompt, concept card, recap, and interview script examples that still compress top-N reads to `O(log n)`.
 
 ## What Not To Change
-- Keep the one-Redis-primitive-per-feature teaching structure.
-- Keep the RDBMS as the durable source of record for orders.
-- Keep the traps and decision prompts; they are practical and concise.
-- Keep the final scale/HA step as the closing move after all Redis structures are introduced.
+- Keep the one-feature-to-one-Redis-structure teaching progression.
+- Keep the RDBMS as the source of truth for committed orders.
+- Keep the idempotency key + DB uniqueness + transactional outbox correction; it is the most important production hardening in the dataset.
+- Keep the queue option comparison. It teaches why Lists are simple but Streams/brokers are usually the right order-path choice.
+- Keep the final scale/HA step as the closing move after all Redis primitives have been introduced.
 
 ## Bottom Line
-This is a well-structured Redis data-structures interview and a good book chapter draft. To make it production-grade, focus the next edit pass on checkout correctness, durable job dispatch, queue semantics, and defensible capacity/topology math.
+This is now a strong Redis system-design interview. The previous major correctness gaps have been addressed. The next edit pass should focus on consistency: correct the write-rate math, make the final queue representation match the recommended Streams/broker choice, and tighten guarantee wording around idempotency, delivery, and exactly-once semantics.
