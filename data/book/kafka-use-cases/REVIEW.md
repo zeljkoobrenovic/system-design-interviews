@@ -340,11 +340,12 @@ DR/RPO/RTO in the final script phase and Senior expectations.
 Add `Platform control plane (governance)` to Step `scale-ops.patterns` so the
 step displays the pattern it already owns at the dataset level.
 
-### P3: Add optional technology-choice material
+### P3: Keep technology-choice material current
 
-For a mature book chapter, consider adding `technologyChoices`: self-managed
-Kafka vs managed Kafka, Kafka vs Pulsar, Kafka vs cloud-native streams, Kafka
-Streams vs Flink, and Kafka vs task queues. This is enrichment, not a blocker.
+The dataset now includes `technologyChoices` for the Kafka backbone, schema
+governance, consumer retries/DLQs, stream processing, CDC/outbox connectors,
+sinks, retention/DR, platform governance, and observability. Future edits
+should keep those concerns aligned with the main walkthrough.
 
 ## What Not To Change
 

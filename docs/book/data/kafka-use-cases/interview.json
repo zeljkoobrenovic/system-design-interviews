@@ -1,6 +1,6 @@
 {
-  "title": "Kafka Use Cases \u2014 Event Streaming Platform Design",
-  "description": "Design a company-wide event streaming platform on Apache Kafka, using the interview to tour Kafka's canonical use cases: decoupled ingestion and log aggregation, asynchronous pub/sub for event-driven microservices, real-time stream processing, event sourcing and change-data-capture (CDC), and the delivery semantics (idempotence, transactions, exactly-once) that make it all trustworthy. The organizing idea is the partitioned, replicated, append-only commit log \u2014 one backbone that every producer writes to and every consumer reads independently.",
+  "title": "Kafka Use Cases — Event Streaming Platform Design",
+  "description": "Design a company-wide event streaming platform on Apache Kafka, using the interview to tour Kafka's canonical use cases: decoupled ingestion and log aggregation, asynchronous pub/sub for event-driven microservices, real-time stream processing, event sourcing and change-data-capture (CDC), and the delivery semantics (idempotence, transactions, exactly-once) that make it all trustworthy. The organizing idea is the partitioned, replicated, append-only commit log — one backbone that every producer writes to and every consumer reads independently.",
   "highLevelArchitecture": {
     "nodes": [
       {
@@ -708,6 +708,694 @@
       ]
     }
   ],
+  "technologyChoices": [
+    {
+      "concern": "Event backbone and managed stream service",
+      "steps": [
+        "ingest",
+        "pubsub",
+        "scale-ops"
+      ],
+      "selfHosted": [
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Redpanda",
+          "icon": "assets/tech-icons/redpanda.png"
+        },
+        {
+          "name": "Apache Pulsar",
+          "icon": "assets/tech-icons/pulsar.png"
+        },
+        {
+          "name": "NATS (JetStream)",
+          "icon": "assets/tech-icons/nats.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          },
+          {
+            "name": "Kinesis",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Managed Service for Apache Kafka",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kafka-compatible logs fit ordered partitions, consumer groups, replay, and Kafka transactions; they also require partition, broker, and retention discipline.",
+        "Redpanda keeps Kafka APIs with a simpler broker footprint; Pulsar separates serving and storage and is attractive for very long retention or many tenants.",
+        "Cloud-native streams remove broker operations but differ in partition semantics, retention limits, and exactly-once scope, so portability is a design choice."
+      ],
+      "makesIrrelevant": "A managed stream removes most broker provisioning, KRaft quorum, patching, rack placement, and storage-expansion work from Step 7."
+    },
+    {
+      "concern": "Producer client, partitioning, and schema compatibility",
+      "steps": [
+        "ingest",
+        "semantics",
+        "scale-ops"
+      ],
+      "selfHosted": [
+        {
+          "name": "Confluent Schema Registry",
+          "icon": "assets/tech-icons/confluent.png"
+        },
+        {
+          "name": "Apicurio Registry",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Redpanda",
+          "icon": "assets/tech-icons/redpanda.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "AWS Glue Schema Registry",
+            "icon": "assets/tech-icons/Arch_AWS-Glue_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Managed Service for Apache Kafka",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs Schema Registry",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Producer libraries give batching, compression, key-based partitioning, idempotent sends, and transactions close to application code.",
+        "A schema registry protects long-lived event contracts, but every producer and consumer must enforce compatibility for it to matter.",
+        "Provider schema services integrate with managed streams, while self-hosted registries keep Kafka wire compatibility and cross-cloud portability."
+      ],
+      "makesIrrelevant": "Schema compatibility checks remove many bespoke event-version guards and manual producer/consumer rollout checklists."
+    },
+    {
+      "concern": "Consumer groups, retries, and DLQ handling",
+      "steps": [
+        "pubsub",
+        "semantics"
+      ],
+      "selfHosted": [
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "RabbitMQ",
+          "icon": "assets/tech-icons/rabbitmq.png"
+        },
+        {
+          "name": "NATS (JetStream)",
+          "icon": "assets/tech-icons/nats.png"
+        },
+        {
+          "name": "Redis Streams",
+          "icon": "assets/tech-icons/redis.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          },
+          {
+            "name": "SQS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Queue-Service_64.png"
+          },
+          {
+            "name": "EventBridge",
+            "icon": "assets/tech-icons/Arch_Amazon-EventBridge_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          },
+          {
+            "name": "Cloud Tasks",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          },
+          {
+            "name": "Event Grid",
+            "icon": "assets/tech-icons/10221-icon-service-Event-Grid-Subscriptions.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kafka topics are strong for replayable fanout and independent consumer groups, but delayed retries and DLQs are usually explicit topics plus conventions.",
+        "Queue products are simpler for per-message ack, visibility timeout, and native DLQ behavior, but weaker for long replay and many independent readers.",
+        "Mixing both is common: Kafka for domain events and queues for task-like retries that do not need retained history."
+      ],
+      "makesIrrelevant": "A queue with native visibility timeouts and DLQs can remove custom delayed-retry topics for simple task processing, but not the replayable domain-event log."
+    },
+    {
+      "concern": "Stream processing and state stores",
+      "steps": [
+        "stream",
+        "semantics"
+      ],
+      "selfHosted": [
+        {
+          "name": "Kafka Streams",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Apache Flink",
+          "icon": "assets/tech-icons/flink.png"
+        },
+        {
+          "name": "Apache Spark",
+          "icon": "assets/tech-icons/spark.png"
+        },
+        {
+          "name": "ClickHouse",
+          "icon": "assets/tech-icons/clickhouse.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Managed Service for Apache Flink",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Service-for-Apache-Flink_64.png"
+          },
+          {
+            "name": "Kinesis",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Dataflow",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Dataproc",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Managed Service for Apache Kafka",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Stream Analytics",
+            "icon": "assets/tech-icons/00042-icon-service-Stream-Analytics-Jobs.svg"
+          },
+          {
+            "name": "Azure Databricks",
+            "icon": "assets/tech-icons/10787-icon-service-Azure-Databricks.svg"
+          },
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kafka Streams is a library that is easy to co-deploy when state is moderate and Kafka is both input and output.",
+        "Flink and Spark handle larger state, richer event-time windows, joins, and heterogeneous sinks, at the cost of running a separate processing tier.",
+        "Managed stream processors reduce checkpoint, autoscaling, and failure-recovery work, but connector behavior and exactly-once sink guarantees vary."
+      ],
+      "makesIrrelevant": "A stream processor with checkpointed state, changelog topics, watermarks, and replay-aware sinks removes most custom window and offset-recovery code."
+    },
+    {
+      "concern": "CDC, transactional outbox, and connector runtime",
+      "steps": [
+        "cdc",
+        "semantics"
+      ],
+      "selfHosted": [
+        {
+          "name": "Debezium",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Kafka Connect",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "MySQL",
+          "icon": "assets/tech-icons/mysql.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "DMS",
+            "icon": "assets/tech-icons/Arch_AWS-Database-Migration-Service_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          },
+          {
+            "name": "Aurora",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Datastream",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Dataflow",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          },
+          {
+            "name": "Azure Database for MySQL",
+            "icon": "assets/tech-icons/10122-icon-service-Azure-Database-MySQL-Server.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "CDC keeps the database commit as the single source of truth and publishes a replayable derived log without app-code dual writes.",
+        "The transactional outbox makes domain events explicit, but it adds an outbox table, relay, cleanup policy, and idempotent publisher behavior.",
+        "Managed CDC accelerates common database sources, but offset visibility, schema evolution, and replay controls must be checked before it becomes load-bearing."
+      ],
+      "makesIrrelevant": "A connector runtime with durable offsets, retries, and dead-letter handling removes many one-off extract scripts and hand-built polling relays."
+    },
+    {
+      "concern": "Serving projections and analytical sinks",
+      "steps": [
+        "pubsub",
+        "stream",
+        "cdc"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "Elasticsearch",
+          "icon": "assets/tech-icons/elasticsearch.png"
+        },
+        {
+          "name": "OpenSearch",
+          "icon": "assets/tech-icons/opensearch.png"
+        },
+        {
+          "name": "ClickHouse",
+          "icon": "assets/tech-icons/clickhouse.png"
+        },
+        {
+          "name": "Snowflake",
+          "icon": "assets/tech-icons/snowflake.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          },
+          {
+            "name": "OpenSearch Service",
+            "icon": "assets/tech-icons/Arch_Amazon-OpenSearch-Service_64.png"
+          },
+          {
+            "name": "Redshift",
+            "icon": "assets/tech-icons/Arch_Amazon-Redshift_64.png"
+          },
+          {
+            "name": "S3",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "BigQuery",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Bigtable",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Cloud Storage",
+            "icon": "assets/tech-icons/Storage-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Synapse Analytics",
+            "icon": "assets/tech-icons/00606-icon-service-Azure-Synapse-Analytics.svg"
+          },
+          {
+            "name": "Azure Data Explorer",
+            "icon": "assets/tech-icons/10145-icon-service-Azure-Data-Explorer-Clusters.svg"
+          },
+          {
+            "name": "Blob Storage",
+            "icon": "assets/tech-icons/10781-icon-service-Blob-Page.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Materialized views let consumers rebuild search, cache, OLAP, and warehouse state from the retained log instead of querying source databases directly.",
+        "Operational stores need low-latency keyed updates and idempotent writes; analytical stores need bulk load, partition pruning, and cost controls.",
+        "Object storage is the cheapest cold sink for raw or compacted topics, but hot serving usually needs an index, OLAP engine, or database projection."
+      ],
+      "makesIrrelevant": "A sink with native idempotent upsert, materialized views, and retention rules removes much custom replay-to-serving-store glue."
+    },
+    {
+      "concern": "Retention, tiered storage, and disaster recovery",
+      "steps": [
+        "ingest",
+        "scale-ops"
+      ],
+      "selfHosted": [
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Kafka MirrorMaker",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Ceph",
+          "icon": "assets/tech-icons/ceph.png"
+        },
+        {
+          "name": "OpenStack Swift",
+          "icon": "assets/tech-icons/openstack.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "S3",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          },
+          {
+            "name": "S3 Cross-Region Replication",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Storage",
+            "icon": "assets/tech-icons/Storage-512-color.png"
+          },
+          {
+            "name": "Managed Service for Apache Kafka",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Blob Storage",
+            "icon": "assets/tech-icons/10781-icon-service-Blob-Page.svg"
+          },
+          {
+            "name": "Geo-redundant Storage",
+            "icon": "assets/tech-icons/10086-icon-service-Storage-Accounts.svg"
+          },
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Hot retention on broker disks keeps replay fast but makes storage the scaling bottleneck at hundreds of TB.",
+        "Tiered storage moves cold segments to object storage so replay windows can be longer without adding brokers only for disk.",
+        "Cross-region replication improves RPO but does not give transparent active-active exactly-once semantics; failover may duplicate or reorder records."
+      ],
+      "makesIrrelevant": "Managed tiered storage and provider replication remove much of the custom segment archiving, broker disk expansion, and restore rehearsal plumbing."
+    },
+    {
+      "concern": "Platform control plane, security, and governance",
+      "steps": [
+        "scale-ops"
+      ],
+      "selfHosted": [
+        {
+          "name": "Keycloak",
+          "icon": "assets/tech-icons/keycloak.png"
+        },
+        {
+          "name": "HashiCorp Vault",
+          "icon": "assets/tech-icons/hashicorp_vault.png"
+        },
+        {
+          "name": "Consul",
+          "icon": "assets/tech-icons/consul.png"
+        },
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "AWS IAM",
+            "icon": "assets/tech-icons/Arch_AWS-Identity-and-Access-Management_64.png"
+          },
+          {
+            "name": "KMS",
+            "icon": "assets/tech-icons/Arch_AWS-Key-Management-Service_64.png"
+          },
+          {
+            "name": "Secrets Manager",
+            "icon": "assets/tech-icons/Arch_AWS-Secrets-Manager_64.png"
+          },
+          {
+            "name": "CloudTrail",
+            "icon": "assets/tech-icons/Arch_AWS-CloudTrail_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud IAM",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          },
+          {
+            "name": "Cloud KMS",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          },
+          {
+            "name": "Secret Manager",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          },
+          {
+            "name": "Cloud Audit Logs",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Microsoft Entra ID",
+            "icon": "assets/tech-icons/10231-icon-service-Entra-ID-Protection.svg"
+          },
+          {
+            "name": "Key Vault",
+            "icon": "assets/tech-icons/10245-icon-service-Key-Vaults.svg"
+          },
+          {
+            "name": "Azure RBAC",
+            "icon": "assets/tech-icons/10231-icon-service-Entra-ID-Protection.svg"
+          },
+          {
+            "name": "Microsoft Purview",
+            "icon": "assets/tech-icons/00011-icon-service-Compliance.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A shared Kafka estate needs topic ownership, retention classes, ACLs, quotas, schema policy, connector approval, PII classification, and audited replay workflows.",
+        "Self-hosted identity and secrets keep portability, but evidence, key rotation, least privilege, and audit exports become platform responsibilities.",
+        "Provider IAM and key systems integrate with managed streams and object storage, but cross-cloud clusters need a neutral policy model."
+      ],
+      "makesIrrelevant": "A governed control plane removes ad-hoc broker admin commands for topic creation, ACL changes, quota updates, offset resets, and DLQ replay."
+    },
+    {
+      "concern": "Kafka observability, lag SLOs, and audit analytics",
+      "steps": [
+        "pubsub",
+        "stream",
+        "scale-ops"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "Jaeger",
+          "icon": "assets/tech-icons/jaeger.png"
+        },
+        {
+          "name": "Fluentd/Fluent Bit",
+          "icon": "assets/tech-icons/fluentd.png"
+        },
+        {
+          "name": "ELK Stack",
+          "icon": "assets/tech-icons/elasticsearch.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "Managed Service for Prometheus",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Service-for-Prometheus_64.png"
+          },
+          {
+            "name": "Managed Grafana",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Grafana_64.png"
+          },
+          {
+            "name": "X-Ray",
+            "icon": "assets/tech-icons/Arch_AWS-X-Ray_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          },
+          {
+            "name": "Cloud Logging",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          },
+          {
+            "name": "Cloud Trace",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          },
+          {
+            "name": "Log Analytics",
+            "icon": "assets/tech-icons/00009-icon-service-Log-Analytics-Workspaces.svg"
+          },
+          {
+            "name": "Application Insights",
+            "icon": "assets/tech-icons/00012-icon-service-Application-Insights.svg"
+          },
+          {
+            "name": "Azure Managed Grafana",
+            "icon": "assets/tech-icons/02905-icon-service-Azure-Managed-Grafana.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kafka health is mostly lag and replication: consumer lag, end-to-end freshness, under-replicated partitions, ISR shrinkage, controller churn, and produce latency.",
+        "Self-hosted metrics and tracing are portable and can observe multiple clusters, but high-cardinality topic and group labels can become expensive quickly.",
+        "Managed observability integrates with provider streams and storage, but the platform still needs domain SLOs for replay, DLQ drain time, and schema-change safety."
+      ],
+      "makesIrrelevant": "Managed metrics, tracing, logs, and dashboards reduce custom lag collectors and broker-health pages, but not the Kafka-specific SLO definitions."
+    }
+  ],
   "patterns": [
     {
       "name": "Decoupled log (pub/sub over a commit log)",
@@ -773,7 +1461,7 @@
       "title": "1. Naive: Point-to-Point Integrations (the baseline)",
       "description": [
         "Start with the obvious design: every service that needs data calls the service that has it, synchronously. Orders calls fulfillment, fulfillment calls email, analytics polls the orders DB, the search index is updated by a direct API call, and the data warehouse runs nightly dumps.",
-        "It works for a handful of services and immediately rots as they multiply. Each new consumer means a new integration on every producer \u2014 an N\u00d7M web of point-to-point calls. Producers block on slow consumers, a downstream outage cascades upstream, there's no replay when a consumer was down, and analytics fights the operational DB for the same rows.",
+        "It works for a handful of services and immediately rots as they multiply. Each new consumer means a new integration on every producer — an N×M web of point-to-point calls. Producers block on slow consumers, a downstream outage cascades upstream, there's no replay when a consumer was down, and analytics fights the operational DB for the same rows.",
         "The fix is a single decoupling layer: producers append events once to a durable log, and any number of consumers read independently. That log is Kafka, and every use case in the next steps is a way of reading or writing it. This isn't 'Kafka everywhere' — direct synchronous calls are still right for request/response reads and commands that need an immediate, consistent answer; the log is for decoupled event flow, not for replacing every RPC."
       ],
       "view": {
@@ -787,7 +1475,7 @@
           "prod-source",
           "cons-serving"
         ],
-        "caption": "Every consumer integrates directly with every producer/DB \u2014 a brittle N\u00d7M web with no decoupling or replay.",
+        "caption": "Every consumer integrates directly with every producer/DB — a brittle N×M web with no decoupling or replay.",
         "highlight": [
           "Producers",
           "Consumers"
@@ -795,12 +1483,12 @@
       },
       "decisionPrompt": "With 10 producers and 10 consumers wired point-to-point, how many integrations must you maintain, and what happens when one consumer is slow or down?",
       "whyNow": [
-        "The N\u00d7M integration mess is exactly the problem a shared event log solves; naming it first makes every Kafka use case land as a fix."
+        "The N×M integration mess is exactly the problem a shared event log solves; naming it first makes every Kafka use case land as a fix."
       ],
       "recap": {
         "before": "Nothing.",
         "after": "Services integrate directly, synchronously.",
-        "newRisk": "N\u00d7M coupling: producers block on consumers, outages cascade, and there's no replay or shared history."
+        "newRisk": "N×M coupling: producers block on consumers, outages cascade, and there's no replay or shared history."
       },
       "traps": [
         {
@@ -812,11 +1500,11 @@
     },
     {
       "id": "ingest",
-      "title": "2. Ingestion & Log Aggregation \u2014 the Decoupled Log",
+      "title": "2. Ingestion & Log Aggregation — the Decoupled Log",
       "description": [
-        "Introduce Kafka as the central pipeline: producers and collector agents publish events to topics, and the broker persists them to a partitioned, replicated, append-only log. This is Kafka's original use case \u2014 aggregating high-volume logs, metrics, and clickstream from many sources into one durable stream.",
-        "The decoupling is the point. A producer's send() returns once the event is durably appended (acks=all); it doesn't wait for any consumer. On failure the producer client retries, and the idempotent producer plus batching and compression keep throughput high without creating duplicate appends. Consumers read at their own pace and, crucially, from any offset \u2014 so a consumer that was down simply resumes and catches up. The caveat: recovery is only lossless if the downtime fits inside the retention window (or a tiered-storage replay), so retention is what backs the 'nothing is lost' promise.",
-        "The producer here is a client library (the Gateway node), not a deployable gateway service \u2014 apps link it and connect straight to brokers; there's no extra hop. A partition is the unit of ordering and parallelism: records are strictly ordered within a partition, and the producer's key (e.g. userId) decides the partition, so all events for one key stay ordered. A Schema Registry enforces that producers and consumers agree on event shape as it evolves."
+        "Introduce Kafka as the central pipeline: producers and collector agents publish events to topics, and the broker persists them to a partitioned, replicated, append-only log. This is Kafka's original use case — aggregating high-volume logs, metrics, and clickstream from many sources into one durable stream.",
+        "The decoupling is the point. A producer's send() returns once the event is durably appended (acks=all); it doesn't wait for any consumer. On failure the producer client retries, and the idempotent producer plus batching and compression keep throughput high without creating duplicate appends. Consumers read at their own pace and, crucially, from any offset — so a consumer that was down simply resumes and catches up. The caveat: recovery is only lossless if the downtime fits inside the retention window (or a tiered-storage replay), so retention is what backs the 'nothing is lost' promise.",
+        "The producer here is a client library (the Gateway node), not a deployable gateway service — apps link it and connect straight to brokers; there's no extra hop. A partition is the unit of ordering and parallelism: records are strictly ordered within a partition, and the producer's key (e.g. userId) decides the partition, so all events for one key stay ordered. A Schema Registry enforces that producers and consumers agree on event shape as it evolves."
       ],
       "view": {
         "nodes": [
@@ -838,7 +1526,7 @@
           "broker-connect",
           "connect-wh"
         ],
-        "caption": "Producers and collectors append events to the replicated Kafka log; a sink connector loads them to the warehouse \u2014 all decoupled from consumers.",
+        "caption": "Producers and collectors append events to the replicated Kafka log; a sink connector loads them to the warehouse — all decoupled from consumers.",
         "highlight": [
           "Broker",
           "Gateway"
@@ -858,7 +1546,7 @@
         {
           "term": "Partition",
           "definition": "An ordered shard of a topic; the key hashes to a partition.",
-          "whyItMatters": "Unit of ordering and parallelism \u2014 order holds per key, throughput scales with partitions.",
+          "whyItMatters": "Unit of ordering and parallelism — order holds per key, throughput scales with partitions.",
           "example": "key=userId keeps one user's events ordered on one partition."
         },
         {
@@ -875,9 +1563,9 @@
         "The shared durable log is the foundation; every later use case (pub/sub, streams, CDC) is a way of reading or writing it."
       ],
       "recap": {
-        "before": "N\u00d7M synchronous integrations.",
+        "before": "N×M synchronous integrations.",
         "after": "One durable, replayable log; producers decoupled from consumers.",
-        "newRisk": "Now many services want to react to the same stream in parallel \u2014 how do they share the load?"
+        "newRisk": "Now many services want to react to the same stream in parallel — how do they share the load?"
       },
       "traps": [
         {
@@ -949,11 +1637,11 @@
     },
     {
       "id": "pubsub",
-      "title": "3. Async Messaging \u2014 Event-Driven Microservices",
+      "title": "3. Async Messaging — Event-Driven Microservices",
       "description": [
-        "Now use the log as a pub/sub backbone for microservices. A domain event (OrderPlaced) is published once; fulfillment, email, fraud, and analytics each subscribe as a separate consumer group and react independently. Adding a new reaction is a new consumer group \u2014 zero change to the producer.",
-        "Within one group, partitions are balanced across members (competing consumers), so a group scales horizontally up to the partition count, while each partition's records stay ordered. Different groups get their own copy of the whole stream and their own committed offsets \u2014 that's the difference between scaling one workload (more consumers in a group) and adding a new workload (a new group).",
-        "This replaces synchronous request chains with choreography: services emit and react to events, so a slow or failed downstream never blocks the order path \u2014 it just processes the backlog when it recovers."
+        "Now use the log as a pub/sub backbone for microservices. A domain event (OrderPlaced) is published once; fulfillment, email, fraud, and analytics each subscribe as a separate consumer group and react independently. Adding a new reaction is a new consumer group — zero change to the producer.",
+        "Within one group, partitions are balanced across members (competing consumers), so a group scales horizontally up to the partition count, while each partition's records stay ordered. Different groups get their own copy of the whole stream and their own committed offsets — that's the difference between scaling one workload (more consumers in a group) and adding a new workload (a new group).",
+        "This replaces synchronous request chains with choreography: services emit and react to events, so a slow or failed downstream never blocks the order path — it just processes the backlog when it recovers."
       ],
       "view": {
         "nodes": [
@@ -985,7 +1673,7 @@
           "name": "Consumer groups (default)",
           "description": "Each downstream concern is its own consumer group reading the full topic at its own offset.",
           "pros": [
-            "Add a new reaction by adding a group \u2014 producers are untouched.",
+            "Add a new reaction by adding a group — producers are untouched.",
             "Each group scales to the partition count and keeps per-key order.",
             "A slow/failed group only affects itself; others are unaffected."
           ],
@@ -1037,7 +1725,7 @@
               "orch-cons",
               "cons-serving"
             ],
-            "caption": "A central orchestrator calls each downstream synchronously in sequence \u2014 simpler to trace but re-couples services and becomes a bottleneck/SPOF.",
+            "caption": "A central orchestrator calls each downstream synchronously in sequence — simpler to trace but re-couples services and becomes a bottleneck/SPOF.",
             "highlight": [
               "Orchestrator"
             ]
@@ -1068,7 +1756,7 @@
       "recap": {
         "before": "Synchronous request chains between services.",
         "after": "Event choreography: publish once, many groups react and scale independently.",
-        "newRisk": "Some consumers don't just react per-event \u2014 they need windowed aggregations and joins across the stream."
+        "newRisk": "Some consumers don't just react per-event — they need windowed aggregations and joins across the stream."
       },
       "traps": [
         {
@@ -1135,11 +1823,11 @@
     },
     {
       "id": "stream",
-      "title": "4. Stream Processing \u2014 Real-Time Aggregations",
+      "title": "4. Stream Processing — Real-Time Aggregations",
       "description": [
-        "Some consumers don't process events one at a time \u2014 they compute over the stream: per-minute order counts, revenue by region, sessionization, or joining clickstream to the product catalog. A stream processor (Kafka Streams or Flink) consumes topics, maintains state in windows, and writes results back as new topics.",
-        "The processor keeps local state (e.g. running counts per key) backed by a changelog topic so it's fault-tolerant \u2014 a crashed task rebuilds its state by replaying the changelog. Windowing (tumbling/hopping/session) bounds the aggregation in time, and stream-table joins enrich events with reference data (a compacted topic acting as a table). Because events arrive late and out of order, windows aggregate on event time (from the record) rather than processing time, and a watermark decides how long to wait for stragglers before emitting a window's result.",
-        "State size is often the real limit, not Kafka throughput: large windows and joins grow the state store and its changelog, so checkpointing/restore time and disk become the bottleneck to plan for. Kafka Streams is a library co-deployed with your service (simple ops, JVM); Flink is a separate cluster that scales bigger state, richer event-time/windowing, and exactly-once sinks \u2014 pick by state size, operational model, and connector needs. Output topics feed dashboards, alerting, or a serving store \u2014 turning the raw log into continuously-updated materialized views without a batch job."
+        "Some consumers don't process events one at a time — they compute over the stream: per-minute order counts, revenue by region, sessionization, or joining clickstream to the product catalog. A stream processor (Kafka Streams or Flink) consumes topics, maintains state in windows, and writes results back as new topics.",
+        "The processor keeps local state (e.g. running counts per key) backed by a changelog topic so it's fault-tolerant — a crashed task rebuilds its state by replaying the changelog. Windowing (tumbling/hopping/session) bounds the aggregation in time, and stream-table joins enrich events with reference data (a compacted topic acting as a table). Because events arrive late and out of order, windows aggregate on event time (from the record) rather than processing time, and a watermark decides how long to wait for stragglers before emitting a window's result.",
+        "State size is often the real limit, not Kafka throughput: large windows and joins grow the state store and its changelog, so checkpointing/restore time and disk become the bottleneck to plan for. Kafka Streams is a library co-deployed with your service (simple ops, JVM); Flink is a separate cluster that scales bigger state, richer event-time/windowing, and exactly-once sinks — pick by state size, operational model, and connector needs. Output topics feed dashboards, alerting, or a serving store — turning the raw log into continuously-updated materialized views without a batch job."
       ],
       "view": {
         "nodes": [
@@ -1173,7 +1861,7 @@
         {
           "term": "Changelog-backed state",
           "definition": "Local processor state mirrored to a compacted Kafka topic.",
-          "whyItMatters": "Fault tolerance \u2014 a restarted task rebuilds state by replaying the changelog.",
+          "whyItMatters": "Fault tolerance — a restarted task rebuilds state by replaying the changelog.",
           "example": "Kafka Streams state store -> its changelog topic."
         },
         {
@@ -1198,7 +1886,7 @@
       "recap": {
         "before": "Consumers reacted per event.",
         "after": "Stateful stream jobs produce real-time aggregates and enriched streams.",
-        "newRisk": "The log is now load-bearing for analytics \u2014 teams want to treat it as the source of truth and capture DB changes into it."
+        "newRisk": "The log is now load-bearing for analytics — teams want to treat it as the source of truth and capture DB changes into it."
       },
       "traps": [
         {
@@ -1266,11 +1954,11 @@
     },
     {
       "id": "cdc",
-      "title": "5. CDC & Event Sourcing \u2014 Where the Source of Truth Lives",
+      "title": "5. CDC & Event Sourcing — Where the Source of Truth Lives",
       "description": [
-        "Two use cases put the log at the center of integration, but they differ in one crucial way \u2014 where the single commit point lives. In CDC the database commit is authoritative; in event sourcing the event append is. Getting this boundary right is the difference between a correct design and a production bug.",
-        "Change-Data-Capture (CDC): a connector like Debezium tails a database's write-ahead log and publishes every committed row change as an event. The operational DB stays the source of truth \u2014 Kafka holds a replicated, replayable, derived change stream. This is how you liberate data trapped in monolith databases: the search index, cache, warehouse, and other services subscribe to the change stream instead of querying the source DB. Event sourcing: services persist state as an ordered stream of domain events, and the event append is the authoritative write \u2014 current state is a fold over that history, rebuildable and auditable.",
-        "Both avoid the dual-write problem (a DB write and a separate Kafka publish that can diverge on failure), but by different means. CDC derives events from the one DB commit; the transactional outbox writes the business row and an outbox row in one DB transaction, then a relay publishes them; event sourcing sidesteps the problem entirely because there is only one write \u2014 the event. Log compaction keeps at least the latest value per key forever, so a change topic (CDC) or projection can act as a durable table you bootstrap new consumers from; any read model (index, cache, OLAP) becomes a materialized view you can drop and rebuild by replay."
+        "Two use cases put the log at the center of integration, but they differ in one crucial way — where the single commit point lives. In CDC the database commit is authoritative; in event sourcing the event append is. Getting this boundary right is the difference between a correct design and a production bug.",
+        "Change-Data-Capture (CDC): a connector like Debezium tails a database's write-ahead log and publishes every committed row change as an event. The operational DB stays the source of truth — Kafka holds a replicated, replayable, derived change stream. This is how you liberate data trapped in monolith databases: the search index, cache, warehouse, and other services subscribe to the change stream instead of querying the source DB. Event sourcing: services persist state as an ordered stream of domain events, and the event append is the authoritative write — current state is a fold over that history, rebuildable and auditable.",
+        "Both avoid the dual-write problem (a DB write and a separate Kafka publish that can diverge on failure), but by different means. CDC derives events from the one DB commit; the transactional outbox writes the business row and an outbox row in one DB transaction, then a relay publishes them; event sourcing sidesteps the problem entirely because there is only one write — the event. Log compaction keeps at least the latest value per key forever, so a change topic (CDC) or projection can act as a durable table you bootstrap new consumers from; any read model (index, cache, OLAP) becomes a materialized view you can drop and rebuild by replay."
       ],
       "view": {
         "nodes": [
@@ -1304,7 +1992,7 @@
           "name": "CDC via connector (default)",
           "description": "A Debezium-style connector reads the DB transaction log and emits change events; the app keeps writing to its DB normally.",
           "pros": [
-            "No dual-write problem \u2014 the DB log is the single commit point.",
+            "No dual-write problem — the DB log is the single commit point.",
             "Captures every change in order, including deletes, with low overhead.",
             "Downstreams (index, cache, warehouse) rebuild by replaying the topic."
           ],
@@ -1338,7 +2026,7 @@
           "name": "Transactional outbox",
           "description": "The app writes the business row and an outbox row in one DB transaction; a relay (often a CDC connector on the outbox table) publishes the outbox rows to Kafka.",
           "pros": [
-            "One DB commit covers both the state change and the event \u2014 no dual-write race.",
+            "One DB commit covers both the state change and the event — no dual-write race.",
             "The app controls the event shape directly, unlike raw row-level CDC.",
             "Works with an unchanged messaging model; the relay is the only moving part."
           ],
@@ -1359,7 +2047,7 @@
               "cdc-source",
               "cdc-broker"
             ],
-            "caption": "One DB transaction writes business + outbox rows; a relay publishes them \u2014 the safe middle ground when the app must shape events.",
+            "caption": "One DB transaction writes business + outbox rows; a relay publishes them — the safe middle ground when the app must shape events.",
             "highlight": [
               "SourceDB"
             ],
@@ -1377,7 +2065,7 @@
           ],
           "cons": [
             "Dual-write race: DB commit and publish can diverge on failure.",
-            "No single commit point \u2014 an anti-pattern; prefer CDC or the outbox.",
+            "No single commit point — an anti-pattern; prefer CDC or the outbox.",
             "Every writer must remember to publish; easy to miss a path."
           ],
           "view": {
@@ -1392,7 +2080,7 @@
               "prod-gw",
               "gw-broker"
             ],
-            "caption": "The app writes the DB and publishes itself \u2014 simple but exposed to the dual-write problem.",
+            "caption": "The app writes the DB and publishes itself — simple but exposed to the dual-write problem.",
             "highlight": [
               "Producers"
             ],
@@ -1402,7 +2090,7 @@
           }
         }
       ],
-      "decisionPrompt": "In CDC vs event sourcing, where is the single commit point \u2014 the DB commit or the event append \u2014 and why does that determine which is the source of truth?",
+      "decisionPrompt": "In CDC vs event sourcing, where is the single commit point — the DB commit or the event append — and why does that determine which is the source of truth?",
       "concepts": [
         {
           "term": "Change Data Capture (CDC)",
@@ -1427,12 +2115,12 @@
         "CDC and event sourcing"
       ],
       "whyNow": [
-        "CDC (DB-authoritative) and event sourcing (log-authoritative) make the log load-bearing for integration, which raises the stakes on delivery guarantees \u2014 the next step."
+        "CDC (DB-authoritative) and event sourcing (log-authoritative) make the log load-bearing for integration, which raises the stakes on delivery guarantees — the next step."
       ],
       "recap": {
         "before": "Data was trapped in service DBs; integrations queried them directly.",
         "after": "DB changes flow through Kafka via CDC (DB still authoritative), or events are the write model (event sourcing); read models are rebuildable.",
-        "newRisk": "If derived state depends on the stream, duplicates or lost events corrupt it \u2014 we need precise delivery semantics."
+        "newRisk": "If derived state depends on the stream, duplicates or lost events corrupt it — we need precise delivery semantics."
       },
       "traps": [
         {
@@ -1498,8 +2186,8 @@
               }
             ]
           },
-          "name": "CDC: DB commit \u2192 change topic \u2192 read model",
-          "note": "The DB commit is the authoritative write; Debezium derives an ordered change stream after commit, and read models are rebuildable by replay \u2014 the DB stays source of truth.",
+          "name": "CDC: DB commit → change topic → read model",
+          "note": "The DB commit is the authoritative write; Debezium derives an ordered change stream after commit, and read models are rebuildable by replay — the DB stays source of truth.",
           "highlight": [
             "SourceDB",
             "Connect"
@@ -1509,10 +2197,10 @@
     },
     {
       "id": "semantics",
-      "title": "6. Delivery Semantics \u2014 Idempotence, Transactions, Exactly-Once",
+      "title": "6. Delivery Semantics — Idempotence, Transactions, Exactly-Once",
       "description": [
-        "The log is now load-bearing, so delivery guarantees matter. There are three levels: at-most-once (commit the offset before processing \u2014 fast, but can lose records), at-least-once (process, then commit \u2014 the default, but can duplicate on retry), and exactly-once processing effects for Kafka-to-Kafka pipelines. Note the scope: Kafka may still redeliver or reprocess a record internally, but the committed output records and input offsets become atomic, so the observable effect is exactly-once \u2014 not literally-once delivery.",
-        "Kafka gives that with two mechanisms. The idempotent producer stamps each record with a producer id and sequence number so a retried send is deduplicated by the broker \u2014 no duplicate appends. Transactions let a consume-process-produce loop atomically write output records and commit input offsets together, so either all effects happen or none do; consumers reading with read_committed never see aborted output.",
+        "The log is now load-bearing, so delivery guarantees matter. There are three levels: at-most-once (commit the offset before processing — fast, but can lose records), at-least-once (process, then commit — the default, but can duplicate on retry), and exactly-once processing effects for Kafka-to-Kafka pipelines. Note the scope: Kafka may still redeliver or reprocess a record internally, but the committed output records and input offsets become atomic, so the observable effect is exactly-once — not literally-once delivery.",
+        "Kafka gives that with two mechanisms. The idempotent producer stamps each record with a producer id and sequence number so a retried send is deduplicated by the broker — no duplicate appends. Transactions let a consume-process-produce loop atomically write output records and commit input offsets together, so either all effects happen or none do; consumers reading with read_committed never see aborted output.",
         "The honest caveat: exactly-once is end-to-end only within Kafka (topic-to-topic). A side effect to an external system (charge a card, send an email) still needs idempotency keys on that system. So the design rule is: use transactions for Kafka-to-Kafka pipelines, and make external side effects idempotent by key."
       ],
       "view": {
@@ -1548,7 +2236,7 @@
         {
           "term": "At-least-once",
           "definition": "Process the record, then commit the offset; a crash before commit reprocesses.",
-          "whyItMatters": "The safe default \u2014 never loses, but consumers must tolerate duplicates.",
+          "whyItMatters": "The safe default — never loses, but consumers must tolerate duplicates.",
           "example": "Crash after processing, before commit -> reprocess on restart."
         },
         {
@@ -1660,13 +2348,13 @@
     },
     {
       "id": "scale-ops",
-      "title": "7. Scale & Operate \u2014 Partitions, Replication, Retention",
+      "title": "7. Scale & Operate — Partitions, Replication, Retention",
       "description": [
-        "Finally, make the backbone production-grade. Throughput and parallelism scale with partitions: more partitions per topic allow more consumers per group and more producer parallelism \u2014 but too many partitions raise metadata and rebalance cost, and repartitioning a keyed topic reshuffles ordering, so size deliberately.",
+        "Finally, make the backbone production-grade. Throughput and parallelism scale with partitions: more partitions per topic allow more consumers per group and more producer parallelism — but too many partitions raise metadata and rebalance cost, and repartitioning a keyed topic reshuffles ordering, so size deliberately.",
         "Durability comes from replication: each partition has a leader and follower replicas across brokers; producing with acks=all plus min.insync.replicas=2 means a write is acknowledged only once it's on multiple brokers, so a single broker loss is invisible. The controller quorum (KRaft) manages leadership and reassigns leaders on failure.",
-        "Retention and storage: keep data for a replay window by time or size, use compaction for table-like topics, and offload cold segments to object storage with tiered storage so retention isn't capped by local disk. Operationally the number to watch is consumer lag (how far behind the log a group is), alongside under-replicated partitions and end-to-end latency \u2014 those tell you whether to add partitions, add consumers, or add brokers.",
-        "Size from the numbers. At ~1M events/s \u00d7 ~1 KB that's ~1 GB/s raw ingest; if a partition sustains ~10 MB/s, you need on the order of ~100 partitions per hot topic (round up for headroom and consumer parallelism, and cap so metadata/rebalance cost stays sane). Replication is write amplification: RF=3 means brokers absorb ~3 GB/s of replicated writes plus cross-AZ network, so with ~200\u2013400 MB/s of usable disk+network per broker you land near a couple dozen brokers before headroom. One day of raw ingest is ~86 TB; at RF=3 that's ~259 TB/day of broker writes before compression \u2014 so a days-to-weeks hot window lives on SSD only if you assume a compression ratio (say 3\u20135\u00d7) and push cold segments to tiered object storage, which is why 100s of TB retained is plausible.",
-        "A company-wide platform also needs a control plane and reliability boundaries. Governance: topic ownership/naming/retention-class and partition-count approval, ACLs and SASL/TLS auth, producer/consumer quotas so one tenant can't dominate broker IO, per-topic schema compatibility policy, PII classification with encryption and audit logs, and a guarded offset-reset/replay workflow. Disaster recovery: active-active Kafka is hard \u2014 cluster linking or MirrorMaker replicate topics across regions but do not give transparent exactly-once global failover, so define RPO/RTO, expect duplicate/reordered records after failover, and rehearse tiered-storage restore. Set explicit SLOs: p99 produce latency, end-to-end freshness, max tolerated consumer lag, and durability/availability targets."
+        "Retention and storage: keep data for a replay window by time or size, use compaction for table-like topics, and offload cold segments to object storage with tiered storage so retention isn't capped by local disk. Operationally the number to watch is consumer lag (how far behind the log a group is), alongside under-replicated partitions and end-to-end latency — those tell you whether to add partitions, add consumers, or add brokers.",
+        "Size from the numbers. At ~1M events/s × ~1 KB that's ~1 GB/s raw ingest; if a partition sustains ~10 MB/s, you need on the order of ~100 partitions per hot topic (round up for headroom and consumer parallelism, and cap so metadata/rebalance cost stays sane). Replication is write amplification: RF=3 means brokers absorb ~3 GB/s of replicated writes plus cross-AZ network, so with ~200–400 MB/s of usable disk+network per broker you land near a couple dozen brokers before headroom. One day of raw ingest is ~86 TB; at RF=3 that's ~259 TB/day of broker writes before compression — so a days-to-weeks hot window lives on SSD only if you assume a compression ratio (say 3–5×) and push cold segments to tiered object storage, which is why 100s of TB retained is plausible.",
+        "A company-wide platform also needs a control plane and reliability boundaries. Governance: topic ownership/naming/retention-class and partition-count approval, ACLs and SASL/TLS auth, producer/consumer quotas so one tenant can't dominate broker IO, per-topic schema compatibility policy, PII classification with encryption and audit logs, and a guarded offset-reset/replay workflow. Disaster recovery: active-active Kafka is hard — cluster linking or MirrorMaker replicate topics across regions but do not give transparent exactly-once global failover, so define RPO/RTO, expect duplicate/reordered records after failover, and rehearse tiered-storage restore. Set explicit SLOs: p99 produce latency, end-to-end freshness, max tolerated consumer lag, and durability/availability targets."
       ],
       "view": {
         "nodes": [
@@ -1721,7 +2409,7 @@
           "governance"
         ]
       },
-      "decisionPrompt": "At ~1M events/s of 1 KB records, roughly how many partitions and brokers do you need \u2014 and once running, if lag climbs on one topic do you add partitions, consumers, or brokers?",
+      "decisionPrompt": "At ~1M events/s of 1 KB records, roughly how many partitions and brokers do you need — and once running, if lag climbs on one topic do you add partitions, consumers, or brokers?",
       "concepts": [
         {
           "term": "Replication + ISR",
@@ -1732,7 +2420,7 @@
         {
           "term": "Consumer lag",
           "definition": "The gap between the log-end offset and a group's committed offset.",
-          "whyItMatters": "The primary health/scaling signal \u2014 rising lag means consumers can't keep up.",
+          "whyItMatters": "The primary health/scaling signal — rising lag means consumers can't keep up.",
           "example": "Lag growing -> add consumers (up to partition count) or partitions."
         },
         {
@@ -1785,7 +2473,7 @@
     }
   ],
   "finalDesign": {
-    "title": "Final Design \u2014 Kafka Event Streaming Platform",
+    "title": "Final Design — Kafka Event Streaming Platform",
     "description": "One partitioned, replicated commit log is the backbone. Producers and collectors ingest events; consumer groups power event-driven microservices with retry/DLQ topics for poison records (replayed back onto the log after a fix); stream processors compute real-time aggregations that sink to serving stores; CDC connectors (Debezium) capture committed DB changes (DB stays authoritative) while event sourcing makes the log authoritative where that model is chosen; idempotence and transactions give exactly-once processing effects within Kafka; a governance control plane (topic ownership, ACLs, quotas, schema compatibility, connector approval, audit) keeps the shared estate safe; and partitioning, replication, retention/tiered storage, DR replication, and lag monitoring make it scale and survive. The control plane is where the platform's guarded workflows run — every risky operation is a reviewed, audited request, not an ad-hoc command: topic/partition creation and retention-class assignment, breaking-schema approval or rollback, quota and ACL changes, guarded consumer-offset reset/replay, DLQ replay after a fix, and DR failover/tiered-storage-restore rehearsals.",
     "view": {
       "nodes": [
@@ -1893,7 +2581,7 @@
           ]
         },
         "name": "One log, every use case",
-        "note": "The same durable log simultaneously serves messaging, stream processing, and integration/CDC \u2014 read independently by each.",
+        "note": "The same durable log simultaneously serves messaging, stream processing, and integration/CDC — read independently by each.",
         "highlight": [
           "Broker"
         ]
@@ -1962,7 +2650,7 @@
         ]
       },
       {
-        "requirement": "Decoupled \u2014 slow consumer never blocks producers",
+        "requirement": "Decoupled — slow consumer never blocks producers",
         "how": "Producers ack on append; consumers read asynchronously.",
         "steps": [
           "ingest",
@@ -2030,7 +2718,7 @@
       "phase": "Baseline",
       "time": "next 3 min",
       "say": [
-        "Start with N\u00d7M point-to-point integrations and name the pain: coupling, cascading failures, no replay."
+        "Start with N×M point-to-point integrations and name the pain: coupling, cascading failures, no replay."
       ]
     },
     {
