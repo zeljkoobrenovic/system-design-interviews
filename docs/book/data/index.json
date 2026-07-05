@@ -281,11 +281,22 @@
           "id": "url-shortener",
           "name": "URL Shortener",
           "path": "data/url-shortener/interview.json"
+        }
+      ]
+    },
+    {
+      "id": "golden-hammer",
+      "name": "Golden Hammers",
+      "datasets": [
+        {
+          "id": "just-use-redis",
+          "name": "Just Use Redis!",
+          "path": "data/just-use-redis/interview.json"
         },
         {
-          "id": "redis-data-structures",
-          "name": "Redis as a Data Platform",
-          "path": "data/redis-data-structures/interview.json"
+          "id": "just-use-kafka",
+          "name": "Just Use Kafka!",
+          "path": "data/just-use-kafka/interview.json"
         }
       ]
     },
