@@ -285,6 +285,22 @@
       ]
     },
     {
+      "id": "golden-hammer",
+      "name": "Golden Hammers",
+      "datasets": [
+        {
+          "id": "just-use-redis",
+          "name": "Just Use Redis!",
+          "path": "data/just-use-redis/interview.json"
+        },
+        {
+          "id": "just-use-kafka",
+          "name": "Just Use Kafka!",
+          "path": "data/just-use-kafka/interview.json"
+        }
+      ]
+    },
+    {
       "id": "data-intensive",
       "name": "Data-Intensive Systems",
       "datasets": [
