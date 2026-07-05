@@ -1,6 +1,6 @@
 {
   "title": "Kafka Use Cases \u2014 Event Streaming Platform Design",
-  "description": "Design a company-wide event streaming platform on Apache Kafka, using the interview to tour Kafka's canonical use cases: decoupled ingestion / log aggregation, asynchronous pub/sub for event-driven microservices, real-time stream processing, event sourcing and change-data-capture (CDC), and the delivery-semantics (idempotence, transactions, exactly-once) that make it all trustworthy. The organizing idea is the partitioned, replicated, append-only commit log \u2014 one backbone that every producer writes to and every consumer independently reads from.",
+  "description": "Design a company-wide event streaming platform on Apache Kafka, using the interview to tour Kafka's canonical use cases: decoupled ingestion and log aggregation, asynchronous pub/sub for event-driven microservices, real-time stream processing, event sourcing and change-data-capture (CDC), and the delivery semantics (idempotence, transactions, exactly-once) that make it all trustworthy. The organizing idea is the partitioned, replicated, append-only commit log \u2014 one backbone that every producer writes to and every consumer reads independently.",
   "highLevelArchitecture": {
     "nodes": [
       {
@@ -72,6 +72,16 @@
           "stateless"
         ],
         "description": "Microservices in consumer groups that subscribe and react to events."
+      },
+      {
+        "id": "Orchestrator",
+        "label": "Sync Orchestrator (RPC)",
+        "type": "orchestrator",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Alternative-only: a central service that calls each downstream synchronously in sequence — the coupled contrast to pub/sub fan-out."
       },
       {
         "id": "Stream",
@@ -252,6 +262,18 @@
         "label": "write (source of truth)"
       },
       {
+        "id": "prod-orch",
+        "from": "Producers",
+        "to": "Orchestrator",
+        "label": "call orchestrator (sync)"
+      },
+      {
+        "id": "orch-cons",
+        "from": "Orchestrator",
+        "to": "Consumers",
+        "label": "RPC each downstream in turn"
+      },
+      {
         "id": "broker-metrics",
         "from": "Broker",
         "to": "Metrics",
@@ -417,7 +439,7 @@
     {
       "label": "Retained data",
       "value": "100s of TB",
-      "note": "Raw ~86 TB/day, ~259 TB/day at RF=3 pre-compression; compression + tiering keep it feasible."
+      "note": "~86 TB/day raw, ~259 TB/day at RF=3 before compression; compression + tiering keep it feasible."
     }
   ],
   "api": [
@@ -793,7 +815,7 @@
       "title": "2. Ingestion & Log Aggregation \u2014 the Decoupled Log",
       "description": [
         "Introduce Kafka as the central pipeline: producers and collector agents publish events to topics, and the broker persists them to a partitioned, replicated, append-only log. This is Kafka's original use case \u2014 aggregating high-volume logs, metrics, and clickstream from many sources into one durable stream.",
-        "The decoupling is the point. A producer's send() returns once the event is durably appended (acks=all); it doesn't wait for any consumer. On failure the producer client retries, and the idempotent producer plus batching and compression keep throughput high without creating duplicate appends. Consumers read at their own pace and, crucially, from any offset \u2014 so a consumer that was down simply resumes and catches up. The caveat: recovery is only lossless if the downtime fits inside the retention/compaction window (or a tiered-storage replay), so retention is what backs the 'nothing is lost' promise.",
+        "The decoupling is the point. A producer's send() returns once the event is durably appended (acks=all); it doesn't wait for any consumer. On failure the producer client retries, and the idempotent producer plus batching and compression keep throughput high without creating duplicate appends. Consumers read at their own pace and, crucially, from any offset \u2014 so a consumer that was down simply resumes and catches up. The caveat: recovery is only lossless if the downtime fits inside the retention window (or a tiered-storage replay), so retention is what backs the 'nothing is lost' promise.",
         "The producer here is a client library (the Gateway node), not a deployable gateway service \u2014 apps link it and connect straight to brokers; there's no extra hop. A partition is the unit of ordering and parallelism: records are strictly ordered within a partition, and the producer's key (e.g. userId) decides the partition, so all events for one key stay ordered. A Schema Registry enforces that producers and consumers agree on event shape as it evolves."
       ],
       "view": {
@@ -1006,17 +1028,18 @@
           "view": {
             "nodes": [
               "Producers",
-              "SourceDB",
+              "Orchestrator",
               "Consumers",
               "Serving"
             ],
             "links": [
-              "prod-source",
+              "prod-orch",
+              "orch-cons",
               "cons-serving"
             ],
-            "caption": "A synchronous orchestration alternative \u2014 simpler to trace but re-couples services.",
+            "caption": "A central orchestrator calls each downstream synchronously in sequence \u2014 simpler to trace but re-couples services and becomes a bottleneck/SPOF.",
             "highlight": [
-              "Producers"
+              "Orchestrator"
             ]
           }
         }
@@ -1245,9 +1268,9 @@
       "id": "cdc",
       "title": "5. CDC & Event Sourcing \u2014 Where the Source of Truth Lives",
       "description": [
-        "Two use cases put the log at the center of integration, but they differ in one crucial way \u2014 where the single commit point is. In CDC the database commit is authoritative; in event sourcing the event append is. Getting this boundary right is the difference between a correct design and a production bug.",
+        "Two use cases put the log at the center of integration, but they differ in one crucial way \u2014 where the single commit point lives. In CDC the database commit is authoritative; in event sourcing the event append is. Getting this boundary right is the difference between a correct design and a production bug.",
         "Change-Data-Capture (CDC): a connector like Debezium tails a database's write-ahead log and publishes every committed row change as an event. The operational DB stays the source of truth \u2014 Kafka holds a replicated, replayable, derived change stream. This is how you liberate data trapped in monolith databases: the search index, cache, warehouse, and other services subscribe to the change stream instead of querying the source DB. Event sourcing: services persist state as an ordered stream of domain events, and the event append is the authoritative write \u2014 current state is a fold over that history, rebuildable and auditable.",
-        "Both avoid the dual-write problem (a DB write and a separate Kafka publish that can diverge on failure), but by different means. CDC derives events from the one DB commit. The transactional outbox writes the business row and an outbox row in one DB transaction, then a relay publishes them. Event sourcing sidesteps it entirely because there is only one write \u2014 the event. Log compaction keeps at least the latest value per key forever, so a change topic (CDC) or projection can act as a durable table you bootstrap new consumers from; any read model (index, cache, OLAP) becomes a materialized view you can drop and rebuild by replay."
+        "Both avoid the dual-write problem (a DB write and a separate Kafka publish that can diverge on failure), but by different means. CDC derives events from the one DB commit; the transactional outbox writes the business row and an outbox row in one DB transaction, then a relay publishes them; event sourcing sidesteps the problem entirely because there is only one write \u2014 the event. Log compaction keeps at least the latest value per key forever, so a change topic (CDC) or projection can act as a durable table you bootstrap new consumers from; any read model (index, cache, OLAP) becomes a materialized view you can drop and rebuild by replay."
       ],
       "view": {
         "nodes": [
@@ -1488,7 +1511,7 @@
       "id": "semantics",
       "title": "6. Delivery Semantics \u2014 Idempotence, Transactions, Exactly-Once",
       "description": [
-        "The log is now load-bearing, so delivery guarantees matter. The three levels: at-most-once (commit offset before processing \u2014 fast, can lose), at-least-once (process then commit \u2014 the default, can duplicate on retry), and exactly-once processing effects for Kafka-to-Kafka pipelines. Note the scope: Kafka may still redeliver or reprocess a record internally, but the committed output records and input offsets become atomic, so the observable effect is exactly-once \u2014 not literally-once delivery.",
+        "The log is now load-bearing, so delivery guarantees matter. There are three levels: at-most-once (commit the offset before processing \u2014 fast, but can lose records), at-least-once (process, then commit \u2014 the default, but can duplicate on retry), and exactly-once processing effects for Kafka-to-Kafka pipelines. Note the scope: Kafka may still redeliver or reprocess a record internally, but the committed output records and input offsets become atomic, so the observable effect is exactly-once \u2014 not literally-once delivery.",
         "Kafka gives that with two mechanisms. The idempotent producer stamps each record with a producer id and sequence number so a retried send is deduplicated by the broker \u2014 no duplicate appends. Transactions let a consume-process-produce loop atomically write output records and commit input offsets together, so either all effects happen or none do; consumers reading with read_committed never see aborted output.",
         "The honest caveat: exactly-once is end-to-end only within Kafka (topic-to-topic). A side effect to an external system (charge a card, send an email) still needs idempotency keys on that system. So the design rule is: use transactions for Kafka-to-Kafka pipelines, and make external side effects idempotent by key."
       ],
@@ -1678,13 +1701,14 @@
           "connect-wh",
           "cons-serving",
           "cons-dlq",
+          "dlq-broker",
           "broker-metrics",
           "cons-metrics",
           "schema-cons",
           "cp-broker",
           "cp-schema"
         ],
-        "caption": "The full platform: replicated, partitioned brokers with a controller quorum, schema registry, a governance control plane (ACLs/quotas/retention classes), stream/CDC integration, retry/DLQ topics, sinks, and lag/health monitoring.",
+        "caption": "The full platform: replicated, partitioned brokers with a controller quorum, schema registry, a governance control plane (ACLs/quotas/retention classes), stream/CDC integration, retry/DLQ topics replayed after a fix, sinks, and lag/health monitoring.",
         "highlight": [
           "Broker",
           "Zoo",
@@ -1730,6 +1754,9 @@
           "example": "MirrorMaker to a standby region; rehearse failover and tiered-storage restore."
         }
       ],
+      "patterns": [
+        "Platform control plane (governance)"
+      ],
       "whyNow": [
         "Once the log carries load-bearing, authoritative data, partition/replication/retention sizing, governance, DR, and lag monitoring are what keep it up."
       ],
@@ -1759,7 +1786,7 @@
   ],
   "finalDesign": {
     "title": "Final Design \u2014 Kafka Event Streaming Platform",
-    "description": "One partitioned, replicated commit log is the backbone. Producers and collectors ingest events; consumer groups power event-driven microservices with retry/DLQ topics for poison records; stream processors compute real-time aggregations; CDC connectors (Debezium) capture committed DB changes (DB stays authoritative) while event sourcing makes the log authoritative where that model is chosen; idempotence and transactions give exactly-once processing effects within Kafka; a governance control plane (topic ownership, ACLs, quotas, schema compatibility, connector approval, audit) keeps the shared estate safe; and partitioning, replication, retention/tiered storage, DR replication, and lag monitoring make it scale and survive.",
+    "description": "One partitioned, replicated commit log is the backbone. Producers and collectors ingest events; consumer groups power event-driven microservices with retry/DLQ topics for poison records (replayed back onto the log after a fix); stream processors compute real-time aggregations that sink to serving stores; CDC connectors (Debezium) capture committed DB changes (DB stays authoritative) while event sourcing makes the log authoritative where that model is chosen; idempotence and transactions give exactly-once processing effects within Kafka; a governance control plane (topic ownership, ACLs, quotas, schema compatibility, connector approval, audit) keeps the shared estate safe; and partitioning, replication, retention/tiered storage, DR replication, and lag monitoring make it scale and survive. The control plane is where the platform's guarded workflows run — every risky operation is a reviewed, audited request, not an ad-hoc command: topic/partition creation and retention-class assignment, breaking-schema approval or rollback, quota and ACL changes, guarded consumer-offset reset/replay, DLQ replay after a fix, and DR failover/tiered-storage-restore rehearsals.",
     "view": {
       "nodes": [
         "Producers",
@@ -1793,13 +1820,14 @@
         "connect-wh",
         "cons-serving",
         "cons-dlq",
+        "dlq-broker",
         "broker-metrics",
         "cons-metrics",
         "schema-cons",
         "cp-broker",
         "cp-schema"
       ],
-      "caption": "Every Kafka use case on one backbone: ingestion, pub/sub microservices, stream processing, CDC/event sourcing, exactly-once delivery, plus a governance control plane and retry/DLQ path.",
+      "caption": "Every Kafka use case on one backbone: ingestion, pub/sub microservices, stream processing, CDC/event sourcing, exactly-once delivery, plus a governance control plane and a retry/DLQ path that replays after a fix.",
       "groups": [
         "backbone",
         "processing",
@@ -2018,7 +2046,17 @@
       "time": "final 5 min",
       "say": [
         "Cover delivery semantics (at-least-once default; idempotence + transactions for EOS) and the external-side-effect caveat.",
-        "Close on partitions, replication (acks=all/min.insync), retention/tiered storage, and consumer lag as the ops signal."
+        "Close on partitions, replication (acks=all/min.insync), retention/tiered storage, and consumer lag as the ops signal.",
+        "Land the shared-platform layer: a control plane for topic ownership/retention classes, ACLs and per-tenant quotas, per-topic schema compatibility, PII classification/audit, and guarded offset-reset/DLQ-replay workflows.",
+        "Name the DR reality: cross-region replication has no transparent exactly-once failover — state RPO/RTO, expect duplicates/reorder after cutover, and rehearse restore."
+      ]
+    },
+    {
+      "phase": "When not Kafka",
+      "time": "if time remains",
+      "say": [
+        "Close the golden-hammer loop: Kafka is a durable replayable fan-out log, not an RPC layer, a database, a workflow engine, or a low-latency ephemeral bus.",
+        "Contrast with RPC for sync command/query, a DB/object store for queryable state, a task queue when replay/independent groups aren't needed, and Redis for ephemeral notifications."
       ]
     }
   ],
@@ -2041,7 +2079,9 @@
       "level": "Senior",
       "expectations": [
         "Reasons about CDC/event sourcing, the dual-write problem, and log compaction.",
-        "Gets replication/ISR durability, transactions' exactly-once scope (and its external-effect limit), and sizing partitions/retention with lag as the driver."
+        "Gets replication/ISR durability, transactions' exactly-once scope (and its external-effect limit), and sizing partitions/retention with lag as the driver.",
+        "Treats it as a shared platform: a control plane for topic ownership/retention classes, ACLs, per-tenant quotas, per-topic schema compatibility, PII classification/audit, and guarded offset-reset/DLQ-replay workflows.",
+        "Reasons about DR trade-offs — cross-region replication with defined RPO/RTO, no transparent exactly-once failover, and rehearsed restore — and knows when NOT to reach for Kafka."
       ]
     }
   ],
