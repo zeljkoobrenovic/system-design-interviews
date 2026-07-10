@@ -1,6 +1,6 @@
 {
   "title": "Firmware Platform \u2014 Embedded Systems Design",
-  "description": "Design the software architecture for a connected embedded device (IoT/automotive) that must run across multiple MCUs, meet real-time deadlines, stay unit-testable, and update safely in the field. The themes are layering (HAL, drivers, kernel, application), decoupling for portability and testability, disciplined data ownership, and safe over-the-air updates.",
+  "description": "Design the software architecture for a connected, MCU-class embedded device (IoT / connected-product; automotive-adjacent) that must run across multiple MCUs, meet real-time deadlines, stay unit-testable, and update safely in the field. Scope is general firmware architecture; functional-safety partitioning (ISO 26262 / ASIL), certified toolchains, and automotive diagnostics (CAN/UDS) are out of scope and called out where they would reshape the design. The themes are layering (HAL, drivers, kernel, application), decoupling for portability and testability, disciplined data ownership, and safe over-the-air updates.",
   "highLevelArchitecture": {
     "nodes": [
       {
@@ -383,10 +383,13 @@
   "capacityDiagram": [
     "graph LR",
     "  RAM[RAM ~64-256 KB]",
-    "  Flash[Flash ~512 KB-2 MB]",
+    "  Flash[Flash ~512 KB-2 MB : boot + A/B + cfg]",
+    "  Queue[Event queue 8-16 slots]",
+    "  Budget[Task budget ~290 us of 1 ms]",
     "  Loop[Control loop 1-10 kHz]",
     "  Deadline[Hard deadline <1 ms]",
-    "  RAM --> Loop --> Deadline",
+    "  RAM --> Budget --> Loop --> Deadline",
+    "  Queue --> Budget",
     "  Flash --> Loop"
   ],
   "requirements": {
@@ -456,6 +459,46 @@
       "label": "Watchdog window",
       "value": "kick every \u226410 ms",
       "note": "Supervisor confirms critical tasks checked in before kicking; margin > worst-case task jitter."
+    },
+    {
+      "label": "Task table \u00b7 Control",
+      "value": "1 kHz \u00b7 prio hi \u00b7 WCET 200 \u00b5s \u00b7 stack 2K \u00b7 block \u226410 \u00b5s",
+      "note": "Rate-monotonic top priority; reads blackboard snapshot; drop policy: skip-and-log a missed tick, never block on flash."
+    },
+    {
+      "label": "Task table \u00b7 Sensor/ISR handoff",
+      "value": "event-driven \u00b7 prio hi-1 \u00b7 WCET 50 \u00b5s \u00b7 stack 1K \u00b7 queue 8\u201316",
+      "note": "Wakes on SAMPLE_READY; drop-oldest on queue overflow; ISR itself \u226420 \u00b5s (latch + post)."
+    },
+    {
+      "label": "Task table \u00b7 Telemetry/MQTT",
+      "value": "10\u2013100 ms \u00b7 prio lo \u00b7 WCET 300 \u00b5s \u00b7 stack 4K \u00b7 ring 4\u201316 KB",
+      "note": "Drains the telemetry ring with backoff; never on the control path; policy: coalesce/drop-oldest when the ring is full offline."
+    },
+    {
+      "label": "Task table \u00b7 Config writer",
+      "value": "on-demand \u00b7 prio lo \u00b7 WCET \u2264 flash erase \u00b7 stack 1K",
+      "note": "Off the hot path; a flash erase stalls ms, so it runs at low priority and yields the CPU across the write."
+    },
+    {
+      "label": "Task table \u00b7 OTA download",
+      "value": "on-demand \u00b7 prio lowest \u00b7 WCET chunk-bounded \u00b7 stack 3K \u00b7 scratch in flash",
+      "note": "Resumable chunked download to the inactive slot; lowest priority so it never steals the control deadline."
+    },
+    {
+      "label": "Task table \u00b7 Supervisor/watchdog",
+      "value": "1 kHz tick \u00b7 prio highest \u00b7 WCET 20 \u00b5s \u00b7 stack 512 B",
+      "note": "Checks every critical task's check-in flag, kicks the HW watchdog only if all are set within the window."
+    },
+    {
+      "label": "Schedulability check",
+      "value": "\u2264 290 \u00b5s used of the 1 ms period",
+      "note": "Control 200 \u00b5s + ISR jitter 20 \u00b5s + bounded blocking 10 \u00b5s + supervisor 20 \u00b5s + higher-priority sensor 50 \u00b5s (worst case, staggered) \u2192 >70% headroom; lower-priority telemetry/config/OTA run only in the slack."
+    },
+    {
+      "label": "RAM budget breakdown",
+      "value": "task stacks ~12K + static pools + queues 1\u20134K + blackboard + telemetry ring 4\u201316K + OTA scratch",
+      "note": "No malloc on the hot path: everything is static/pool. Sum of the above must fit the 64\u2013256 KB part with headroom for driver buffers."
     }
   ],
   "api": [
@@ -596,6 +639,10 @@
           "type": "bytes (signed by release key)"
         },
         {
+          "name": "signing_key_id",
+          "type": "uint8 (release key version, for rotation)"
+        },
+        {
           "name": "size",
           "type": "uint32"
         },
@@ -607,15 +654,27 @@
     },
     {
       "name": "device_identity",
-      "note": "Per-device root of trust for OTA and telemetry auth.",
+      "note": "Per-device root of trust for OTA and telemetry auth. Provisioned in manufacturing; the device cert is renewable and revocable at the backend.",
       "fields": [
         {
           "name": "device_id",
-          "type": "uuid PK"
+          "type": "uuid PK (fused at provisioning)"
         },
         {
           "name": "device_cert",
-          "type": "x509 (provisioned)"
+          "type": "x509 (provisioned, private key in secure element)"
+        },
+        {
+          "name": "cert_status",
+          "type": "enum(active,expiring,revoked)"
+        },
+        {
+          "name": "cert_not_after",
+          "type": "uint32 (renewal deadline)"
+        },
+        {
+          "name": "root_key_id",
+          "type": "uint8 (which fused root pubkey trusts manifests)"
         },
         {
           "name": "cohort",
@@ -629,7 +688,7 @@
     },
     {
       "name": "fault_record",
-      "note": "Breadcrumb log for field diagnostics and telemetry.",
+      "note": "On-device diagnostic breadcrumb: written by the fault handler for post-mortem, distinct from fleet metrics (kept longer, higher-detail, may be redacted before upload).",
       "fields": [
         {
           "name": "seq",
@@ -650,6 +709,62 @@
         {
           "name": "context",
           "type": "bytes (PC/regs snapshot)"
+        }
+      ]
+    },
+    {
+      "name": "telemetry_event",
+      "note": "Fleet metric/event in the local durable ring buffer; drained by the MQTT task with backoff and dropped/coalesced by policy when offline overflows the ring. Distinct from fault_record: shorter retention, redacted, fleet-facing.",
+      "fields": [
+        {
+          "name": "seq",
+          "type": "uint32 PK (monotonic)"
+        },
+        {
+          "name": "ts",
+          "type": "uint32 (device uptime / RTC)"
+        },
+        {
+          "name": "severity",
+          "type": "enum(info,warn,error)"
+        },
+        {
+          "name": "class",
+          "type": "enum (metric | fault | rollout-health)"
+        },
+        {
+          "name": "payload",
+          "type": "bytes (bounded)"
+        },
+        {
+          "name": "redacted",
+          "type": "bool (PII stripped before upload)"
+        },
+        {
+          "name": "retry_count",
+          "type": "uint8 (backoff)"
+        }
+      ]
+    },
+    {
+      "name": "telemetry_cursor",
+      "note": "Single owned cursor pair over the telemetry ring: head = next slot to append, acked = last sequence the broker confirmed. On overflow, the oldest unacked below a retention floor is dropped/coalesced.",
+      "fields": [
+        {
+          "name": "head_seq",
+          "type": "uint32"
+        },
+        {
+          "name": "acked_seq",
+          "type": "uint32 (advances on broker ack)"
+        },
+        {
+          "name": "dropped_count",
+          "type": "uint32 (overflow accounting)"
+        },
+        {
+          "name": "capacity",
+          "type": "uint16 (ring slots)"
         }
       ]
     }
@@ -726,7 +841,7 @@
       "title": "1. Naive: One Big Super-Loop, Registers Everywhere (baseline)",
       "description": [
         "Start with the simplest thing that boots and blinks: a single main() with a while(1) super-loop that reads sensors and drives outputs by poking MCU registers directly inline.",
-        "It works on the bench and on exactly one board. But the application logic is welded to this chip's register map, nothing can be tested without the hardware in hand, and one slow inline operation blows every timing budget after it. The moment you need a second MCU, real-time multitasking, or a CI test, this design has to be torn apart."
+        "It works on the bench and on exactly one board. But the application logic is welded to this chip's register map, nothing can be tested without the hardware in hand, and one slow inline operation blows the timing budget for everything after it. The moment you need a second MCU, real-time multitasking, or a CI test, this design has to be torn apart."
       ],
       "view": {
         "nodes": [
@@ -894,8 +1009,8 @@
       "id": "kernel",
       "title": "3. Choose a Scheduler: Super-Loop vs RTOS",
       "description": [
-        "Decide how tasks get CPU time. A cooperative super-loop is tiny and deterministic but a single long operation delays everything after it. An RTOS (FreeRTOS, Zephyr) or embedded Linux gives you pre-emptive tasks, priorities, and blocking primitives so a high-priority control loop always meets its deadline.",
-        "Choosing an RTOS is necessary but not sufficient: a 1 kHz loop only meets its deadline if you build a timing budget. Assign priorities rate-monotonically (faster loop = higher priority), size each task's stack and worst-case execution time, keep ISRs tiny and hand work to tasks through a bounded queue, and cap every critical section so a high-priority task can't be blocked by a low-priority one for longer than a bounded time (priority inheritance on mutexes).",
+        "Decide how tasks get CPU time. A cooperative super-loop is tiny and deterministic, but a single long operation delays everything after it. An RTOS (FreeRTOS, Zephyr) or embedded Linux gives you pre-emptive tasks, priorities, and blocking primitives, so a high-priority control loop can pre-empt lower-priority work. That pre-emption is the mechanism a deadline guarantee is built on — but the guarantee itself comes from the timing budget below, not from the RTOS alone.",
+        "Choosing an RTOS is necessary but not sufficient: a 1 kHz loop only meets its deadline if you build a timing budget. That means assigning priorities rate-monotonically (faster loop = higher priority), sizing each task's stack and worst-case execution time, keeping ISRs tiny and handing work to tasks through a bounded queue, and capping every critical section so a high-priority task can't be blocked by a low-priority one for longer than a bounded time (priority inheritance on mutexes).",
         "Pick the simplest scheduler that meets the timing requirements: bare-metal for a doorbell, an RTOS for a motor controller with hard real-time loops, Linux when you need a full network stack and filesystem."
       ],
       "view": {
@@ -1192,7 +1307,7 @@
       "title": "5. Data Ownership & Shared State (Blackboard)",
       "description": [
         "Eliminate shared globals. Give each piece of state a single owning module; everyone else reads and writes through that module's API. Where many modules genuinely need a common snapshot (latest sensor readings), use a controller-coordinated blackboard rather than ad-hoc globals.",
-        "Strict data ownership plus a coordinated blackboard keeps changes local (touch one owner, not fifty call sites) and removes the data races that a naive shared-global design invites \u2014 the difference between a maintainable platform and a spaghetti diagram."
+        "Strict data ownership plus a coordinated blackboard keeps changes local (touch one owner, not fifty call sites) and removes the data races that a naive shared-global design invites \u2014 the difference between a maintainable platform and a tangle of shared globals."
       ],
       "view": {
         "nodes": [
@@ -1383,6 +1498,11 @@
           "trap": "Writing config in place from the real-time hot path, or from multiple owners.",
           "why": "Flash erase/program stalls the bus for milliseconds (missing the control tick), wears cells, and a brown-out mid-write corrupts the only copy.",
           "instead": "One owner writes off the hot path to the inactive bank, verifies CRC, then atomically flips the active pointer; fall back to the last-good bank or factory default on corrupt boot."
+        },
+        {
+          "trap": "Reading a blackboard value without checking how old it is.",
+          "why": "A stalled sensor task leaves a stale snapshot; the control loop acting on a frozen reading is worse than acting on none.",
+          "instead": "Timestamp/version every cell and give the reader an explicit stale policy: if age > threshold (e.g. 3 periods), treat the sample as invalid — hold last-safe, use a fallback, or fault — rather than trusting it."
         }
       ],
       "recap": {
@@ -1447,6 +1567,130 @@
           "instead": "Have a supervisor kick only after each critical task has checked in within its deadline."
         }
       ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "App",
+                "label": "Critical Tasks"
+              },
+              {
+                "id": "Kernel",
+                "label": "Supervisor"
+              },
+              {
+                "id": "Fault",
+                "label": "Watchdog / Fault"
+              },
+              {
+                "id": "Flash",
+                "label": "Fault Log"
+              }
+            ],
+            "messages": [
+              {
+                "from": "App",
+                "to": "Kernel",
+                "arrow": "->>",
+                "label": "set check-in flag each period"
+              },
+              {
+                "type": "alt",
+                "label": "all critical flags set within the window",
+                "messages": [
+                  {
+                    "from": "Kernel",
+                    "to": "Fault",
+                    "arrow": "->>",
+                    "label": "kick HW watchdog, clear flags"
+                  }
+                ],
+                "else": {
+                  "label": "a task missed its check-in",
+                  "messages": [
+                    {
+                      "from": "Fault",
+                      "to": "Flash",
+                      "arrow": "->>",
+                      "label": "write fault breadcrumb (code, task, PC/regs)"
+                    },
+                    {
+                      "from": "Fault",
+                      "to": "Fault",
+                      "arrow": "->>",
+                      "label": "watchdog window expires → HW reset"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Fault",
+            "Kernel"
+          ]
+        },
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Boot",
+                "label": "Bootloader"
+              },
+              {
+                "id": "Flash",
+                "label": "Flash (A/B + fault log)"
+              },
+              {
+                "id": "App",
+                "label": "Application"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Boot",
+                "to": "Flash",
+                "arrow": "->>",
+                "label": "read active slot manifest + fault breadcrumb"
+              },
+              {
+                "from": "Boot",
+                "to": "Flash",
+                "arrow": "->>",
+                "label": "verify signature + hash + anti-rollback floor"
+              },
+              {
+                "type": "alt",
+                "label": "integrity OK",
+                "messages": [
+                  {
+                    "from": "Boot",
+                    "to": "App",
+                    "arrow": "->>",
+                    "label": "jump to application"
+                  }
+                ],
+                "else": {
+                  "label": "verification fails / prior fault",
+                  "messages": [
+                    {
+                      "from": "Boot",
+                      "to": "Flash",
+                      "arrow": "->>",
+                      "label": "reject slot, fall back to known-good; log"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Boot",
+            "Flash"
+          ]
+        }
+      ],
       "recap": {
         "before": "A hang or corrupt image could brick the device.",
         "after": "Watchdog recovers hangs; the bootloader verifies images.",
@@ -1458,7 +1702,7 @@
       "title": "7. Safe Over-the-Air Updates & Fleet Telemetry",
       "description": [
         "Update the whole fleet without bricking any device \u2014 and without a compromised image ever booting. The device has a provisioned identity (per-device cert) and a root of trust burned in; the bootloader verifies a signed manifest (hash + signature + anti-rollback floor) before it will stage an image. The rollout controller assigns each new version to a cohort (ring) of devices, which poll for and download the image (resumable, power-loss-safe) into the inactive A/B slot.",
-        "The device boots the new image once on trial; the application must confirm health within a window or the bootloader rolls back to the known-good slot on the next reset. Devices stream telemetry and faults back through the cloud, and the rollout controller uses that fault-rate as a health gate: it advances the rollout ring by ring and automatically halts if errors spike. This \u2014 identity, signed manifests, anti-rollback, staged rings, and a telemetry health gate \u2014 is what makes 'never brick the fleet' credible at 10M devices, not the local slot switch alone."
+        "The device boots the new image once on trial; the application must confirm health within a window, or the bootloader rolls back to the known-good slot on the next reset. Meanwhile, devices stream telemetry and faults back through the cloud, and the rollout controller uses that fault-rate as a health gate: it advances the rollout ring by ring and automatically halts if errors spike. Taken together \u2014 identity, signed manifests, anti-rollback, staged rings, and a telemetry health gate \u2014 this is what makes 'never brick the fleet' credible at 10M devices, not the local slot switch alone."
       ],
       "view": {
         "nodes": [
@@ -1517,6 +1761,18 @@
           "definition": "Each device carries a provisioned unique cert/key used to authenticate to the fleet backend and receive its cohort assignment.",
           "whyItMatters": "Lets the backend target cohorts, revoke compromised devices, and trust telemetry provenance.",
           "example": "Device presents its cert over mutual-TLS; the backend maps it to a rollout cohort."
+        },
+        {
+          "term": "Key & certificate lifecycle",
+          "definition": "Provisioning (fuse a device ID + cert + root public key in manufacturing), renewal (rotate the device cert before it expires), revocation (backend refuses a compromised device's cert), and signing-key rotation (bump signing_key_id / root_key_id so old release keys stop being trusted).",
+          "whyItMatters": "A signed-update system is only as strong as its key custody: without rotation and revocation a leaked release key or cloned device compromises the whole fleet, and an expired cert must not strand a working device.",
+          "example": "A cohort is quarantined by revoking its certs; the next release is signed with signing_key_id=2 after a suspected key leak; a device that can't reach the backend to renew keeps running on its last-good image and retries renewal on reconnect."
+        },
+        {
+          "term": "Durable telemetry buffer (ring + ack cursor)",
+          "definition": "Events are appended to a bounded local ring; an MQTT task drains it with exponential backoff, and the broker ack advances an acked cursor. On overflow the oldest unacked below a retention floor is dropped or coalesced.",
+          "whyItMatters": "Intermittent connectivity is a requirement — without a durable buffer and ack cursor, hours offline either lose all telemetry or grow unbounded, and a rollout health gate that depends on absent telemetry can't decide safely.",
+          "example": "Device is offline 6 h; the ring coalesces repeated warnings and keeps the newest errors; on reconnect it drains oldest-first until acked_seq catches head_seq."
         }
       ],
       "whyNow": [
@@ -1678,12 +1934,87 @@
             "Cloud",
             "Boot"
           ]
+        },
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Fault",
+                "label": "Fault Handler / App"
+              },
+              {
+                "id": "MsgQueue",
+                "label": "Telemetry Ring"
+              },
+              {
+                "id": "App",
+                "label": "MQTT Task"
+              },
+              {
+                "id": "Cloud",
+                "label": "Fleet Backend"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Fault",
+                "to": "MsgQueue",
+                "arrow": "->>",
+                "label": "append telemetry_event (head_seq++)"
+              },
+              {
+                "type": "alt",
+                "label": "ring full (offline)",
+                "messages": [
+                  {
+                    "from": "MsgQueue",
+                    "to": "MsgQueue",
+                    "arrow": "->>",
+                    "label": "drop/coalesce oldest unacked below retention floor (dropped_count++)"
+                  }
+                ],
+                "else": {
+                  "label": "online",
+                  "messages": [
+                    {
+                      "from": "App",
+                      "to": "MsgQueue",
+                      "arrow": "->>",
+                      "label": "drain from acked_seq (backoff on failure)"
+                    },
+                    {
+                      "from": "App",
+                      "to": "Cloud",
+                      "arrow": "->>",
+                      "label": "MQTT publish batch (mTLS, redacted)"
+                    },
+                    {
+                      "from": "Cloud",
+                      "to": "App",
+                      "arrow": "-->>",
+                      "label": "broker ack"
+                    },
+                    {
+                      "from": "App",
+                      "to": "MsgQueue",
+                      "arrow": "->>",
+                      "label": "advance acked_seq"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "MsgQueue",
+            "Cloud"
+          ]
         }
       ],
       "recap": {
         "before": "Updates risked bricking devices.",
-        "after": "Identity + signed manifests + anti-rollback + staged rings + health-gated A/B OTA with resumable download and rollback.",
-        "newRisk": "Operational scale: key rotation, cohort strategy, and telemetry volume across millions of devices."
+        "after": "Identity + signed manifests + anti-rollback + staged rings + health-gated A/B OTA with resumable download and rollback; provisioned certs with rotation/revocation and a durable telemetry ring with ack cursor.",
+        "newRisk": "Ongoing operational scale: cohort strategy, key-custody drills, and telemetry ingest cost across millions of devices."
       }
     }
   ],
@@ -1824,7 +2155,7 @@
           "AWS IoT Device Management (OTA jobs)"
         ],
         "gcp": [
-          "GCP IoT (partner OTA)"
+          "Clearblade IoT Core (partner) + Cloud Storage"
         ],
         "azure": [
           "Azure Device Update for IoT Hub"
@@ -1866,6 +2197,37 @@
       ]
     },
     {
+      "concern": "Provisioning & key lifecycle",
+      "steps": [
+        "ota"
+      ],
+      "selfHosted": [
+        "Secure-element pre-provisioning (ATECC608 / SE050)",
+        "Custom manufacturing provisioning station",
+        "Self-managed CA (step-ca / EJBCA)"
+      ],
+      "cloud": {
+        "aws": [
+          "AWS IoT fleet provisioning + device certs",
+          "AWS IoT Core CA / cert revocation"
+        ],
+        "gcp": [
+          "Cloud CA Service + Clearblade device registry (partner)"
+        ],
+        "azure": [
+          "Azure DPS (device provisioning service)",
+          "Azure IoT Hub cert enrollment / disable"
+        ]
+      },
+      "tradeoff": [
+        "Pre-provisioning identity into a secure element at the factory resists cloning but needs a trusted provisioning station; claim-based provisioning is simpler to operate but widens the trust window at first boot.",
+        "A managed CA/DPS handles renewal and revocation at fleet scale; a self-managed CA keeps custody in-house but you run rotation, CRL/OCSP, and revocation yourself."
+      ],
+      "makesIrrelevant": [
+        "Per-device certs with backend revocation remove the need for a shared fleet-wide secret whose leak would compromise every device at once."
+      ]
+    },
+    {
       "concern": "Fleet connectivity & telemetry",
       "steps": [
         "ota"
@@ -1880,14 +2242,15 @@
           "AWS IoT Core"
         ],
         "gcp": [
-          "Cloud IoT / Pub/Sub"
+          "Pub/Sub + MQTT bridge (or Clearblade IoT Core, partner)"
         ],
         "azure": [
           "Azure IoT Hub"
         ]
       },
       "tradeoff": [
-        "Managed IoT hubs give device identity, auth, and scale out of the box; self-hosted MQTT is cheaper and portable but you operate the reliability."
+        "Managed IoT hubs give device identity, auth, and scale out of the box; self-hosted MQTT is cheaper and portable but you operate the reliability.",
+        "Google retired its native IoT Core (2023), so GCP fleets use a partner (Clearblade) or self-hosted MQTT bridged to Pub/Sub — worth naming explicitly rather than assuming a first-party hub."
       ]
     }
   ],
@@ -2026,9 +2389,10 @@
     {
       "level": "Senior",
       "expectations": [
-        "Imposes strict data ownership and a coordinated blackboard.",
-        "Designs A/B OTA with signed images and rollback.",
-        "Reasons about portability, ADRs, and fleet-scale operability trade-offs."
+        "Imposes strict data ownership and a coordinated blackboard with a stale-snapshot policy.",
+        "Designs A/B OTA with signed manifests, anti-rollback, and rollback, plus a device-cert provisioning/rotation/revocation story.",
+        "Proves the timing budget with a task/WCET/stack table and a schedulability check, not just an RTOS name.",
+        "Reasons about portability, ADRs, telemetry durability, and fleet-scale operability trade-offs — and can say what would change (safety partitioning, certified toolchain, CAN/UDS) if the scope were a safety-relevant automotive ECU."
       ]
     }
   ],
@@ -2037,6 +2401,9 @@
     "How do you structure the flash layout to hold two images plus config in a 1 MB part?",
     "How would you fuzz or property-test a driver against a simulated peripheral?",
     "How do you stage an OTA rollout across 5M devices and halt it if error telemetry spikes?",
-    "When is embedded Linux the right call over an RTOS, and what does that cost you in determinism?"
+    "When is embedded Linux the right call over an RTOS, and what does that cost you in determinism?",
+    "How do you provision, renew, and revoke per-device certs at manufacturing and fleet scale — and what happens if a release signing key leaks?",
+    "A device is offline for hours: what does the local telemetry ring drop, coalesce, or keep, and how does that affect a rollout health gate that needs its telemetry?",
+    "If this were a safety-relevant automotive ECU, what changes: functional-safety partitioning (ASIL/ISO 26262), a certified toolchain, and CAN/UDS diagnostics — and why are those out of scope here?"
   ]
 }
