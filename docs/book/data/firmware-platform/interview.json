@@ -1,0 +1,2042 @@
+{
+  "title": "Firmware Platform \u2014 Embedded Systems Design",
+  "description": "Design the software architecture for a connected embedded device (IoT/automotive) that must run across multiple MCUs, meet real-time deadlines, stay unit-testable, and update safely in the field. The themes are layering (HAL, drivers, kernel, application), decoupling for portability and testability, disciplined data ownership, and safe over-the-air updates.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "World",
+        "label": "Physical World / Operator",
+        "type": "actor",
+        "category": "boundary",
+        "traits": [],
+        "description": "Sensors to read, actuators to drive, a human pressing buttons \u2014 the environment the device serves."
+      },
+      {
+        "id": "Sensor",
+        "label": "Sensors & Peripherals",
+        "type": "external",
+        "category": "boundary",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Physical I2C/SPI/UART devices: temperature sensors, IMUs, displays, radios."
+      },
+      {
+        "id": "MCU",
+        "label": "MCU Registers & Silicon",
+        "type": "external",
+        "category": "boundary",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Vendor-specific peripheral registers, timers, GPIO, DMA \u2014 the raw silicon."
+      },
+      {
+        "id": "Flash",
+        "label": "Non-Volatile Flash",
+        "type": "external",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "On-chip/external flash holding firmware images, config, and calibration."
+      },
+      {
+        "id": "Cloud",
+        "label": "Fleet / OTA Backend",
+        "type": "client",
+        "category": "boundary",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Cloud service that pushes firmware images and ingests telemetry."
+      },
+      {
+        "id": "Driver",
+        "label": "Device Drivers",
+        "type": "worker",
+        "category": "compute",
+        "traits": [],
+        "description": "Translate HAL calls into concrete I2C/SPI/UART/GPIO signaling for each peripheral."
+      },
+      {
+        "id": "HAL",
+        "label": "Hardware Abstraction Layer",
+        "type": "gateway",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Portable, vendor-neutral API over the MCU; the seam that lets the MCU be swapped."
+      },
+      {
+        "id": "Kernel",
+        "label": "Scheduler (Super-loop / RTOS)",
+        "type": "orchestrator",
+        "category": "compute",
+        "traits": [],
+        "description": "Runs tasks: a bare-metal super-loop for simple devices, an RTOS for real-time multitasking."
+      },
+      {
+        "id": "App",
+        "label": "Application Layer",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Hardware-independent business logic: state machines and control algorithms."
+      },
+      {
+        "id": "Interface",
+        "label": "Module Interfaces (Ports)",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Abstract interfaces between modules so implementations (or mocks) can be injected."
+      },
+      {
+        "id": "Blackboard",
+        "label": "Shared State (Blackboard)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Controller-coordinated shared memory that decouples producers from consumers."
+      },
+      {
+        "id": "MsgQueue",
+        "label": "Inter-Task Message Queue",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "RTOS queue/event bus carrying events between tasks without shared globals."
+      },
+      {
+        "id": "Config",
+        "label": "Config & Data Ownership Store",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Single-owner persisted config/calibration in flash; other modules read via its API only."
+      },
+      {
+        "id": "Fault",
+        "label": "Fault Handler & Watchdog",
+        "type": "observability",
+        "category": "ops",
+        "traits": [],
+        "description": "Watchdog, brown-out, assert/fault handlers, and structured logging for field diagnostics."
+      },
+      {
+        "id": "Boot",
+        "label": "Bootloader",
+        "type": "service",
+        "category": "ops",
+        "traits": [
+          "stateful"
+        ],
+        "description": "First code to run: verifies signature + anti-rollback of the firmware image (A/B), then jumps to the app."
+      },
+      {
+        "id": "Rollout",
+        "label": "Fleet Rollout Controller",
+        "type": "orchestrator",
+        "category": "boundary",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Backend control plane: assigns signed image manifests to device cohorts (rings), rate-limits, and halts on a fault-rate spike."
+      }
+    ],
+    "links": [
+      {
+        "id": "world-sensor",
+        "from": "World",
+        "to": "Sensor",
+        "label": "physical stimulus"
+      },
+      {
+        "id": "sensor-mcu",
+        "from": "Sensor",
+        "to": "MCU",
+        "label": "wired to peripheral pins"
+      },
+      {
+        "id": "app-mcu",
+        "from": "App",
+        "to": "MCU",
+        "label": "pokes registers inline"
+      },
+      {
+        "id": "sensor-driver",
+        "from": "Sensor",
+        "to": "Driver",
+        "label": "I2C/SPI/UART"
+      },
+      {
+        "id": "driver-mcu",
+        "from": "Driver",
+        "to": "MCU",
+        "label": "register writes"
+      },
+      {
+        "id": "driver-hal",
+        "from": "Driver",
+        "to": "HAL",
+        "label": "implements"
+      },
+      {
+        "id": "app-hal",
+        "from": "App",
+        "to": "HAL",
+        "label": "portable calls"
+      },
+      {
+        "id": "hal-driver",
+        "from": "HAL",
+        "to": "Driver",
+        "label": "dispatch"
+      },
+      {
+        "id": "kernel-app",
+        "from": "Kernel",
+        "to": "App",
+        "label": "schedules tasks"
+      },
+      {
+        "id": "kernel-driver",
+        "from": "Kernel",
+        "to": "Driver",
+        "label": "schedules I/O"
+      },
+      {
+        "id": "app-interface",
+        "from": "App",
+        "to": "Interface",
+        "label": "depends on abstraction"
+      },
+      {
+        "id": "interface-driver",
+        "from": "Interface",
+        "to": "Driver",
+        "label": "implemented by / mocked"
+      },
+      {
+        "id": "app-blackboard",
+        "from": "App",
+        "to": "Blackboard",
+        "label": "read/write shared state"
+      },
+      {
+        "id": "driver-blackboard",
+        "from": "Driver",
+        "to": "Blackboard",
+        "label": "publish samples"
+      },
+      {
+        "id": "app-queue",
+        "from": "App",
+        "to": "MsgQueue",
+        "label": "send/receive events"
+      },
+      {
+        "id": "driver-queue",
+        "from": "Driver",
+        "to": "MsgQueue",
+        "label": "post ISR events"
+      },
+      {
+        "id": "app-config",
+        "from": "App",
+        "to": "Config",
+        "label": "read config via API"
+      },
+      {
+        "id": "config-flash",
+        "from": "Config",
+        "to": "Flash",
+        "label": "persist"
+      },
+      {
+        "id": "app-fault",
+        "from": "App",
+        "to": "Fault",
+        "label": "assert / log"
+      },
+      {
+        "id": "kernel-fault",
+        "from": "Kernel",
+        "to": "Fault",
+        "label": "kick watchdog"
+      },
+      {
+        "id": "boot-flash",
+        "from": "Boot",
+        "to": "Flash",
+        "label": "verify image"
+      },
+      {
+        "id": "boot-app",
+        "from": "Boot",
+        "to": "App",
+        "label": "jump to app"
+      },
+      {
+        "id": "rollout-cloud",
+        "from": "Rollout",
+        "to": "Cloud",
+        "label": "assign manifest to cohort"
+      },
+      {
+        "id": "cloud-app",
+        "from": "Cloud",
+        "to": "App",
+        "label": "offer signed manifest (device polls)"
+      },
+      {
+        "id": "app-boot",
+        "from": "App",
+        "to": "Boot",
+        "label": "hand off staged image"
+      },
+      {
+        "id": "app-cloud",
+        "from": "App",
+        "to": "Cloud",
+        "label": "telemetry + health gate"
+      },
+      {
+        "id": "cloud-rollout",
+        "from": "Cloud",
+        "to": "Rollout",
+        "label": "fault-rate feedback"
+      },
+      {
+        "id": "hal-mcu",
+        "from": "HAL",
+        "to": "MCU",
+        "label": "abstracts"
+      }
+    ],
+    "types": [
+      {
+        "id": "hw-boundary",
+        "label": "Hardware Boundary",
+        "nodes": [
+          "World",
+          "Sensor",
+          "MCU",
+          "Flash"
+        ]
+      },
+      {
+        "id": "layers",
+        "label": "Firmware Layers",
+        "nodes": [
+          "Driver",
+          "HAL",
+          "Kernel",
+          "App"
+        ]
+      },
+      {
+        "id": "decoupling",
+        "label": "Decoupling & State",
+        "nodes": [
+          "Interface",
+          "Blackboard",
+          "MsgQueue",
+          "Config"
+        ]
+      },
+      {
+        "id": "fleet-ops",
+        "label": "Field & Fleet Ops",
+        "nodes": [
+          "Fault",
+          "Boot",
+          "Cloud",
+          "Rollout"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  Op[Operator / World]",
+    "  Read[Read sensors]",
+    "  Control[Run control logic]",
+    "  Drive[Drive actuators]",
+    "  OTA[Update in field]",
+    "  Op --> Read --> Control --> Drive",
+    "  OTA --> Control"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  RAM[RAM ~64-256 KB]",
+    "  Flash[Flash ~512 KB-2 MB]",
+    "  Loop[Control loop 1-10 kHz]",
+    "  Deadline[Hard deadline <1 ms]",
+    "  RAM --> Loop --> Deadline",
+    "  Flash --> Loop"
+  ],
+  "requirements": {
+    "functional": [
+      "Read sensors and drive actuators through peripheral buses (I2C/SPI/UART/GPIO).",
+      "Run the device's control logic / state machine deterministically within a timing budget.",
+      "Persist configuration and calibration across reboots atomically (brown-out safe).",
+      "Accept signed firmware updates over the air and recover from a bad or downgraded image (anti-rollback + A/B).",
+      "Report telemetry and faults to a fleet backend, buffered and backed off under intermittent connectivity."
+    ],
+    "nonFunctional": [
+      "Portable: the same application code must run on a different MCU with only the HAL/driver layer changed.",
+      "Real-time: a proven timing budget (per-task WCET + priorities + bounded blocking) keeps control loops on their hard deadlines; no unbounded blocking on the critical path.",
+      "Testable: application logic runs off-target against mocked hardware in CI.",
+      "Robust: a hung task or corrupt update never bricks the device (watchdog + A/B images).",
+      "Maintainable: low coupling and single data ownership keep the cost of change bounded as products branch.",
+      "Resource-constrained: fits in tens of KB of RAM and single-digit MB of flash."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "RAM budget",
+      "value": "64\u2013256 KB",
+      "note": "No malloc churn; static/pool allocation on the hot path."
+    },
+    {
+      "label": "Flash budget",
+      "value": "512 KB\u20132 MB",
+      "note": "Must hold two images (A/B) for safe OTA."
+    },
+    {
+      "label": "Flash layout (1 MB part)",
+      "value": "boot 32K \u00b7 A 448K \u00b7 B 448K \u00b7 cfg 2\u00d716K \u00b7 faultlog 16K \u00b7 scratch",
+      "note": "Two config copies (active/inactive banks) for atomic commit; erase-block-aligned partitions; scratch for download resume."
+    },
+    {
+      "label": "Control-loop rate",
+      "value": "1\u201310 kHz",
+      "note": "Deadline measured in microseconds to a millisecond."
+    },
+    {
+      "label": "Fleet size",
+      "value": "10K\u201310M devices",
+      "note": "OTA and telemetry fan out across the whole fleet."
+    },
+    {
+      "label": "Control-task WCET",
+      "value": "\u2264 200 \u00b5s / 1 kHz period",
+      "note": "Worst-case execution time must leave \u226580% headroom in the 1 ms period; measure it, don't assume it."
+    },
+    {
+      "label": "ISR + handoff latency",
+      "value": "\u2264 20 \u00b5s ISR, post to queue",
+      "note": "ISRs stay bounded: latch data, post one event to a queue, return; heavy work runs in a task."
+    },
+    {
+      "label": "Event queue depth",
+      "value": "8\u201316 slots, drop-oldest",
+      "note": "Sized to burst depth (max in-flight events between task wakeups); overflow policy is explicit."
+    },
+    {
+      "label": "Flash write budget",
+      "value": "off hot path, \u2264 few writes/min",
+      "note": "Erase/program stalls the bus for ms and wears cells \u2014 never from the control loop; batch and journal."
+    },
+    {
+      "label": "Watchdog window",
+      "value": "kick every \u226410 ms",
+      "note": "Supervisor confirms critical tasks checked in before kicking; margin > worst-case task jitter."
+    }
+  ],
+  "api": [
+    {
+      "method": "ON-DEVICE",
+      "path": "hal_i2c_read(bus, addr, reg, *buf, len)",
+      "description": "In-firmware, compiled-in HAL contract. Portable, vendor-neutral peripheral read; the app never touches registers. May block up to a bounded timeout.",
+      "request": "bus, device addr, register, length",
+      "response": "HAL_OK | HAL_TIMEOUT | HAL_BUS_ERR | HAL_BUSY; bytes into buf on OK"
+    },
+    {
+      "method": "ON-DEVICE",
+      "path": "TempSensor.read(&celsius)",
+      "description": "In-firmware module interface (port) the app depends on; a real driver or a mock implements it. Non-blocking from cached blackboard value.",
+      "request": "out param",
+      "response": "IF_OK | IF_STALE | IF_UNAVAIL; injectable for unit tests"
+    },
+    {
+      "method": "ON-DEVICE",
+      "path": "config_get(KEY_CAL_OFFSET, *out) / config_set(key, val)",
+      "description": "In-firmware owned-config API \u2014 no module reaches into another's globals. set() writes off the hot path (inactive bank + CRC + atomic flip).",
+      "request": "typed key (+ value on set)",
+      "response": "CFG_OK | CFG_CRC_FAIL | CFG_UNKNOWN_KEY | CFG_DEFAULTED"
+    },
+    {
+      "method": "DEVICE\u2192CLOUD",
+      "path": "MQTT publish devices/{id}/telemetry",
+      "description": "Device-to-cloud event contract (mutual-TLS with device cert). Buffered locally and backed off when offline; rate-limited and redacted.",
+      "request": "{ ts, version, metrics[], fault_records[] }",
+      "response": "broker ack; retained locally until acked"
+    },
+    {
+      "method": "DEVICE\u2192CLOUD",
+      "path": "GET /fleet/{deviceId}/update (poll)",
+      "description": "Device-to-cloud OTA contract. Device polls for its cohort's assigned signed manifest; download is chunked and resumable.",
+      "request": "device cert, current version, rollback_counter",
+      "response": "204 none | 200 { manifest, chunk_url, size }; bootloader verifies before staging"
+    },
+    {
+      "method": "BACKEND",
+      "path": "POST /fleet/rollouts (operator control plane)",
+      "description": "Operator/backend rollout contract: start a staged rollout, assign a signed manifest to a cohort ring, set health thresholds and rate limits.",
+      "request": "{ version, manifest_sig, cohort, ring_size, halt_on_fault_rate }",
+      "response": "rollout_id; advances ring-by-ring, auto-halts on telemetry fault spike"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "config_record",
+      "note": "Single-owner persisted config/calibration, stored in two banks for atomic commit.",
+      "fields": [
+        {
+          "name": "key",
+          "type": "enum PK"
+        },
+        {
+          "name": "value",
+          "type": "bytes"
+        },
+        {
+          "name": "owner_module",
+          "type": "enum"
+        },
+        {
+          "name": "schema_version",
+          "type": "uint16"
+        },
+        {
+          "name": "generation",
+          "type": "uint32 (monotonic)"
+        },
+        {
+          "name": "active_bank",
+          "type": "enum(0,1)"
+        },
+        {
+          "name": "crc",
+          "type": "uint32 (last_good_crc)"
+        },
+        {
+          "name": "factory_default",
+          "type": "bytes (RO fallback)"
+        }
+      ]
+    },
+    {
+      "name": "firmware_slot",
+      "note": "A/B image metadata in flash.",
+      "fields": [
+        {
+          "name": "slot",
+          "type": "enum(A,B)"
+        },
+        {
+          "name": "version",
+          "type": "semver"
+        },
+        {
+          "name": "signature",
+          "type": "bytes"
+        },
+        {
+          "name": "rollback_counter",
+          "type": "uint32 (monotonic, anti-rollback)"
+        },
+        {
+          "name": "boot_attempts",
+          "type": "uint8"
+        },
+        {
+          "name": "state",
+          "type": "enum(pending,trial,confirmed,failed)"
+        },
+        {
+          "name": "boot_ok",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "image_manifest",
+      "note": "Signed OTA metadata the bootloader verifies before staging an image.",
+      "fields": [
+        {
+          "name": "version",
+          "type": "semver"
+        },
+        {
+          "name": "min_rollback",
+          "type": "uint32 (anti-rollback floor)"
+        },
+        {
+          "name": "image_hash",
+          "type": "sha256"
+        },
+        {
+          "name": "signature",
+          "type": "bytes (signed by release key)"
+        },
+        {
+          "name": "size",
+          "type": "uint32"
+        },
+        {
+          "name": "cohort",
+          "type": "enum (rollout ring)"
+        }
+      ]
+    },
+    {
+      "name": "device_identity",
+      "note": "Per-device root of trust for OTA and telemetry auth.",
+      "fields": [
+        {
+          "name": "device_id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "device_cert",
+          "type": "x509 (provisioned)"
+        },
+        {
+          "name": "cohort",
+          "type": "enum (rollout ring)"
+        },
+        {
+          "name": "current_version",
+          "type": "semver"
+        }
+      ]
+    },
+    {
+      "name": "fault_record",
+      "note": "Breadcrumb log for field diagnostics and telemetry.",
+      "fields": [
+        {
+          "name": "seq",
+          "type": "uint32 PK"
+        },
+        {
+          "name": "code",
+          "type": "enum"
+        },
+        {
+          "name": "task",
+          "type": "enum"
+        },
+        {
+          "name": "uptime_ms",
+          "type": "uint32"
+        },
+        {
+          "name": "context",
+          "type": "bytes (PC/regs snapshot)"
+        }
+      ]
+    }
+  ],
+  "patterns": [
+    {
+      "name": "Hardware Abstraction Layer",
+      "what": "A portable API that hides vendor-specific register access behind stable function signatures.",
+      "whenToUse": "Any time the same firmware must run on more than one MCU, or you want to test logic off-target.",
+      "steps": [
+        "hal"
+      ]
+    },
+    {
+      "name": "Dependency Injection (ports & adapters)",
+      "what": "Modules depend on abstract interfaces; concrete drivers or mocks are injected.",
+      "whenToUse": "To unit-test application logic without real hardware.",
+      "steps": [
+        "decouple"
+      ]
+    },
+    {
+      "name": "Blackboard",
+      "what": "Controller-coordinated shared memory that decouples producers from consumers.",
+      "whenToUse": "Many modules share sensor/state data but you want to control access and timing.",
+      "steps": [
+        "state"
+      ]
+    },
+    {
+      "name": "Data Ownership",
+      "what": "Exactly one module owns each piece of state; others read/write only through its API.",
+      "whenToUse": "To stop the spaghetti of shared globals and keep changes local.",
+      "steps": [
+        "state"
+      ]
+    },
+    {
+      "name": "A/B (dual-bank) OTA",
+      "what": "Stage a signed image to the inactive slot; boot it once; roll back if it fails to confirm.",
+      "whenToUse": "Field-updatable devices that must never brick.",
+      "steps": [
+        "ota"
+      ]
+    },
+    {
+      "name": "Bounded ISR-to-task handoff",
+      "what": "ISRs latch minimal data and post one event to a fixed-size queue; a task does the heavy work.",
+      "whenToUse": "Any interrupt-driven path with hard real-time deadlines and no room for long ISRs.",
+      "steps": [
+        "kernel"
+      ]
+    },
+    {
+      "name": "Two-bank atomic config commit",
+      "what": "Write config to the inactive bank, verify CRC, then atomically flip the active pointer; fall back on corrupt boot.",
+      "whenToUse": "Persisting config/calibration to flash where a brown-out mid-write must not corrupt the only copy.",
+      "steps": [
+        "state"
+      ]
+    },
+    {
+      "name": "Signed manifest + anti-rollback + staged rollout",
+      "what": "Root of trust verifies a signed manifest and a monotonic rollback counter; a controller stages the image ring-by-ring behind a telemetry health gate.",
+      "whenToUse": "Securely updating a large field fleet without shipping a bad or downgraded image to everyone.",
+      "steps": [
+        "ota"
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: One Big Super-Loop, Registers Everywhere (baseline)",
+      "description": [
+        "Start with the simplest thing that boots and blinks: a single main() with a while(1) super-loop that reads sensors and drives outputs by poking MCU registers directly inline.",
+        "It works on the bench and on exactly one board. But the application logic is welded to this chip's register map, nothing can be tested without the hardware in hand, and one slow inline operation blows every timing budget after it. The moment you need a second MCU, real-time multitasking, or a CI test, this design has to be torn apart."
+      ],
+      "view": {
+        "nodes": [
+          "World",
+          "Sensor",
+          "MCU",
+          "App"
+        ],
+        "links": [
+          "world-sensor",
+          "sensor-mcu",
+          "app-mcu"
+        ],
+        "highlight": [
+          "App",
+          "MCU"
+        ]
+      },
+      "decisionPrompt": "What breaks first when you're asked to ship the same firmware on a cheaper MCU \u2014 or to unit-test the control logic in CI?",
+      "whyNow": [
+        "The naive super-loop makes the coupling to hardware and the untestability obvious, motivating the layers that follow."
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "Device reads sensors and drives outputs on one board.",
+        "newRisk": "Application logic is fused to this chip's registers \u2014 unportable and untestable."
+      },
+      "traps": [
+        {
+          "trap": "Shipping the inline-register super-loop as 'good enough'.",
+          "why": "The first hardware revision, real-time requirement, or test mandate forces a rewrite.",
+          "instead": "Introduce a HAL seam early so logic doesn't depend on the silicon."
+        }
+      ]
+    },
+    {
+      "id": "hal",
+      "title": "2. Introduce a Hardware Abstraction Layer (HAL)",
+      "description": [
+        "Insert a portable API \u2014 the HAL \u2014 between the application and the silicon. Only the HAL and the drivers beneath it touch registers; everyone above calls stable functions like hal_i2c_read() or hal_gpio_set().",
+        "Now the vendor-specific code lives in one place. Swapping the MCU means re-implementing the HAL/driver layer, not rewriting the application. This is the single most important seam in embedded architecture."
+      ],
+      "view": {
+        "nodes": [
+          "Sensor",
+          "MCU",
+          "Driver",
+          "HAL",
+          "App"
+        ],
+        "links": [
+          "sensor-driver",
+          "driver-mcu",
+          "driver-hal",
+          "app-hal",
+          "hal-driver",
+          "hal-mcu"
+        ],
+        "highlight": [
+          "HAL",
+          "Driver"
+        ]
+      },
+      "decisionPrompt": "Where exactly do you draw the portability line \u2014 what belongs above the HAL and what belongs below?",
+      "patterns": [
+        "Hardware Abstraction Layer"
+      ],
+      "concepts": [
+        {
+          "term": "Hardware Abstraction Layer",
+          "definition": "A vendor-neutral API that hides register-level detail behind stable function signatures.",
+          "whyItMatters": "It lets the same application code run on a different MCU, and lets logic be built and tested off-target.",
+          "example": "app calls hal_i2c_read(); the STM32 HAL and the nRF HAL implement it differently."
+        },
+        {
+          "term": "Driver",
+          "definition": "A module that turns HAL calls into concrete I2C/SPI/UART/GPIO signaling for a specific peripheral.",
+          "whyItMatters": "Isolates per-peripheral quirks so the HAL API stays clean.",
+          "example": "A BME280 driver implements temp_read() over I2C through the HAL."
+        }
+      ],
+      "whyNow": [
+        "The HAL is the fix for the hardware coupling exposed in step 1 and the foundation for testability and portability later."
+      ],
+      "traps": [
+        {
+          "trap": "Assuming the HAL makes every MCU interchangeable for free.",
+          "why": "Timing, interrupt ownership, DMA buffer alignment, clock trees, and vendor errata leak through the HAL — a port still needs board bring-up and re-timing.",
+          "instead": "Draw the boundary at register access and peripheral APIs; treat timing, ISR wiring, and errata as explicitly per-MCU, not hidden."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "App",
+                "label": "Application"
+              },
+              {
+                "id": "HAL",
+                "label": "HAL"
+              },
+              {
+                "id": "Driver",
+                "label": "Driver"
+              },
+              {
+                "id": "MCU",
+                "label": "MCU Registers"
+              }
+            ],
+            "messages": [
+              {
+                "from": "App",
+                "to": "HAL",
+                "arrow": "->>",
+                "label": "hal_i2c_read(temp)"
+              },
+              {
+                "from": "HAL",
+                "to": "Driver",
+                "arrow": "->>",
+                "label": "dispatch to sensor driver"
+              },
+              {
+                "from": "Driver",
+                "to": "MCU",
+                "arrow": "->>",
+                "label": "clock out I2C, read reg"
+              },
+              {
+                "from": "MCU",
+                "to": "Driver",
+                "arrow": "-->>",
+                "label": "raw bytes"
+              },
+              {
+                "from": "Driver",
+                "to": "HAL",
+                "arrow": "-->>",
+                "label": "status + value"
+              },
+              {
+                "from": "HAL",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "celsius"
+              }
+            ]
+          },
+          "highlight": [
+            "HAL",
+            "Driver"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "Logic poked registers directly.",
+        "after": "All register access lives below a portable HAL.",
+        "newRisk": "Nothing schedules the work yet \u2014 a single blocking call still stalls everything."
+      }
+    },
+    {
+      "id": "kernel",
+      "title": "3. Choose a Scheduler: Super-Loop vs RTOS",
+      "description": [
+        "Decide how tasks get CPU time. A cooperative super-loop is tiny and deterministic but a single long operation delays everything after it. An RTOS (FreeRTOS, Zephyr) or embedded Linux gives you pre-emptive tasks, priorities, and blocking primitives so a high-priority control loop always meets its deadline.",
+        "Choosing an RTOS is necessary but not sufficient: a 1 kHz loop only meets its deadline if you build a timing budget. Assign priorities rate-monotonically (faster loop = higher priority), size each task's stack and worst-case execution time, keep ISRs tiny and hand work to tasks through a bounded queue, and cap every critical section so a high-priority task can't be blocked by a low-priority one for longer than a bounded time (priority inheritance on mutexes).",
+        "Pick the simplest scheduler that meets the timing requirements: bare-metal for a doorbell, an RTOS for a motor controller with hard real-time loops, Linux when you need a full network stack and filesystem."
+      ],
+      "view": {
+        "nodes": [
+          "Kernel",
+          "App",
+          "Driver",
+          "HAL",
+          "MsgQueue"
+        ],
+        "links": [
+          "kernel-app",
+          "kernel-driver",
+          "app-hal",
+          "hal-driver",
+          "app-queue",
+          "driver-queue"
+        ],
+        "highlight": [
+          "Kernel",
+          "MsgQueue"
+        ]
+      },
+      "decisionPrompt": "Does this device have a hard real-time deadline that a cooperative loop can't guarantee — and can you prove it with a timing budget, not just an RTOS?",
+      "options": [
+        {
+          "name": "Bare-metal super-loop",
+          "pros": [
+            "Tiny footprint, no scheduler overhead.",
+            "Fully deterministic and easy to reason about.",
+            "No RTOS to port or certify."
+          ],
+          "cons": [
+            "One long task starves the rest.",
+            "No priorities; hard to guarantee deadlines as features grow.",
+            "Hand-rolled state machines for concurrency."
+          ],
+          "view": {
+            "nodes": [
+              "Kernel",
+              "App",
+              "Driver"
+            ],
+            "links": [
+              "kernel-app",
+              "kernel-driver"
+            ],
+            "highlight": [
+              "Kernel",
+              "App"
+            ]
+          }
+        },
+        {
+          "name": "RTOS (FreeRTOS / Zephyr)",
+          "pros": [
+            "Rate-monotonic priorities + bounded WCET per task prove hard deadlines.",
+            "Bounded queues/semaphores let ISRs hand off events instead of polling.",
+            "Priority-inheritance mutexes bound blocking so the control loop can't be starved.",
+            "Scales to many concurrent tasks."
+          ],
+          "cons": [
+            "More RAM/flash and a scheduler to configure.",
+            "Priority inversion and race classes to manage.",
+            "Porting/BSP effort per MCU."
+          ],
+          "view": {
+            "nodes": [
+              "Kernel",
+              "App",
+              "Driver",
+              "HAL",
+              "MsgQueue"
+            ],
+            "links": [
+              "kernel-app",
+              "kernel-driver",
+              "app-hal",
+              "hal-driver",
+              "app-queue",
+              "driver-queue"
+            ],
+            "highlight": [
+              "Kernel",
+              "MsgQueue"
+            ]
+          }
+        }
+      ],
+      "whyNow": [
+        "Once logic is portable, the next constraint is timing \u2014 the scheduler decides whether deadlines are met."
+      ],
+      "concepts": [
+        {
+          "term": "Pre-emptive scheduling",
+          "definition": "The kernel can interrupt a running task to run a higher-priority one that becomes ready.",
+          "whyItMatters": "Guarantees a critical control loop runs on time regardless of what else is busy.",
+          "example": "A 1 kHz motor loop pre-empts a slow logging task."
+        },
+        {
+          "term": "Timing budget / WCET",
+          "definition": "Each task has a period and a measured worst-case execution time; a schedulability check proves the set fits.",
+          "whyItMatters": "An RTOS alone doesn't meet a deadline — the loop only meets 1 kHz if its WCET plus higher-priority interference stays under the period.",
+          "example": "Control WCET 200 µs + ISR jitter 20 µs < 1000 µs period, with headroom for telemetry and flash."
+        },
+        {
+          "term": "ISR-to-task handoff via bounded queue",
+          "definition": "An interrupt latches data and posts one event to a fixed-size queue, then returns; a task consumes it later.",
+          "whyItMatters": "Keeps ISRs short and bounded and moves heavy work to schedulable tasks without sharing globals.",
+          "example": "DMA-complete ISR posts a SAMPLE_READY event; the control task wakes and processes it."
+        },
+        {
+          "term": "Priority inversion & inheritance",
+          "definition": "A low-priority task holding a mutex can block a high-priority one; priority inheritance temporarily raises the holder's priority.",
+          "whyItMatters": "Without it, a medium-priority task can indefinitely delay the control loop through the held lock.",
+          "example": "Use priority-inheritance mutexes and keep critical sections short and bounded."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Assuming an RTOS guarantees the deadline just by being pre-emptive.",
+          "why": "Without a WCET budget, priority assignment, and bounded blocking, a lower-priority lock holder or an overrunning task can still miss the deadline.",
+          "instead": "Assign priorities rate-monotonically, measure WCET, use priority-inheritance mutexes, and verify schedulability."
+        },
+        {
+          "trap": "Doing real work (I2C reads, flash writes, math) inside the ISR.",
+          "why": "Long ISRs raise interrupt latency and jitter for every task and can miss the next control tick.",
+          "instead": "Latch minimal data in the ISR, post one bounded event to a queue, and process it in a task."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Driver",
+                "label": "ISR / Driver"
+              },
+              {
+                "id": "MsgQueue",
+                "label": "Event Queue"
+              },
+              {
+                "id": "Kernel",
+                "label": "Scheduler"
+              },
+              {
+                "id": "App",
+                "label": "Control Task"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Driver",
+                "to": "MsgQueue",
+                "arrow": "->>",
+                "label": "ISR: post SAMPLE_READY (bounded, drop-oldest if full)"
+              },
+              {
+                "from": "MsgQueue",
+                "to": "Kernel",
+                "arrow": "->>",
+                "label": "queue non-empty → ready the waiter"
+              },
+              {
+                "from": "Kernel",
+                "to": "App",
+                "arrow": "->>",
+                "label": "wake highest-priority task"
+              },
+              {
+                "from": "App",
+                "to": "MsgQueue",
+                "arrow": "->>",
+                "label": "receive event"
+              },
+              {
+                "from": "MsgQueue",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "SAMPLE_READY payload"
+              }
+            ]
+          },
+          "highlight": [
+            "MsgQueue"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "No scheduling; blocking stalled the device.",
+        "after": "A scheduler with a WCET budget, rate-monotonic priorities, and a bounded ISR-to-task queue runs tasks.",
+        "newRisk": "Application still calls concrete drivers directly, so it can't be unit-tested off-target."
+      }
+    },
+    {
+      "id": "decouple",
+      "title": "4. Decouple Modules with Interfaces (for Testability)",
+      "description": [
+        "Have the application depend on abstract module interfaces (ports), not on concrete drivers. The real driver is injected on the device; a mock is injected in CI. This is dependency inversion applied to firmware.",
+        "The payoff is huge: control algorithms and state machines get compiled and unit-tested on a host machine against fake sensors, with zero hardware in the loop. Bugs are caught in CI, not on the bench."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Interface",
+          "Driver",
+          "HAL"
+        ],
+        "links": [
+          "app-interface",
+          "interface-driver",
+          "app-hal"
+        ],
+        "highlight": [
+          "Interface"
+        ]
+      },
+      "decisionPrompt": "How do you run the control logic in CI with no MCU present?",
+      "patterns": [
+        "Dependency Injection (ports & adapters)"
+      ],
+      "concepts": [
+        {
+          "term": "Dependency injection / ports & adapters",
+          "definition": "Modules depend on an interface; the concrete implementation is passed in rather than hard-referenced.",
+          "whyItMatters": "Lets a mock replace real hardware so logic is unit-testable off-target.",
+          "example": "App holds a TempSensor* ; production wires the BME280 driver, tests wire a fake."
+        }
+      ],
+      "whyNow": [
+        "Testability is a top requirement; interface-based decoupling is what makes off-target unit testing possible."
+      ],
+      "traps": [
+        {
+          "trap": "Calling driver functions directly from application code.",
+          "why": "Ties the logic to hardware and makes it impossible to unit-test in CI.",
+          "instead": "Depend on an interface and inject the driver (or a mock)."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Interface",
+                "label": "CI Test Harness"
+              },
+              {
+                "id": "App",
+                "label": "Control State Machine"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Interface",
+                "to": "App",
+                "arrow": "->>",
+                "label": "inject fake TempSensor (no HAL linked)"
+              },
+              {
+                "from": "Interface",
+                "to": "App",
+                "arrow": "->>",
+                "label": "feed scripted reading: 95\u00b0C"
+              },
+              {
+                "from": "App",
+                "to": "Interface",
+                "arrow": "-->>",
+                "label": "actuator cmd: cooling ON"
+              },
+              {
+                "from": "Interface",
+                "to": "Interface",
+                "arrow": "->>",
+                "label": "assert command == expected (host build, no MCU)"
+              }
+            ]
+          },
+          "highlight": [
+            "Interface"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "App called concrete drivers.",
+        "after": "App depends on interfaces; drivers/mocks are injected and run in a host CI harness.",
+        "newRisk": "Modules still share state through globals \u2014 coupling and race conditions creep back in."
+      }
+    },
+    {
+      "id": "state",
+      "title": "5. Data Ownership & Shared State (Blackboard)",
+      "description": [
+        "Eliminate shared globals. Give each piece of state a single owning module; everyone else reads and writes through that module's API. Where many modules genuinely need a common snapshot (latest sensor readings), use a controller-coordinated blackboard rather than ad-hoc globals.",
+        "Strict data ownership plus a coordinated blackboard keeps changes local (touch one owner, not fifty call sites) and removes the data races that a naive shared-global design invites \u2014 the difference between a maintainable platform and a spaghetti diagram."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Driver",
+          "Blackboard",
+          "Config",
+          "Flash"
+        ],
+        "links": [
+          "app-blackboard",
+          "driver-blackboard",
+          "app-config",
+          "config-flash"
+        ],
+        "highlight": [
+          "Blackboard",
+          "Config"
+        ]
+      },
+      "decisionPrompt": "Who owns the calibration offset \u2014 and how does every other module read it without a global?",
+      "patterns": [
+        "Blackboard",
+        "Data Ownership"
+      ],
+      "concepts": [
+        {
+          "term": "Data ownership",
+          "definition": "Exactly one module is the source of truth for each datum; others go through its API.",
+          "whyItMatters": "Localizes change and prevents the shared-global coupling that inflates maintenance cost.",
+          "example": "The calibration module owns the offset; the control loop calls config_get()."
+        },
+        {
+          "term": "Blackboard",
+          "definition": "Shared memory with a controller mediating access, decoupling producers from consumers.",
+          "whyItMatters": "Lets many tasks share a state snapshot with controlled timing instead of racing on globals.",
+          "example": "Drivers publish latest samples; the control task reads a consistent snapshot."
+        },
+        {
+          "term": "Queue vs blackboard",
+          "definition": "A queue carries discrete events with backpressure (every one must be handled); a blackboard holds the latest-value snapshot (older values are simply overwritten).",
+          "whyItMatters": "Picking the wrong one loses events (blackboard) or unbounded-buffers stale state (queue); each has a distinct overflow/staleness policy.",
+          "example": "Button-press → queue event; latest temperature → blackboard cell timestamped so consumers can reject stale reads."
+        },
+        {
+          "term": "Snapshot consistency (double-buffering / versioning)",
+          "definition": "The owner writes to an inactive copy and flips a version/pointer so readers never see a half-updated struct.",
+          "whyItMatters": "A reader pre-empted mid-write would otherwise mix old and new fields; timestamping lets it drop stale snapshots.",
+          "example": "Blackboard exposes {seq, ts, value}; readers re-read if seq changed during the copy."
+        }
+      ],
+      "whyNow": [
+        "With modules decoupled behind interfaces, the remaining coupling is shared state \u2014 data ownership closes it."
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Driver",
+                "label": "Sensor Driver"
+              },
+              {
+                "id": "Blackboard",
+                "label": "Blackboard"
+              },
+              {
+                "id": "App",
+                "label": "Control Task"
+              },
+              {
+                "id": "Config",
+                "label": "Config Owner"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Driver",
+                "to": "Blackboard",
+                "arrow": "->>",
+                "label": "publish latest sample"
+              },
+              {
+                "from": "App",
+                "to": "Blackboard",
+                "arrow": "->>",
+                "label": "read snapshot"
+              },
+              {
+                "from": "Blackboard",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "consistent readings"
+              },
+              {
+                "from": "App",
+                "to": "Config",
+                "arrow": "->>",
+                "label": "config_get(cal_offset)"
+              },
+              {
+                "from": "Config",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "owned value"
+              }
+            ]
+          },
+          "highlight": [
+            "Blackboard",
+            "Config"
+          ]
+        },
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "App",
+                "label": "Owner Module"
+              },
+              {
+                "id": "Config",
+                "label": "Config Store"
+              },
+              {
+                "id": "Flash",
+                "label": "Flash (2 banks)"
+              }
+            ],
+            "messages": [
+              {
+                "from": "App",
+                "to": "Config",
+                "arrow": "->>",
+                "label": "config_set(cal_offset, v)"
+              },
+              {
+                "from": "Config",
+                "to": "Flash",
+                "arrow": "->>",
+                "label": "write inactive bank: gen+1, value, CRC"
+              },
+              {
+                "from": "Config",
+                "to": "Flash",
+                "arrow": "->>",
+                "label": "verify CRC of inactive bank"
+              },
+              {
+                "type": "alt",
+                "label": "CRC valid → atomic flip",
+                "messages": [
+                  {
+                    "from": "Config",
+                    "to": "Flash",
+                    "arrow": "->>",
+                    "label": "flip active_bank pointer (single word)"
+                  },
+                  {
+                    "from": "Config",
+                    "to": "App",
+                    "arrow": "-->>",
+                    "label": "committed"
+                  }
+                ],
+                "else": {
+                  "label": "brown-out / bad CRC on boot",
+                  "messages": [
+                    {
+                      "from": "Config",
+                      "to": "Flash",
+                      "arrow": "->>",
+                      "label": "keep old active bank; else load factory_default"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Config",
+            "Flash"
+          ]
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Writing config in place from the real-time hot path, or from multiple owners.",
+          "why": "Flash erase/program stalls the bus for milliseconds (missing the control tick), wears cells, and a brown-out mid-write corrupts the only copy.",
+          "instead": "One owner writes off the hot path to the inactive bank, verifies CRC, then atomically flips the active pointer; fall back to the last-good bank or factory default on corrupt boot."
+        }
+      ],
+      "recap": {
+        "before": "Modules shared globals and raced.",
+        "after": "Single-owner state; blackboard for shared snapshots; two-bank atomic config commit with CRC + factory fallback.",
+        "newRisk": "A hung task or a bad field update can still brick a deployed device."
+      }
+    },
+    {
+      "id": "robust",
+      "title": "6. Robustness: Watchdog, Faults & Boot Integrity",
+      "description": [
+        "Design for the field, where you can't attach a debugger. A hardware watchdog resets the device if a task stops kicking it; brown-out and assert/fault handlers capture a diagnostic breadcrumb; a bootloader verifies the firmware image's signature before jumping to it.",
+        "Record architectural decisions (ADRs) so future maintainers understand why the watchdog timeout, priority scheme, and image layout are what they are \u2014 controlling maintenance cost is an explicit non-functional goal for connected IoT/automotive fleets."
+      ],
+      "view": {
+        "nodes": [
+          "Kernel",
+          "Fault",
+          "Boot",
+          "Flash",
+          "App"
+        ],
+        "links": [
+          "kernel-fault",
+          "app-fault",
+          "boot-flash",
+          "boot-app"
+        ],
+        "highlight": [
+          "Fault",
+          "Boot"
+        ]
+      },
+      "decisionPrompt": "What happens when a task deadlocks in the field \u2014 how does the device recover on its own?",
+      "concepts": [
+        {
+          "term": "Windowed watchdog + task supervision",
+          "definition": "A hardware timer resets the MCU unless software kicks it inside a time window; a supervisor kicks it only after every critical task has checked in.",
+          "whyItMatters": "Kicking on a bare scheduler tick masks a dead control task — a healthy scheduler running a wedged task would never reset. Supervising check-ins catches a single hung task.",
+          "example": "Each task sets its check-in flag; the supervisor kicks the watchdog only if all flags are set within the period, then clears them."
+        },
+        {
+          "term": "Architectural Decision Record (ADR)",
+          "definition": "A short document capturing a decision, its context, and its consequences.",
+          "whyItMatters": "Keeps long-lived firmware maintainable as teams and products branch.",
+          "example": "ADR-004: 'Use A/B images so OTA can never brick a car ECU.'"
+        }
+      ],
+      "whyNow": [
+        "Before exposing the device to field updates, it must be able to survive faults and verify what it boots."
+      ],
+      "traps": [
+        {
+          "trap": "No watchdog / unbounded blocking on the critical path.",
+          "why": "A single stuck peripheral read can hang the device with no recovery.",
+          "instead": "Bound every blocking call and let the watchdog reset a wedged system."
+        },
+        {
+          "trap": "Kicking the watchdog from the scheduler tick regardless of task health.",
+          "why": "A live scheduler running a dead control task keeps kicking, so the watchdog never fires and the fault is masked.",
+          "instead": "Have a supervisor kick only after each critical task has checked in within its deadline."
+        }
+      ],
+      "recap": {
+        "before": "A hang or corrupt image could brick the device.",
+        "after": "Watchdog recovers hangs; the bootloader verifies images.",
+        "newRisk": "Applying a new image safely across a fleet is still unsolved."
+      }
+    },
+    {
+      "id": "ota",
+      "title": "7. Safe Over-the-Air Updates & Fleet Telemetry",
+      "description": [
+        "Update the whole fleet without bricking any device \u2014 and without a compromised image ever booting. The device has a provisioned identity (per-device cert) and a root of trust burned in; the bootloader verifies a signed manifest (hash + signature + anti-rollback floor) before it will stage an image. The rollout controller assigns each new version to a cohort (ring) of devices, which poll for and download the image (resumable, power-loss-safe) into the inactive A/B slot.",
+        "The device boots the new image once on trial; the application must confirm health within a window or the bootloader rolls back to the known-good slot on the next reset. Devices stream telemetry and faults back through the cloud, and the rollout controller uses that fault-rate as a health gate: it advances the rollout ring by ring and automatically halts if errors spike. This \u2014 identity, signed manifests, anti-rollback, staged rings, and a telemetry health gate \u2014 is what makes 'never brick the fleet' credible at 10M devices, not the local slot switch alone."
+      ],
+      "view": {
+        "nodes": [
+          "Rollout",
+          "Cloud",
+          "Boot",
+          "Flash",
+          "App"
+        ],
+        "links": [
+          "rollout-cloud",
+          "cloud-app",
+          "app-boot",
+          "boot-flash",
+          "boot-app",
+          "app-cloud",
+          "cloud-rollout"
+        ],
+        "highlight": [
+          "Rollout",
+          "Cloud",
+          "Boot"
+        ]
+      },
+      "decisionPrompt": "The new image boots but crashes on first run \u2014 how does the device get back to a working state unattended, and how does the rollout stop before it reaches the rest of the fleet?",
+      "patterns": [
+        "A/B (dual-bank) OTA"
+      ],
+      "concepts": [
+        {
+          "term": "A/B (dual-bank) OTA",
+          "definition": "Two firmware slots; update the inactive one, boot it on trial, roll back if it doesn't confirm.",
+          "whyItMatters": "Guarantees a bad update can never leave a device unbootable.",
+          "example": "Boot slot B once; if the app doesn't set boot_ok, the next reset falls back to A."
+        },
+        {
+          "term": "Root of trust & signed manifest",
+          "definition": "An immutable public key (in ROM/OTP) verifies a signed manifest — image hash, version, anti-rollback floor — before any image is trusted; signing the manifest, not the raw image, keeps the hash+metadata tamper-evident together.",
+          "whyItMatters": "Stops a device from booting an unsigned or attacker-supplied image; the key never leaves the release HSM.",
+          "example": "Bootloader checks manifest signature against the burned-in root key, then checks the image hash matches."
+        },
+        {
+          "term": "Anti-rollback",
+          "definition": "A monotonic counter (in OTP/secure flash) that refuses to boot an image whose version is below the counter.",
+          "whyItMatters": "Prevents an attacker from downgrading to an old, vulnerable, still-validly-signed image.",
+          "example": "Counter is 7; a signed v5 image is rejected even though its signature is valid."
+        },
+        {
+          "term": "Staged rollout rings + health gate",
+          "definition": "Deploy to a small cohort first, watch fault-rate telemetry, then widen ring by ring; auto-halt if errors spike.",
+          "whyItMatters": "Contains a bad-but-signed update to 1% of the fleet instead of all 10M devices.",
+          "example": "Ring 0 = 100 canary devices; if crash telemetry > threshold, the controller halts before ring 1."
+        },
+        {
+          "term": "Device identity",
+          "definition": "Each device carries a provisioned unique cert/key used to authenticate to the fleet backend and receive its cohort assignment.",
+          "whyItMatters": "Lets the backend target cohorts, revoke compromised devices, and trust telemetry provenance.",
+          "example": "Device presents its cert over mutual-TLS; the backend maps it to a rollout cohort."
+        }
+      ],
+      "whyNow": [
+        "Fleet-scale updatability is the final operability requirement, and it builds directly on the bootloader and integrity checks from step 6."
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Rollout",
+                "label": "Rollout Controller"
+              },
+              {
+                "id": "Cloud",
+                "label": "Fleet Backend"
+              },
+              {
+                "id": "App",
+                "label": "Device App"
+              },
+              {
+                "id": "Boot",
+                "label": "Bootloader"
+              },
+              {
+                "id": "Flash",
+                "label": "Flash (A/B)"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Rollout",
+                "to": "Cloud",
+                "arrow": "->>",
+                "label": "assign v+1 manifest to cohort ring 0 (canary)"
+              },
+              {
+                "from": "App",
+                "to": "Cloud",
+                "arrow": "->>",
+                "label": "poll (mTLS w/ device cert): update available?"
+              },
+              {
+                "from": "Cloud",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "signed manifest (hash, ver, min_rollback)"
+              },
+              {
+                "from": "App",
+                "to": "Cloud",
+                "arrow": "->>",
+                "label": "download image in chunks (resumable)"
+              },
+              {
+                "type": "alt",
+                "label": "power loss mid-download",
+                "messages": [
+                  {
+                    "from": "App",
+                    "to": "Cloud",
+                    "arrow": "->>",
+                    "label": "on reboot: resume from last-good offset (scratch)"
+                  }
+                ],
+                "else": {
+                  "label": "download complete",
+                  "messages": [
+                    {
+                      "from": "App",
+                      "to": "Boot",
+                      "arrow": "->>",
+                      "label": "stage to slot B, request update"
+                    }
+                  ]
+                }
+              },
+              {
+                "from": "Boot",
+                "to": "Flash",
+                "arrow": "->>",
+                "label": "verify manifest sig + hash + anti-rollback"
+              },
+              {
+                "type": "alt",
+                "label": "verified & rollback OK → trial boot",
+                "messages": [
+                  {
+                    "from": "Boot",
+                    "to": "App",
+                    "arrow": "->>",
+                    "label": "boot slot B (trial), boot_attempts++"
+                  },
+                  {
+                    "type": "alt",
+                    "label": "app confirms health in window",
+                    "messages": [
+                      {
+                        "from": "App",
+                        "to": "Flash",
+                        "arrow": "->>",
+                        "label": "state=confirmed, boot_ok=true, bump rollback_counter"
+                      },
+                      {
+                        "from": "App",
+                        "to": "Cloud",
+                        "arrow": "->>",
+                        "label": "telemetry: v+1 healthy"
+                      },
+                      {
+                        "from": "Cloud",
+                        "to": "Rollout",
+                        "arrow": "->>",
+                        "label": "ring 0 healthy → widen to ring 1"
+                      }
+                    ],
+                    "else": {
+                      "label": "crash / boot loop / no confirm / lost telemetry",
+                      "messages": [
+                        {
+                          "from": "Boot",
+                          "to": "Flash",
+                          "arrow": "->>",
+                          "label": "boot_attempts > N: roll back to slot A"
+                        },
+                        {
+                          "from": "Boot",
+                          "to": "App",
+                          "arrow": "->>",
+                          "label": "boot known-good A; report failure"
+                        },
+                        {
+                          "from": "Cloud",
+                          "to": "Rollout",
+                          "arrow": "->>",
+                          "label": "fault-rate spike → HALT rollout"
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "else": {
+                  "label": "bad signature / downgrade attempt",
+                  "messages": [
+                    {
+                      "from": "Boot",
+                      "to": "Flash",
+                      "arrow": "->>",
+                      "label": "reject image, keep slot A, log fault"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Rollout",
+            "Cloud",
+            "Boot"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "Updates risked bricking devices.",
+        "after": "Identity + signed manifests + anti-rollback + staged rings + health-gated A/B OTA with resumable download and rollback.",
+        "newRisk": "Operational scale: key rotation, cohort strategy, and telemetry volume across millions of devices."
+      }
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design \u2014 Firmware Platform",
+    "description": "A layered firmware stack: drivers and a portable HAL isolate the silicon; a scheduler matched to a proven timing budget runs the hardware-independent application, with a bounded queue for ISR-to-task handoff; interfaces and single-owner state (blackboard + two-bank atomic config) keep it testable and maintainable; and a supervised watchdog plus identity-authenticated, signed, anti-rollback, staged A/B OTA keep the fleet recoverable and updatable in the field.",
+    "view": {
+      "nodes": [
+        "World",
+        "Sensor",
+        "MCU",
+        "Flash",
+        "Cloud",
+        "Rollout",
+        "Driver",
+        "HAL",
+        "Kernel",
+        "App",
+        "Interface",
+        "Blackboard",
+        "MsgQueue",
+        "Config",
+        "Fault",
+        "Boot"
+      ],
+      "links": [
+        "world-sensor",
+        "sensor-driver",
+        "driver-mcu",
+        "driver-hal",
+        "hal-mcu",
+        "app-hal",
+        "hal-driver",
+        "kernel-app",
+        "kernel-driver",
+        "app-queue",
+        "driver-queue",
+        "app-interface",
+        "interface-driver",
+        "app-blackboard",
+        "driver-blackboard",
+        "app-config",
+        "config-flash",
+        "app-fault",
+        "kernel-fault",
+        "boot-flash",
+        "boot-app",
+        "app-boot",
+        "rollout-cloud",
+        "cloud-app",
+        "app-cloud",
+        "cloud-rollout"
+      ]
+    }
+  },
+  "technologyChoices": [
+    {
+      "concern": "RTOS / kernel",
+      "steps": [
+        "kernel"
+      ],
+      "selfHosted": [
+        "FreeRTOS",
+        "Zephyr",
+        "ThreadX",
+        "Bare-metal super-loop",
+        "Embedded Linux"
+      ],
+      "cloud": {
+        "aws": [
+          "FreeRTOS (AWS-maintained)"
+        ],
+        "gcp": [],
+        "azure": [
+          "Azure RTOS (ThreadX)"
+        ]
+      },
+      "tradeoff": [
+        "Bare-metal is smallest and most deterministic but has no scheduler; an RTOS buys pre-emptive deadlines at a RAM/flash cost.",
+        "Embedded Linux adds a network stack and filesystem but needs an MMU-class SoC."
+      ]
+    },
+    {
+      "concern": "HAL / hardware framework",
+      "steps": [
+        "hal"
+      ],
+      "selfHosted": [
+        "Vendor HAL (STM32 HAL/LL)",
+        "CMSIS",
+        "Zephyr device model",
+        "Hand-rolled HAL"
+      ],
+      "cloud": {
+        "aws": [],
+        "gcp": [],
+        "azure": []
+      },
+      "tradeoff": [
+        "A vendor HAL is fast to start but locks you toward that vendor; a thin hand-rolled HAL maximizes portability at more up-front work."
+      ]
+    },
+    {
+      "concern": "Off-target testing",
+      "steps": [
+        "decouple"
+      ],
+      "selfHosted": [
+        "Unity + CMock",
+        "Ceedling",
+        "GoogleTest (host build)",
+        "Renode (emulation)",
+        "QEMU"
+      ],
+      "cloud": {
+        "aws": [],
+        "gcp": [],
+        "azure": []
+      },
+      "makesIrrelevant": [
+        "Interface-based decoupling lets logic run on a host, so much hardware-in-the-loop testing becomes unnecessary for logic bugs."
+      ]
+    },
+    {
+      "concern": "OTA update",
+      "steps": [
+        "ota",
+        "robust"
+      ],
+      "selfHosted": [
+        "MCUboot (A/B bootloader)",
+        "Mender",
+        "SWUpdate",
+        "Custom dual-bank loader"
+      ],
+      "cloud": {
+        "aws": [
+          "AWS IoT Device Management (OTA jobs)"
+        ],
+        "gcp": [
+          "GCP IoT (partner OTA)"
+        ],
+        "azure": [
+          "Azure Device Update for IoT Hub"
+        ]
+      },
+      "tradeoff": [
+        "A managed OTA service handles staged rollouts and signing at fleet scale but couples the device to that cloud; a self-hosted bootloader keeps control on-device."
+      ]
+    },
+    {
+      "concern": "Root of trust / secure boot & signing",
+      "steps": [
+        "ota",
+        "robust"
+      ],
+      "selfHosted": [
+        "MCUboot (signed images + anti-rollback)",
+        "Arm TrustZone / TF-M",
+        "Secure element (ATECC608)",
+        "OTP-fused root key",
+        "openssl/HSM signing"
+      ],
+      "cloud": {
+        "aws": [
+          "AWS IoT Core (device certs / provisioning)",
+          "AWS KMS/CloudHSM (signing)"
+        ],
+        "gcp": [
+          "Cloud KMS (signing)"
+        ],
+        "azure": [
+          "Azure DPS (device provisioning)",
+          "Azure Key Vault (signing)"
+        ]
+      },
+      "tradeoff": [
+        "A hardware secure element/OTP root key resists key extraction but adds BOM cost and provisioning complexity; a software-only root of trust is cheaper but weaker against physical attack.",
+        "Managed KMS/HSM signing keeps release keys off developer machines; self-hosted signing keeps you off a cloud but needs your own key custody."
+      ]
+    },
+    {
+      "concern": "Fleet connectivity & telemetry",
+      "steps": [
+        "ota"
+      ],
+      "selfHosted": [
+        "MQTT broker (Mosquitto)",
+        "CoAP",
+        "Self-hosted ingest"
+      ],
+      "cloud": {
+        "aws": [
+          "AWS IoT Core"
+        ],
+        "gcp": [
+          "Cloud IoT / Pub/Sub"
+        ],
+        "azure": [
+          "Azure IoT Hub"
+        ]
+      },
+      "tradeoff": [
+        "Managed IoT hubs give device identity, auth, and scale out of the box; self-hosted MQTT is cheaper and portable but you operate the reliability."
+      ]
+    }
+  ],
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Read sensors / drive actuators",
+        "how": "Drivers below the HAL do the concrete I2C/SPI/UART signaling.",
+        "steps": [
+          "hal"
+        ]
+      },
+      {
+        "requirement": "Run control logic deterministically",
+        "how": "A scheduler matched to the timing budget runs the application tasks.",
+        "steps": [
+          "kernel"
+        ]
+      },
+      {
+        "requirement": "Persist config / calibration",
+        "how": "A single-owner store writes to an inactive bank, verifies CRC, and atomically flips the active pointer; corrupt boot falls back to last-good or factory default.",
+        "steps": [
+          "state"
+        ]
+      },
+      {
+        "requirement": "Field firmware updates",
+        "how": "A/B bootloader verifies a signed manifest + anti-rollback counter, trial-boots, and rolls back; a rollout controller stages by cohort behind a telemetry health gate.",
+        "steps": [
+          "ota"
+        ]
+      },
+      {
+        "requirement": "Report telemetry & faults",
+        "how": "The app publishes fault_records + metrics over mutual-TLS, buffered and backed off when offline; the fleet uses fault-rate as a rollout health gate.",
+        "steps": [
+          "ota"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Portability across MCUs",
+        "how": "Only the HAL/driver layer is rewritten; the application is untouched.",
+        "steps": [
+          "hal"
+        ]
+      },
+      {
+        "requirement": "Real-time deadlines",
+        "how": "A timing budget (WCET ≤ 200 µs in a 1 ms period), rate-monotonic priorities, bounded ISR-to-task queues, and priority-inheritance mutexes prove the loop meets its deadline — not the RTOS alone.",
+        "steps": [
+          "kernel"
+        ]
+      },
+      {
+        "requirement": "Testability off-target",
+        "how": "Interface injection lets mocks replace hardware in CI.",
+        "steps": [
+          "decouple"
+        ]
+      },
+      {
+        "requirement": "Maintainability / low coupling",
+        "how": "Single data ownership and a blackboard remove shared-global spaghetti.",
+        "steps": [
+          "state"
+        ]
+      },
+      {
+        "requirement": "Robustness (never brick)",
+        "how": "Supervised watchdog (task check-ins) recovers hangs; A/B images with signature + anti-rollback verification and automatic rollback recover bad updates; staged rings contain a bad-but-signed image.",
+        "steps": [
+          "robust",
+          "ota"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Confirm this is a connected, resource-constrained device that must be portable, real-time, testable, and field-updatable.",
+        "Ask about the hardest deadline and the fleet size \u2014 they drive scheduler and OTA choices."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 5 min",
+      "say": [
+        "Sketch the naive register-poking super-loop and name why it fails: coupling, untestability, timing."
+      ]
+    },
+    {
+      "phase": "Layers",
+      "time": "next 10 min",
+      "say": [
+        "Add the HAL seam, choose a scheduler against the timing budget, then decouple with interfaces for testability."
+      ]
+    },
+    {
+      "phase": "State & Ops",
+      "time": "next 10 min",
+      "say": [
+        "Impose data ownership + blackboard, then make it robust: watchdog, boot integrity, and A/B OTA with rollback."
+      ]
+    },
+    {
+      "phase": "Wrap",
+      "time": "last 5 min",
+      "say": [
+        "Tie each layer back to a requirement; call out ADRs as the maintainability control."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Separates hardware access into a HAL/driver layer.",
+        "Knows super-loop vs RTOS at a high level.",
+        "Can read a sensor and drive an output."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Justifies the scheduler against real-time deadlines.",
+        "Decouples modules with interfaces for unit testing.",
+        "Uses a watchdog and bounded blocking."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Imposes strict data ownership and a coordinated blackboard.",
+        "Designs A/B OTA with signed images and rollback.",
+        "Reasons about portability, ADRs, and fleet-scale operability trade-offs."
+      ]
+    }
+  ],
+  "followUps": [
+    "How do you guarantee a hard 1 kHz control loop when a lower-priority task holds a mutex the loop needs (priority inversion)?",
+    "How do you structure the flash layout to hold two images plus config in a 1 MB part?",
+    "How would you fuzz or property-test a driver against a simulated peripheral?",
+    "How do you stage an OTA rollout across 5M devices and halt it if error telemetry spikes?",
+    "When is embedded Linux the right call over an RTOS, and what does that cost you in determinism?"
+  ]
+}
