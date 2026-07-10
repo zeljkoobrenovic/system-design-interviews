@@ -411,6 +411,17 @@
       ]
     },
     {
+      "id": "embedded-and-firmware",
+      "name": "Embedded & Firmware",
+      "datasets": [
+        {
+          "id": "firmware-platform",
+          "name": "Firmware Platform (Embedded / IoT)",
+          "path": "data/firmware-platform/interview.json"
+        }
+      ]
+    },
+    {
       "id": "developer-platform",
       "name": "Developer Platform & CI/CD",
       "datasets": [
