@@ -1875,74 +1875,6 @@
       "makesIrrelevant": "Shared traces and eval datasets remove one-off incident spreadsheets for reconstructing why a determination stalled."
     }
   ],
-  "patterns": [
-    {
-      "name": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-      "what": "An authored DAG (evidence -> rules -> explain -> decide), not an autonomous loop that could deny opaquely.",
-      "whenToUse": "Where a decision affects a citizen's rights.",
-      "steps": [
-        "rules"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A caseworker decides every adverse determination; the agent never finalizes a denial.",
-      "whenToUse": "Any adverse benefits decision.",
-      "steps": [
-        "gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "The agent extracts and explains freely but a rule engine and caseworker gate fence the decision.",
-      "whenToUse": "Assist-and-explain autonomy with a human-decision boundary.",
-      "steps": [
-        "gate",
-        "rules"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground in effective-dated, jurisdiction-tagged eligibility rules and the applicant record.",
-      "whenToUse": "Applying the right rule for the right applicant.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate determination correctness and explanation quality, and audit consistency across applicants.",
-      "whenToUse": "Measuring correctness and contestability.",
-      "steps": [
-        "fairness",
-        "compliance-eval"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Scoped access; an adverse decision is bound to an accountable caseworker principal.",
-      "whenToUse": "Accessing the case record and recording decisions.",
-      "steps": [
-        "audit-appeal"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat application free-text as untrusted; partition from rule-engine and record authority.",
-      "whenToUse": "Applications are attacker-reachable input.",
-      "steps": [
-        "audit-appeal"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "Level intake and renewal surges.",
-      "whenToUse": "Open-enrollment or surge load.",
-      "steps": [
-        "rules"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1972,9 +1904,6 @@
         "caption": "An agent decides eligibility opaquely from the model — the due-process-failing baseline."
       },
       "decisionPrompt": "Why is an unexplainable automated denial unacceptable for a public benefit specifically?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)"
-      ],
       "probeLinks": [
         "goldberg-kelly",
         "mathews-eldridge",
@@ -1996,7 +1925,14 @@
           "instead": "Decide with a deterministic rule engine, have a caseworker own adverse outcomes, and build an appeal path."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Efficiency vs. due process",
+          "description": "Letting the model decide eligibility directly maximizes throughput and minimizes build cost, but a denial affects a person's rights: the applicant cannot see the rule version that decided their case, correct the evidence used, identify an accountable decision-maker, or appeal from a complete record. Speed of decision is bought at the price of contestability, which administrative law does not allow you to trade away.",
+          "chosen": "The design rejects the model-decides baseline entirely, because for a public benefit an unexplainable, uncontestable automated denial is a due-process failure no efficiency gain can justify."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -2027,9 +1963,6 @@
         "caption": "Determinations apply the eligibility rule in force for the applicant's date and jurisdiction, against their record."
       },
       "decisionPrompt": "Why isn't 'the current rulebook' enough to decide a determination correctly?",
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "code-for-america-safety-net",
         "openfisca-docs",
@@ -2043,6 +1976,14 @@
           "definition": "Eligibility rules versioned by when and where they apply, so a determination uses the rule actually in force for the applicant.",
           "whyItMatters": "Applying the wrong rule version or jurisdiction produces a wrong, and challengeable, decision.",
           "example": "An application from last quarter is decided under that quarter's income thresholds, not today's."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground in effective-dated, jurisdiction-tagged eligibility rules and the applicant record.",
+          "whyItMatters": "Applying the right rule for the right applicant.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -2053,7 +1994,14 @@
         "after": "Determinations apply the correct rule version and jurisdiction.",
         "newRisk": "Grounding alone doesn't make the decision deterministic or auditable — the rules must be applied by an engine, not the model."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg",
+      "tradeoffs": [
+        {
+          "name": "Current rules vs. effective-dated rules",
+          "description": "Grounding in a single current rulebook is simple to maintain, but a determination must apply the rule that was in force for this applicant's date and jurisdiction — a stale or wrong-jurisdiction version produces a legally wrong decision even if the reasoning is flawless. Effective-dated, jurisdiction-tagged rule packages with source authority and approval provenance cost governance machinery but make every decision traceable to who enacted the rule and when it took effect.",
+          "chosen": "The design grounds every determination in versioned, effective-dated, jurisdiction-tagged rule packages carrying approval provenance, because legal correctness depends on which rule applied to this applicant's date and place, not on what the rulebook says today."
+        }
+      ]
     },
     {
       "id": "rules",
@@ -2085,10 +2033,6 @@
         "caption": "A deterministic rule engine makes the determination; the model only extracts evidence and explains — it cannot override the rules."
       },
       "decisionPrompt": "What does the model do here, and why must the decision itself be deterministic?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-        "Queue-based load leveling; admission control"
-      ],
       "probeLinks": [
         "openfisca-docs",
         "openfisca-core",
@@ -2141,6 +2085,22 @@
           "definition": "The LLM extracts evidence and explains in plain language; a deterministic engine applies the rules to reach the determination.",
           "whyItMatters": "A rights-affecting decision must be reproducible and auditable, which a probabilistic model can't guarantee.",
           "example": "The agent reads pay stubs into structured income; the engine compares it to the threshold."
+        },
+        {
+          "term": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
+          "description": "An authored DAG (evidence -> rules -> explain -> decide), not an autonomous loop that could deny opaquely.",
+          "whyItMatters": "Where a decision affects a citizen's rights.",
+          "steps": [
+            "rules"
+          ]
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "Level intake and renewal surges.",
+          "whyItMatters": "Open-enrollment or surge load.",
+          "steps": [
+            "rules"
+          ]
         }
       ],
       "deepDives": [
@@ -2161,7 +2121,19 @@
         "before": "The model could decide outcomes.",
         "after": "A deterministic engine decides; the model only extracts and explains.",
         "newRisk": "An adverse determination still needs an accountable human to own it."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Engineering expressiveness vs. legal legibility",
+          "description": "Policy-as-code gives full expressiveness, unit tests against golden cases, and normal code review, but is less legible to legal and policy reviewers than a decision table; DMN tables map cleanly to statute and audit well but get awkward for complex computed conditions, and a bespoke rules service fits the domain exactly at the highest build cost and with the hardest transparency story for appeal.",
+          "chosen": "The design picks policy-as-code rules because testability against golden cases and versioned, reviewable changes outweigh the legibility edge of decision tables, accepting that rule changes require an engineering deploy."
+        },
+        {
+          "name": "Model assistance vs. deterministic decision",
+          "description": "Letting the LLM decide would be flexible across messy applications, but the decision would be irreproducible and unauditable; confining the model to evidence extraction and plain-language explanation gives up that flexibility so the same evidence and rules always yield the same outcome with a rule trace in the record.",
+          "chosen": "The design makes the deterministic rule engine the sole decider and confines the LLM to bounded extract-and-explain nodes, because eligibility decisions must be reproducible and auditable for appeal."
+        }
+      ]
     },
     {
       "id": "gate",
@@ -2199,10 +2171,6 @@
         "caption": "Adverse determinations enter a priority/SLA review queue; a caseworker decides each one, and the decision ships with rules, evidence, and a plain-language explanation for contest."
       },
       "decisionPrompt": "What must accompany an adverse decision so the applicant can actually contest it?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)"
-      ],
       "probeLinks": [
         "goldberg-kelly",
         "mathews-eldridge",
@@ -2244,6 +2212,23 @@
           "definition": "A decision delivered with the rules, evidence, and plain-language reasons an applicant and reviewer need to challenge it.",
           "whyItMatters": "Due process requires that the affected person can understand and appeal the decision, not just receive it.",
           "example": "A denial states the income rule, the figure used, the source document, and how to appeal."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A caseworker decides every adverse determination; the agent never finalizes a denial.",
+          "whyItMatters": "Any adverse benefits decision.",
+          "steps": [
+            "gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "The agent extracts and explains freely but a rule engine and caseworker gate fence the decision.",
+          "whyItMatters": "Assist-and-explain autonomy with a human-decision boundary.",
+          "steps": [
+            "gate",
+            "rules"
+          ]
         }
       ],
       "whyNow": [
@@ -2346,6 +2331,18 @@
           "why": "A compliance log isn't a due-process record; the affected person must be able to understand and challenge it.",
           "instead": "Make the determination record legible to the applicant and an independent reviewer."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Immediacy vs. surge resilience",
+          "description": "Synchronous blocking review gives the applicant an immediate decision when staff are available and needs no queue infrastructure, but it collapses under intake surges — there is no buffer between spikes and finite caseworker throughput, and no deadline-aware prioritization. A queued adverse-pending state with an SLA absorbs surge without dropping cases and makes backlog and aging measurable, at the cost of queue infrastructure and applicants waiting for assignment.",
+          "chosen": "The design queues adverse determinations for caseworker review under an explicit SLA, because absorbing surge with visible, governable backlog beats a synchronous model that fails silently by delay when intake spikes."
+        },
+        {
+          "name": "Automation vs. accountability",
+          "description": "Letting the agent finalize denials would clear cases fastest, but an adverse outcome must be bound to an accountable public servant and ship with the rules applied, evidence used, and a plain-language explanation so it can be contested; requiring a caseworker on every adverse outcome trades throughput for a decision that is contestable by construction.",
+          "chosen": "The design has a caseworker decide every adverse outcome with identity binding the decision to an accountable person, because contestability is the point of the gate, not an add-on."
+        }
       ]
     },
     {
@@ -2386,10 +2383,6 @@
         "caption": "A notice service delivers the legible notice (starting the appeal clock) and the appeal packet; the appeal path routes the record to an independent reviewer."
       },
       "decisionPrompt": "What's the difference between a compliance audit log and an audit-for-appeal record?",
-      "patterns": [
-        "Delegation not impersonation (OAuth token exchange, act claim)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "goldberg-kelly",
         "section-508",
@@ -2432,6 +2425,22 @@
           "definition": "A determination record structured so the affected person and an independent reviewer can understand and re-examine the decision.",
           "whyItMatters": "Contestability requires a record legible to the applicant, not just an internal trace for auditors.",
           "example": "The appeal packet shows every rule, figure, and source the decision rested on, in plain language."
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Scoped access; an adverse decision is bound to an accountable caseworker principal.",
+          "whyItMatters": "Accessing the case record and recording decisions.",
+          "steps": [
+            "audit-appeal"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat application free-text as untrusted; partition from rule-engine and record authority.",
+          "whyItMatters": "Applications are attacker-reachable input.",
+          "steps": [
+            "audit-appeal"
+          ]
         }
       ],
       "whyNow": [
@@ -2460,7 +2469,14 @@
         "before": "Records served compliance, not the applicant.",
         "after": "The record is legible and an appeal path routes it to an independent reviewer.",
         "newRisk": "Decisions must also be consistent across applicants and groups, not just individually correct."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Materialize vs. replay",
+          "description": "Materializing an appeal packet per determination gives reviewers an immediate, self-contained, frozen record but pays storage and write cost even for cases never appealed, and the packet must be regenerated when rules or evidence are corrected. Event-log replay keeps a single source of truth and is cheap at write time, but replay logic must be versioned so an old case reconstructs under the rules it actually used, and reconstruction gets slower and riskier as the event schema evolves.",
+          "chosen": "The design materializes the appeal packet at determination time, because a frozen, self-contained record the reviewer can open immediately is worth paying write cost for cases that are never appealed."
+        }
+      ]
     },
     {
       "id": "fairness",
@@ -2496,9 +2512,6 @@
         "caption": "A fairness monitor tracks determination rates and consistency across groups and caseworkers at population scale."
       },
       "decisionPrompt": "How do you detect that similar applicants are getting systematically different outcomes?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "nist-ai-bias",
         "aequitas",
@@ -2539,6 +2552,15 @@
           "definition": "Tracking determination rates and outcomes across groups and decision-makers to surface systematic disparity.",
           "whyItMatters": "A decision can be individually defensible yet part of a biased pattern; only population-scale monitoring catches it.",
           "example": "Two demographically different cohorts with similar evidence show divergent approval rates -> flag for review."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate determination correctness and explanation quality, and audit consistency across applicants.",
+          "whyItMatters": "Measuring correctness and contestability.",
+          "steps": [
+            "fairness",
+            "compliance-eval"
+          ]
         }
       ],
       "whyNow": [
@@ -2568,7 +2590,14 @@
         "before": "Fairness was assumed from individual correctness.",
         "after": "Matched-cohort consistency is monitored, outliers flagged, and disparities trigger a remediation workflow.",
         "newRisk": "Due-process and accountability obligations must be operationalized and the system evaluated."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Statistical rigor vs. monitoring cost",
+          "description": "Aggregate-rate dashboards are cheap first alarms, but they confound population composition with bias — a raw rate gap may be lawful or may hide real disparity — and cannot attribute a problem to a caseworker or rule, so they rarely drive remediation. Matched-cohort analysis catches disparate impact that aggregates hide and localizes it for targeted fixes, but requires governed access to protected attributes and real statistical machinery.",
+          "chosen": "The design uses matched-cohort analysis comparing similar applicants with similar evidence, because in a benefits system systematic inconsistency is itself an injustice, and only cohort matching localizes disparity well enough to remediate it."
+        }
+      ]
     },
     {
       "id": "compliance-eval",
@@ -2596,9 +2625,6 @@
         "caption": "Due-process obligations are recorded; eval weights determination correctness, explanation quality, and contestability."
       },
       "decisionPrompt": "Why is determination accuracy alone an insufficient measure of this system's quality?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "omb-m-24-10",
         "nist-ai-rmf",
@@ -2634,7 +2660,14 @@
         "after": "Correctness, explanation quality, and contestability are evaluated and audited.",
         "newRisk": "The last phase-3 vertical adds a physical-experiment gate — see the plan."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-compliance-eval.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-compliance-eval.jpg",
+      "tradeoffs": [
+        {
+          "name": "Accuracy vs. contestability metrics",
+          "description": "Measuring only determination correctness is cheap and objective, but an efficient, accurate pipeline can still produce decisions people cannot understand or challenge; evaluating explanation quality and whether a reviewer could re-decide from the record costs more evaluation machinery but measures the due-process obligations the system actually operates under.",
+          "chosen": "The design evaluates determination correctness alongside explanation quality and contestability, because notice, explanation, and the right to appeal are requirements, and accuracy alone can hide their failure."
+        }
+      ]
     }
   ],
   "finalDesign": {

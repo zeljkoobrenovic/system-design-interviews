@@ -2515,7 +2515,14 @@
           "Gateway",
           "Suggest"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Client filtering vs. central control",
+          "description": "Deciding trigger eligibility in the client avoids flooding the backend with too-short or mid-typing prefixes and keeps latency and cost targets reachable, but it demands a careful, consistent implementation across web and mobile and limits rules to what can run locally. Centralizing triggering in the backend gives one place to change behavior and simplifies old clients, at the price of far more network traffic full of unusable prefixes.",
+          "chosen": "The design picks client-assisted triggering with config-tuned thresholds, so the backend only sees high-value suggestion requests while rollout config can still adjust behavior without shipping a new client."
+        }
+      ]
     },
     {
       "id": "low-latency-inference-and-beam-search",
@@ -2739,7 +2746,19 @@
           "Beam",
           "Candidates"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Determinism vs. diversity",
+          "description": "Beam search returns the same predictable completion for the same prefix, which suits a conservative email assistant, while stochastic sampling explores varied and lower-probability continuations at the cost of inconsistent results and a higher risk of surprising or inappropriate suggestions. For inline email completion, predictability protects user trust more than variety helps it.",
+          "chosen": "The design decodes deterministically with beam search over a short max length, accepting that beam width must be tuned to keep the extra cost from causing latency spikes."
+        },
+        {
+          "name": "Search quality vs. compute budget",
+          "description": "Tracking several likely continuations in parallel finds better short phrases than following only the top token, but every extra beam multiplies inference work inside an interactive latency budget. Because suggestions are short, a modest beam width buys most of the quality without blowing the budget.",
+          "chosen": "The design accepts beam search's extra cost over greedy decoding because suggestions are short, and controls it by tuning beam width against the latency target."
+        }
+      ]
     },
     {
       "id": "confidence-safety-and-post-processing",
@@ -2958,7 +2977,14 @@
           "Empty",
           "UI"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Coverage vs. trust",
+          "description": "Always surfacing the best candidate maximizes visible feature usage, but shows many low-quality completions and raises safety and bias risk. A conservative gate that filters on length, confidence, policy, and bias shows fewer suggestions overall — sometimes suppressing useful ones — but every suggestion the user sees is one the system is confident about.",
+          "chosen": "The design uses a conservative show-or-empty gate where returning no suggestion is a normal successful outcome, trading some coverage for user trust and safety, with thresholds tuned via online metrics."
+        }
+      ]
     },
     {
       "id": "privacy-safe-data-preparation",
@@ -3178,7 +3204,14 @@
           "SafeStore",
           "Audit"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Privacy vs. data freshness",
+          "description": "Training directly from production mail gives the freshest data and the simplest data movement, but it is an unacceptable privacy and audit risk for email and makes experiments hard to reproduce. A sanitized, versioned corpus keeps raw email out of training jobs and supports redaction audits, at the cost of a governance process and training data that can lag current email language trends.",
+          "chosen": "The design builds a sanitized offline corpus — filtered for language, quality, duplicates, PII, and policy-sensitive content — accepting some staleness and process overhead because privacy is non-negotiable for email."
+        }
+      ]
     },
     {
       "id": "tokenization-and-training-examples",
@@ -3378,7 +3411,14 @@
           "ExampleBuilder",
           "ExampleStore"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Vocabulary coverage vs. interpretability",
+          "description": "Word-level tokens are easy to inspect and map common phrases cleanly, but at Gmail scale they need a huge vocabulary and fail on misspellings, names, and rare terms with unknown-token problems. Subword tokens handle rare words gracefully and keep sequences manageable, but the pieces are less intuitive during debugging and the tokenizer becomes a versioned artifact the whole pipeline depends on.",
+          "chosen": "The design uses a subword tokenizer because avoiding unknown-token failures on names and rare words matters more for email completion than human-readable token boundaries."
+        }
+      ]
     },
     {
       "id": "decoder-only-transformer-architecture",
@@ -3584,7 +3624,14 @@
           "Head",
           "Prob"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Model capability vs. serving cost",
+          "description": "A decoder-only Transformer parallelizes training, handles long email context through self-attention, and naturally generates left-to-right continuations, but it is more expensive to serve than a small recurrent model and needs careful latency optimization for interactive use. An RNN baseline is smaller and simpler but is weaker at long-context dependencies and harder to parallelize during training.",
+          "chosen": "The design picks a decoder-only Transformer as the modern fit for text generation and pays for it with deliberate serving-latency optimization work."
+        }
+      ]
     },
     {
       "id": "two-stage-training-pipeline",
@@ -3801,7 +3848,14 @@
           "Eval",
           "Registry"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Generalization vs. pipeline simplicity",
+          "description": "Training from scratch on email alone is a conceptually simple single-stage pipeline, but it costs heavy compute per iteration, risks memorizing email-specific examples, and yields weaker general language understanding. Pretraining on broad text then fine-tuning on sanitized email reuses expensive pretraining across tasks and reduces overfitting, but the team must manage multiple training stages, artifacts, and safety review of the general corpus too.",
+          "chosen": "The design pretrains a base language model and fine-tunes it on email with the same next-token objective, accepting multi-stage complexity for better generalization and cheaper iteration."
+        }
+      ]
     },
     {
       "id": "feedback-evaluation-and-experimentation",
@@ -4007,7 +4061,14 @@
           "Metrics",
           "Dashboard"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Release speed vs. proof of impact",
+          "description": "Promoting a candidate on offline metrics alone is fast and simple, but perplexity and ExactMatch@N cannot detect product regressions like lower acceptance rate or latency-interaction effects that only appear with real users. Gating releases behind offline metrics plus online A/B tests catches bad candidates before users see them and enables guardrail-based rollback, but slows every release and requires experimentation infrastructure.",
+          "chosen": "The design requires candidates to clear offline gates and then prove themselves in online A/B tests measuring acceptance, latency, and guardrails, trading release speed for confidence at high traffic."
+        }
+      ]
     },
     {
       "id": "model-rollout-and-global-scale",
@@ -4244,7 +4305,14 @@
           "Metrics",
           "Empty"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Blast radius vs. operational complexity",
+          "description": "A single global serving fleet is simpler to deploy and debug, but forces high latency on distant users and lets one regional incident disable the feature worldwide. Regional fleets with canary rollout keep inference close to users and contain a bad model version to a small cohort first, but demand artifact replication and warming in every region plus version-and-region-aware observability.",
+          "chosen": "The design serves from autoscaled regional fleets with canary rollout by cohort and locale, accepting replication and observability overhead to protect p99 latency and limit the blast radius of a bad release."
+        }
+      ]
     }
   ],
   "finalDesign": {

@@ -1869,97 +1869,11 @@
       "makesIrrelevant": "Managed observability suites remove much of the log shipping, metric storage, alert routing, and dashboard hosting work, but not the need to define commerce-specific SLOs."
     }
   ],
-  "patterns": [
-    {
-      "name": "Session vs persistent cart",
-      "what": "Keep carts in a fast store keyed by user/session; merge guest carts on login.",
-      "whenToUse": "Read/write-heavy, availability-first cart workload.",
-      "steps": [
-        "cart-store"
-      ],
-      "group": "Persistent Cart Store"
-    },
-    {
-      "name": "Pricing at the right moment",
-      "what": "Compute promotions/taxes at view and re-validate (and freeze) at checkout.",
-      "whenToUse": "Whenever prices/promotions change and must be honored consistently.",
-      "steps": [
-        "pricing"
-      ],
-      "group": "Pricing & Promotions"
-    },
-    {
-      "name": "Saga / orchestration",
-      "what": "Coordinate checkout across inventory, payment, and order via explicit steps with compensations.",
-      "whenToUse": "A 'transaction' spanning independent services that can't share one ACID transaction.",
-      "steps": [
-        "checkout-saga"
-      ],
-      "group": "Checkout as a Saga (idempotent)"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "Dedupe retried checkouts so a shopper isn't double-ordered or double-charged.",
-      "whenToUse": "Money-moving operations over an unreliable network.",
-      "steps": [
-        "checkout-saga"
-      ],
-      "group": "Checkout as a Saga (idempotent)"
-    },
-    {
-      "name": "Inventory reservation + TTL",
-      "what": "Hold stock during checkout; release if it doesn't complete in time.",
-      "whenToUse": "Preventing oversell while a checkout is in flight.",
-      "steps": [
-        "inventory"
-      ],
-      "group": "Inventory Reservation & Oversell Prevention"
-    },
-    {
-      "name": "Optimistic concurrency (CAS)",
-      "what": "Decrement-if-available on stock so concurrent checkouts can't oversell.",
-      "whenToUse": "High-contention inventory under concurrent buyers.",
-      "steps": [
-        "inventory"
-      ],
-      "group": "Inventory Reservation & Oversell Prevention"
-    },
-    {
-      "name": "Order state machine",
-      "what": "Model the order as explicit states with guarded transitions and compensations.",
-      "whenToUse": "Long-running order lifecycle across placement, payment, fulfillment, cancellation.",
-      "steps": [
-        "order-state"
-      ],
-      "group": "Order State Machine & Fulfillment"
-    },
-    {
-      "name": "Transactional outbox",
-      "what": "Emit order events atomically with the state change for fulfillment/notifications.",
-      "whenToUse": "Reliable downstream events without dual writes.",
-      "steps": [
-        "order-state"
-      ],
-      "group": "Order State Machine & Fulfillment"
-    },
-    {
-      "name": "Workload partitioning",
-      "what": "Scale carts and orders as separate systems with different consistency needs.",
-      "whenToUse": "When two sub-workloads have opposite priorities (availability vs correctness).",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling Carts vs Orders"
-    }
-  ],
   "steps": [
     {
       "id": "naive-cart",
       "title": "1. Naive Cart & Buy (the baseline)",
       "description": "Start simple: a cart held in memory/session, and a 'buy' that decrements stock and records an order in one request. It works for one shopper; it loses carts on restart and, worse, treats a multi-service checkout (inventory + payment + order) as if it were one atomic step — which it can't be. The worst case isn't a failed request the shopper can retry; it's a crash mid-checkout that moves money or holds stock with no recoverable local record.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "dynamodb-transactions",
         "stripe-payment-intents",
@@ -1983,6 +1897,9 @@
           "definition": "Carts must survive sessions/restarts for logged-in users.",
           "whyItMatters": "An in-memory cart vanishing loses the shopper's intent.",
           "group": "Naive Cart & Buy (the baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -2034,15 +1951,19 @@
           "OrderDB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-cart.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-cart.jpg",
+      "tradeoffs": [
+        {
+          "name": "One-shot simplicity vs. crash recoverability",
+          "description": "Treating checkout as a single request that decrements stock and records the order is trivially simple, but it pretends a multi-service flow (inventory, payment, order) is atomic when it cannot be. The worst failure is not a retryable error but a crash mid-checkout that moves money or holds stock with no durable local record to recover from.",
+          "chosen": "The baseline keeps the one-shot buy only to expose the gap: the rest of the design replaces it with durable, recoverable coordination across the three services."
+        }
+      ]
     },
     {
       "id": "cart-store",
       "title": "2. Persistent Cart Store",
       "description": "Move carts to a fast, highly-available store keyed by user (or session for guests), so they survive across devices and restarts. Carts favor availability over strict consistency, expire when abandoned, and merge a guest cart into the user's account cart on login.",
-      "patterns": [
-        "Session vs persistent cart"
-      ],
       "probeLinks": [
         "redis-cache",
         "akka-shopping-cart",
@@ -2070,6 +1991,14 @@
           "definition": "Reconciling concurrent edits from multiple devices via last-write-wins per line or a cart version.",
           "whyItMatters": "Confirmed cart mutations shouldn't be silently lost when two devices edit at once.",
           "group": "Persistent Cart Store"
+        },
+        {
+          "term": "Session vs persistent cart",
+          "description": "Keep carts in a fast store keyed by user/session; merge guest carts on login.",
+          "whyItMatters": "Read/write-heavy, availability-first cart workload.",
+          "steps": [
+            "cart-store"
+          ]
         }
       ],
       "options": [
@@ -2183,15 +2112,19 @@
           "Cart",
           "CartStore"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Availability vs. consistency",
+          "description": "An AP-leaning KV store keeps cart reads and writes fast and available across devices and restarts, with TTLs cheaply expiring abandoned carts, but replicas are only eventually consistent. Putting carts in the strongly consistent primary SQL DB gives one authoritative datastore, at the cost of high-frequency cart writes contending with order and inventory load and a harder scaling story.",
+          "chosen": "The design picks the fast AP key-value store with TTL, because carts tolerate momentary staleness and the authoritative checks happen later at checkout anyway."
+        }
+      ]
     },
     {
       "id": "pricing",
       "title": "3. Pricing & Promotions",
       "description": "Compute price (taxes, discounts, coupons) by a pricing service that reads promotion rules. Prices are shown live on the cart but re-evaluated and frozen at checkout, so the shopper is charged exactly what they agreed to.",
-      "patterns": [
-        "Pricing at the right moment"
-      ],
       "probeLinks": [
         "stripe-tax",
         "commercetools-carts-orders",
@@ -2211,6 +2144,14 @@
           "definition": "Evaluates discounts/coupons against the cart.",
           "whyItMatters": "Centralizes complex, changing pricing logic.",
           "group": "Pricing & Promotions"
+        },
+        {
+          "term": "Pricing at the right moment",
+          "description": "Compute promotions/taxes at view and re-validate (and freeze) at checkout.",
+          "whyItMatters": "Whenever prices/promotions change and must be honored consistently.",
+          "steps": [
+            "pricing"
+          ]
         }
       ],
       "deepDives": [
@@ -2389,16 +2330,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-pricing-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Margin protection vs. price stability",
+          "description": "Repricing at checkout charges exactly the prices and promotions valid at that moment, so an expired coupon simply stops applying — but the displayed total can shift between add-to-cart and checkout, surprising the shopper. Locking the price at add-to-cart gives a stable, honest-feeling price but honors expired coupons and stale prices indefinitely, leaking margin; a short-TTL lock splits the difference at the cost of extra bookkeeping.",
+          "chosen": "The design reprices at checkout, accepting a possible 'price changed' message in exchange for never charging a price or promotion that is no longer valid."
+        },
+        {
+          "name": "Lean cart vs. fat cart",
+          "description": "Storing only item references keeps the cart lightweight and easy to merge across guest and account sessions, but puts the pricing service on the checkout hot path, where it must be fast. Persisting locked prices per line item takes pricing off the hot path but fattens the cart and requires per-line price and promo state to be kept and expired.",
+          "chosen": "The cart stores only references and delegates all price computation to the pricing service at checkout, keeping cart data minimal and mergeable."
+        }
       ]
     },
     {
       "id": "inventory",
       "title": "4. Inventory Reservation & Oversell Prevention",
       "description": "Make 'never oversell' a hard invariant. At checkout, a single conditional write creates a short-lived hold only if enough stock remains (atomic CAS), decrementing available and incrementing reserved together; the hold has a TTL and auto-releases if checkout doesn't complete. Payment success confirms the hold as sold; failure or expiry releases it. The invariant is available + reserved + sold = stock_on_hand, and inventory is the authoritative source of truth.",
-      "patterns": [
-        "Inventory reservation + TTL",
-        "Optimistic concurrency (CAS)"
-      ],
       "probeLinks": [
         "postgres-isolation",
         "dynamodb-transactions",
@@ -2420,6 +2369,22 @@
           "definition": "Atomically reduce stock only if enough remains.",
           "whyItMatters": "Concurrent checkouts can't both claim the last unit.",
           "group": "Inventory Reservation & Oversell Prevention"
+        },
+        {
+          "term": "Inventory reservation + TTL",
+          "description": "Hold stock during checkout; release if it doesn't complete in time.",
+          "whyItMatters": "Preventing oversell while a checkout is in flight.",
+          "steps": [
+            "inventory"
+          ]
+        },
+        {
+          "term": "Optimistic concurrency (CAS)",
+          "description": "Decrement-if-available on stock so concurrent checkouts can't oversell.",
+          "whyItMatters": "High-contention inventory under concurrent buyers.",
+          "steps": [
+            "inventory"
+          ]
         }
       ],
       "deepDives": [
@@ -2645,16 +2610,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/04-inventory-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Optimistic CAS vs. pessimistic locking",
+          "description": "A conditional write lets exactly one of two racing shoppers win the last unit lock-free and O(1), surviving hot-item bursts; a pessimistic row lock gives the same guarantee with familiar SQL but serializes every buyer of a hot SKU on one lock, collapsing throughput exactly during the drop that matters most.",
+          "chosen": "The design uses an atomic CAS-protected write, because oversell prevention must hold up under hot-item contention, where row locks cause timeouts and retry storms."
+        },
+        {
+          "name": "Hold bookkeeping vs. stranded stock",
+          "description": "A plain CAS decrement with no hold record is the simplest oversell guard, but an abandoned checkout strands the unit with nothing to release it, and availability is wrong during long checkouts because reserved cannot be told apart from sold. A hold with a TTL auto-releases abandoned reservations and keeps the invariant available + reserved + sold = stock_on_hand explicit, at the cost of a holds table and an expiry sweeper to operate.",
+          "chosen": "The design pays for the holds table and TTL sweeper so abandoned checkouts return stock to the market instead of silently shrinking availability."
+        }
       ]
     },
     {
       "id": "checkout-saga",
       "title": "5. Checkout as a Saga (idempotent)",
       "description": "Orchestrate checkout as a saga: reserve inventory -> create a durable PENDING_PAYMENT order (frozen price + reservation ids) -> authorize/capture payment using the order id as the gateway idempotency key -> mark the order PAID and confirm the holds, with compensations on failure (void/refund, release reservation, mark the order FAILED). Creating the order before money moves means there is always a durable local record to reconcile against, and an idempotency key makes the whole flow safe to retry so a shopper is never double-charged or double-ordered.",
-      "patterns": [
-        "Saga / orchestration",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "amazon-idempotent-apis",
@@ -2686,6 +2659,22 @@
           "definition": "Authorization reserves funds on the card; capture actually moves them. Void cancels an uncaptured auth; refund reverses a capture.",
           "whyItMatters": "Separating them lets the saga hold money tentatively and release it cheaply (void) when a later step fails, instead of always refunding.",
           "group": "Checkout as a Saga (idempotent)"
+        },
+        {
+          "term": "Saga / orchestration",
+          "description": "Coordinate checkout across inventory, payment, and order via explicit steps with compensations.",
+          "whyItMatters": "A 'transaction' spanning independent services that can't share one ACID transaction.",
+          "steps": [
+            "checkout-saga"
+          ]
+        },
+        {
+          "term": "Idempotency key",
+          "description": "Dedupe retried checkouts so a shopper isn't double-ordered or double-charged.",
+          "whyItMatters": "Money-moving operations over an unreliable network.",
+          "steps": [
+            "checkout-saga"
+          ]
         }
       ],
       "deepDives": [
@@ -2973,16 +2962,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/05-checkout-saga-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Compensations vs. atomicity",
+          "description": "A synchronous two-phase commit promises all-or-nothing across reserve, charge, and order-create with no compensations — but external payment gateways do not speak 2PC, the prepare phase holds locks across services, and a coordinator crash blocks everyone. A saga accepts a brief eventually-consistent window (capture done, order still PENDING) in exchange for a flow that actually works across an external payment system and never blocks.",
+          "chosen": "The design runs checkout as a saga with explicit compensations, because true distributed atomicity is unavailable once a third-party payment gateway is in the loop."
+        },
+        {
+          "name": "Orchestration vs. choreography",
+          "description": "A central orchestrator concentrates the checkout state in one place, making every partial-failure branch recoverable, auditable, and answerable ('where is this checkout stuck'), but it becomes a component that must itself be reliable. Event choreography couples services more loosely and lets them scale independently, but spreads the end-to-end flow across subscribers where ordering and cyclic-dependency bugs hide.",
+          "chosen": "The design picks an orchestrated saga keyed by a client idempotency key, valuing a single traceable source of checkout state over looser coupling."
+        }
       ]
     },
     {
       "id": "order-state",
       "title": "6. Order State Machine & Fulfillment",
       "description": "Model the order as a state machine — pending_payment -> paid -> fulfillment_requested -> fulfilled, with cancel_requested/cancelled and failed branches — and only allow legal transitions. Each transition is recorded in order_events and emits an outbox event in the same transaction; a relay publishes to a queue so idempotent consumers (keyed by event id) act exactly once. Cancellation compensates by current state: pending_payment releases holds, paid (not fulfilled) voids/refunds and releases, fulfilled becomes a return/refund flow rather than a simple cancel.",
-      "patterns": [
-        "Order state machine",
-        "Transactional outbox"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "stripe-paymentintents-lifecycle",
@@ -3003,6 +3000,14 @@
           "definition": "Events written in the same transaction as the state change, relayed to a queue.",
           "whyItMatters": "Guarantees a 'paid' event is published iff the state committed — no lost or phantom ships.",
           "group": "Order State Machine & Fulfillment"
+        },
+        {
+          "term": "Order state machine",
+          "description": "Model the order as explicit states with guarded transitions and compensations.",
+          "whyItMatters": "Long-running order lifecycle across placement, payment, fulfillment, cancellation.",
+          "steps": [
+            "order-state"
+          ]
         }
       ],
       "deepDives": [
@@ -3189,16 +3194,19 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Outbox reliability vs. direct-call immediacy",
+          "description": "Calling fulfillment directly from checkout is the simplest and most immediate path, but the dual write can tear: an order marked paid with no shipment, or a shipment with no matching order state. Writing events to an outbox in the same transaction as the state change guarantees exactly-once-effect delivery relative to the transition, at the cost of running a relay, pruning the outbox, and requiring idempotent consumers.",
+          "chosen": "The design uses the transactional outbox plus a queue, because telling the warehouse to ship exactly once is a correctness requirement, not a convenience."
+        }
       ]
     },
     {
       "id": "scale",
       "title": "7. Scaling Carts vs Orders",
       "description": "Scale the two workloads separately: carts (huge, read/write-heavy, availability-first) shard across a fast KV store; orders (fewer, correctness-critical) stay on a consistent, replicated store. A router directs cart traffic by user; orders scale by partitioning on order/user id.",
-      "patterns": [
-        "Workload partitioning",
-        "Optimistic concurrency (CAS)"
-      ],
       "probeLinks": [
         "dynamodb-transactions",
         "shopify-flash-sale",
@@ -3220,6 +3228,14 @@
           "definition": "Partition cart and order data by a key that keeps a user's data together.",
           "whyItMatters": "Scales horizontally while keeping a user's cart/orders local.",
           "group": "Scaling Carts vs Orders"
+        },
+        {
+          "term": "Workload partitioning",
+          "description": "Scale carts and orders as separate systems with different consistency needs.",
+          "whyItMatters": "When two sub-workloads have opposite priorities (availability vs correctness).",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -3333,7 +3349,14 @@
           "ShardA",
           "ShardB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Workload isolation vs. operational simplicity",
+          "description": "One shared SQL database for carts and orders is the simplest setup with strong consistency everywhere, but cart traffic at 25x checkout volume contends with and can starve the correctness-critical order and inventory work, and everything hits a single scaling ceiling. Splitting them lets each workload scale on its own terms, at the cost of operating two systems and re-validating carts at the checkout boundary between them.",
+          "chosen": "The design shards carts across an availability-first KV store and keeps orders on a strongly consistent database, so cart volume can never threaten order correctness."
+        }
+      ]
     }
   ],
   "finalDesign": {

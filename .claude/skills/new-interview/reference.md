@@ -22,7 +22,6 @@ marked required.
   "api":          [ { "method", "path", "description", "request", "response", "sequence"? } ],
   "dataModel":    [ { "name", "note", "fields": [ { "name", "type" } ] } ],
 
-  "patterns":        [ { "name", "what", "whenToUse"?, "steps"?: ["stepId"] } ],
   "steps":           [ { ...step... } ],              // required (OR patternCatalog[])
   "finalDesign":     { "title", "description", "view", "options"?, "flows"? },
   "satisfies":       { "functional": [ {requirement,how,steps:["id"]} ], "nonFunctional": [ ... ] },
@@ -81,7 +80,8 @@ cache, database, object-storage, index, model, observability, external`.
   "decisionPrompt": "What should the candidate decide here?",
   "concepts": [ { "term", "definition", "whyItMatters", "example" } ],
   "whyNow": ["Why this step belongs here in the build order."],
-  "patterns": ["Cache-aside"],        // pattern-name chips (match dataset patterns[])
+  "tradeoffs": [ { "name": "Latency vs. freshness", "description": "...", "chosen"?: "..." } ],
+                                      // per-step trade-off cards; also feeds the derived Overview "Trade-offs" page
   "traps": [ { "trap", "why", "instead" } ],
   "recap": { "before": "...", "after": "...", "newRisk": "..." },
   "failureDrills": [ { "scenario", "expectedBehavior", "mitigation" } ],
@@ -150,7 +150,9 @@ cache, database, object-storage, index, model, observability, external`.
 - No step uses a legacy `diagram` field (must use `view`); flows use
   `sequence` (no raw flow Mermaid).
 - `flow.highlight` (or `sequence.highlight`) ids appear as participants.
-- `satisfies.*[].steps` and `patterns[].steps` reference existing step ids.
+- `satisfies.*[].steps` and concept/trade-off `steps` reference existing step ids.
+- No dataset-level `patterns` and no `step.patterns` (both removed; the
+  validator rejects them — use step `concepts` / `tradeoffs`).
 - Sub-step `parent` references an existing step id.
 
 ## Catalog datasets (no steps)

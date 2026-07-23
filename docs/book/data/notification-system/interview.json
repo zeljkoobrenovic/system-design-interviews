@@ -1638,89 +1638,11 @@
       "makesIrrelevant": "A managed metrics+tracing backend removes the need to run and scale your own time-series database and trace store as label cardinality grows."
     }
   ],
-  "patterns": [
-    {
-      "name": "Work queue",
-      "what": "Decouple accept from deliver with a durable queue and pull-based workers.",
-      "whenToUse": "When the producer is fast and bursty but downstream delivery is slow or rate-limited.",
-      "steps": [
-        "queue-workers"
-      ],
-      "group": "Queue + Workers (reliable async delivery)"
-    },
-    {
-      "name": "Fanout-on-write vs fanout-on-read",
-      "what": "Materialize a copy per recipient up front (write) or resolve recipients at send time (read).",
-      "whenToUse": "Choose by recipient count and fanout frequency — big topics favor fanout-on-read.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Fanout (one event, many recipients)"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "Dedupe retried events so a user is notified at most once per logical event.",
-      "whenToUse": "At-least-once pipelines where producers and workers both retry.",
-      "steps": [
-        "idempotency"
-      ],
-      "group": "Idempotency & Deduplication (notify once)"
-    },
-    {
-      "name": "Dead-letter queue",
-      "what": "Route messages that exhaust retries to a separate queue for inspection instead of dropping or blocking.",
-      "whenToUse": "Any retrying consumer where some messages are permanently bad.",
-      "steps": [
-        "queue-workers",
-        "channels"
-      ],
-      "group": "Queue + Workers (reliable async delivery)"
-    },
-    {
-      "name": "Preference / policy filter",
-      "what": "Apply user opt-outs, categories, and quiet hours before delivery.",
-      "whenToUse": "Whenever users must control what reaches them — almost always for notifications.",
-      "steps": [
-        "preferences"
-      ],
-      "group": "User Preferences & Quiet Hours"
-    },
-    {
-      "name": "Rate limiting / throttling",
-      "what": "Cap notifications per user and smooth bursts so users aren't spammed and providers aren't overwhelmed.",
-      "whenToUse": "High-volume, multi-tenant, or provider-constrained delivery.",
-      "steps": [
-        "rate-limiting"
-      ],
-      "group": "Rate Limiting & Throttling"
-    },
-    {
-      "name": "Provider abstraction / adapter",
-      "what": "A uniform channel interface behind per-provider adapters with their own retry/failover.",
-      "whenToUse": "Multiple interchangeable downstreams (APNs/FCM, multiple email/SMS vendors).",
-      "steps": [
-        "channels"
-      ],
-      "group": "Multi-Channel Routing & Providers"
-    },
-    {
-      "name": "Sharded queues",
-      "what": "Partition the queue so throughput scales and one hot tenant can't starve others.",
-      "whenToUse": "When a single queue/consumer group becomes the throughput bottleneck.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling the Pipeline"
-    }
-  ],
   "steps": [
     {
       "id": "single-send",
       "title": "1. Synchronous Single-Channel Send (baseline)",
       "description": "Start minimal: a service calls the notification API, which calls a provider (say push) synchronously and returns the result. This surfaces the core tension — delivery depends on a slow, flaky third party — before we add machinery.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "apns-sending",
         "apns-responses",
@@ -1746,6 +1668,9 @@
           "definition": "The gap between the provider accepting a send and the DB recording it. If the process dies in between, the message was sent but recorded as not-sent.",
           "whyItMatters": "It's the root reason at-most-once is unprovable and why later retries must be idempotent — the ambiguity exists from the very first design.",
           "group": "Synchronous Single-Channel Send (baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -1799,17 +1724,19 @@
           "DB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-single-send.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-single-send.jpg",
+      "tradeoffs": [
+        {
+          "name": "Caller simplicity vs. provider coupling",
+          "description": "Calling the push provider synchronously and returning its result is the least machinery possible and gives the caller an immediate answer, but it chains the caller's latency and success directly to a slow, flaky, rate-limiting third party — the provider's bad day becomes every producer's bad day.",
+          "chosen": "The design keeps this baseline only to expose the core tension, then decouples callers from providers with a queue in the next step."
+        }
+      ]
     },
     {
       "id": "queue-workers",
       "title": "2. Queue + Workers (reliable async delivery)",
       "description": "Put a durable queue between accept and deliver. The API enqueues and returns 202 immediately; pull-based workers deliver with retries and backoff. Permanently failing messages go to a dead-letter queue rather than blocking or vanishing.",
-      "patterns": [
-        "Work queue",
-        "Dead-letter queue",
-        "Retry with backoff"
-      ],
       "probeLinks": [
         "kafka-design",
         "sqs-visibility",
@@ -1848,6 +1775,26 @@
           "definition": "A cap on retries-in-flight per provider plus a breaker that trips on sustained failure, so a downstream outage doesn't multiply into a retry storm.",
           "whyItMatters": "Naive per-message retries during an outage can 10× the load on an already-struggling provider and delay healthy traffic.",
           "group": "Queue + Workers (reliable async delivery)"
+        },
+        {
+          "term": "Work queue",
+          "description": "Decouple accept from deliver with a durable queue and pull-based workers.",
+          "whyItMatters": "When the producer is fast and bursty but downstream delivery is slow or rate-limited.",
+          "steps": [
+            "queue-workers"
+          ]
+        },
+        {
+          "term": "Dead-letter queue",
+          "description": "Route messages that exhaust retries to a separate queue for inspection instead of dropping or blocking.",
+          "whyItMatters": "Any retrying consumer where some messages are permanently bad.",
+          "steps": [
+            "queue-workers",
+            "channels"
+          ]
+        },
+        {
+          "term": "Retry with backoff"
         }
       ],
       "options": [
@@ -2049,16 +1996,24 @@
           "Worker",
           "DLQ"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Happy-path latency vs. burst absorption",
+          "description": "Pushing each accepted notification straight to a worker delivers fastest when everything is healthy, but there is no buffer — bursts overload workers and providers, and backpressure becomes ad-hoc and lossy. A durable queue lets the API return 202 immediately while workers pull at their own pace, with the queue growing instead of dropping under load.",
+          "chosen": "The design puts a durable queue between accept and deliver, trading a little happy-path latency for natural backpressure and burst absorption."
+        },
+        {
+          "name": "Retry persistence vs. poison isolation",
+          "description": "Retrying failures with backoff keeps transient provider outages from losing messages, but retrying forever amplifies load during an outage and lets a permanently failing message block capacity; a dead-letter queue caps retries and parks poison messages visibly instead of letting them vanish or clog the pipeline.",
+          "chosen": "The design retries with backoff up to a limit and routes permanent failures to a DLQ, so nothing blocks and nothing silently disappears."
+        }
+      ]
     },
     {
       "id": "idempotency",
       "title": "3. Idempotency & Deduplication (notify once)",
       "description": "At-least-once queues and retrying producers mean the same logical event can arrive twice. An idempotency key on accept and a dedup check on deliver ensure a user is notified at most once per event within a window.",
-      "patterns": [
-        "Idempotency key",
-        "Dedup store"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "idempotent-consumer",
@@ -2084,6 +2039,9 @@
           "definition": "The platform can make its own intended-delivery operation idempotent, but it cannot make a third-party provider deliver exactly once. A worker may crash after the provider accepts a send but before status is recorded; a failover can double-send if the primary timed out yet still delivered.",
           "whyItMatters": "Honest framing: dedup + provider idempotency keys minimize duplicate user-visible effects within a bounded window, but true exactly-once across external channels is not provable.",
           "group": "Idempotency & Deduplication (notify once)"
+        },
+        {
+          "term": "Dedup store"
         }
       ],
       "flows": [
@@ -2314,16 +2272,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-idempotency-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Double guards vs. pipeline latency",
+          "description": "Deduping at both accept and deliver covers both duplicate sources — a retrying producer and an at-least-once queue that redelivers — but it puts a shared dedup store on two paths and adds latency to each. A single check at either end is cheaper but leaves one duplicate source uncovered: accept-only misses queue redelivery after a worker crash; deliver-only lets duplicate events flood the queue before being dropped.",
+          "chosen": "The design checks at both accept and deliver because each guard catches a failure mode the other cannot, and notifying a user twice is the visible bug."
+        },
+        {
+          "name": "Window size vs. store growth",
+          "description": "The dedup window is a dial: too short and a delayed duplicate re-notifies the user; too long and the dedup store bloats and becomes a hotter dependency that must scale with traffic.",
+          "chosen": "The design bounds dedup to a per-event window sized to realistic retry delays, accepting the store as a hot dependency worth operating."
+        }
       ]
     },
     {
       "id": "fanout",
       "title": "4. Fanout (one event, many recipients)",
       "description": "Broadcasts and topic notifications target many users. Direct-recipient sends still enqueue per recipient; broadcasts add a target-expansion phase. A fanout service expands one event into per-recipient deliveries: materialize per recipient now (small audiences) vs store the event once and stream recipients in chunks into delivery queues at send time (large audiences). Choose by scale.",
-      "patterns": [
-        "Fanout-on-write vs fanout-on-read",
-        "Work queue"
-      ],
       "probeLinks": [
         "linkedin-concourse",
         "fcm-topic-messaging",
@@ -2349,6 +2315,14 @@
           "definition": "The fanout worker pages through subscribers in fixed-size chunks, enqueues each recipient idempotently (keyed by notification_id, recipient_id, channel), and records a cursor so a crash resumes mid-list instead of restarting.",
           "whyItMatters": "Restarting a 10M-recipient expansion from zero would re-notify everyone already enqueued; the cursor + idempotent enqueue make fanout itself crash-safe.",
           "group": "Fanout (one event, many recipients)"
+        },
+        {
+          "term": "Fanout-on-write vs fanout-on-read",
+          "description": "Materialize a copy per recipient up front (write) or resolve recipients at send time (read).",
+          "whyItMatters": "Choose by recipient count and fanout frequency — big topics favor fanout-on-read.",
+          "steps": [
+            "fanout"
+          ]
         }
       ],
       "options": [
@@ -2543,15 +2517,24 @@
             "Fanout"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Fanout on write vs. on read",
+          "description": "Materializing a delivery row per recipient at publish time makes delivery a simple queue drain, but a 10M-subscriber topic posting hourly writes 10M rows per post — expensive and bursty. Storing the event once and streaming recipients into delivery queues at send time makes huge broadcasts cheap, but moves expansion work to delivery time.",
+          "chosen": "The design goes hybrid — write for small audiences, read for large — so each send pays the cheaper expansion strategy for its scale."
+        },
+        {
+          "name": "Uniform path vs. threshold tuning",
+          "description": "One fanout strategy for everything is simpler to build and reason about, but the hybrid's better economics come at the cost of two code paths and an audience-size threshold that must be tuned and maintained.",
+          "chosen": "The design accepts two code paths because neither pure strategy is affordable at both ends of the audience-size spectrum."
+        }
       ]
     },
     {
       "id": "preferences",
       "title": "5. User Preferences & Quiet Hours",
       "description": "Insert a preference/policy filter before delivery: per-channel, per-category opt-outs, quiet hours, and channel fallback — plus the harder layer above product preferences: legal consent and provider suppression. Suppressed deliveries are recorded with a reason, not silently dropped.",
-      "patterns": [
-        "Preference / policy filter"
-      ],
       "probeLinks": [
         "linkedin-atc",
         "slack-rebuilt-notifications",
@@ -2577,6 +2560,14 @@
           "definition": "Three distinct layers: product preference (user's chosen settings), legal consent (a regulated opt-out for marketing email/SMS that must be auditable), and provider suppression (a hard block from a bounce/complaint/invalid token). They are checked together but governed differently.",
           "whyItMatters": "Urgent/security messages may bypass quiet hours and product preferences, but they must NOT bypass a legal opt-out or a hard suppression for that channel/category — conflating them is a compliance bug.",
           "group": "User Preferences & Quiet Hours"
+        },
+        {
+          "term": "Preference / policy filter",
+          "description": "Apply user opt-outs, categories, and quiet hours before delivery.",
+          "whyItMatters": "Whenever users must control what reaches them — almost always for notifications.",
+          "steps": [
+            "preferences"
+          ]
         }
       ],
       "deepDives": [
@@ -2785,17 +2776,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/05-preferences-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Central policy vs. hot-path latency",
+          "description": "A dedicated preference service applies opt-outs, quiet hours, consent, and channel fallback in one auditable, evolvable place — but that synchronous lookup sits on the delivery path and must stay fast at 50k/s, forcing caching and high availability. Inlining a cached preferences view in each worker is the fastest and has fewest moving parts, but policy logic duplicates across workers, drifts, and stale caches can message an opted-out user.",
+          "chosen": "The design centralizes policy in a preference service before delivery, backed by caching, and records suppressed sends with a reason rather than dropping them."
+        },
+        {
+          "name": "Filter early vs. decide late",
+          "description": "Resolving preferences at accept time saves queue and worker capacity because opted-out sends never enter the pipeline, but quiet hours computed at accept can be wrong by deliver time, broadcasts would need per-recipient resolution before fanout, and a user who opts out after enqueue is still messaged. Checking at delivery time is more expensive but decides on current state.",
+          "chosen": "The design applies preferences just before delivery so the decision reflects the user's state at send time, not at enqueue time."
+        }
       ]
     },
     {
       "id": "channels",
       "title": "6. Multi-Channel Routing & Providers",
       "description": "Generalize delivery across channels via a router and per-provider adapters. Each channel (push/email/SMS) has its own provider, retry profile, and failover. Templates render channel-appropriate content. Crucially, delivery is a two-way conversation: providers report final status asynchronously (receipts, bounces, invalid tokens), so this step also adds the callback path that closes the loop on 'delivered'.",
-      "patterns": [
-        "Provider abstraction / adapter",
-        "Dead-letter queue",
-        "Circuit breaker"
-      ],
       "probeLinks": [
         "apns-responses",
         "fcm-token-management",
@@ -2840,6 +2838,17 @@
           "definition": "Channel- and locale-specific content pinned to a version. A worker renders the version captured when the notification was accepted.",
           "whyItMatters": "A mid-flight edit to a template shouldn't change what a 10M-recipient broadcast already in flight says.",
           "group": "Multi-Channel Routing & Providers"
+        },
+        {
+          "term": "Provider abstraction / adapter",
+          "description": "A uniform channel interface behind per-provider adapters with their own retry/failover.",
+          "whyItMatters": "Multiple interchangeable downstreams (APNs/FCM, multiple email/SMS vendors).",
+          "steps": [
+            "channels"
+          ]
+        },
+        {
+          "term": "Circuit breaker"
         }
       ],
       "flows": [
@@ -3189,15 +3198,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/06-channels-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Abstraction vs. lock-in",
+          "description": "A channel router with pluggable per-provider adapters means adding an SMS vendor is a new adapter, not a pipeline rewrite, and each channel keeps its own retry profile — at the cost of more abstraction and per-channel config surface. Outsourcing everything to one multi-channel provider is the least code, but their outage takes down every channel and swapping in a cheaper vendor for one channel stops being simple.",
+          "chosen": "The design builds the router-plus-adapters layer, keeping vendor choice and per-channel failover in its own hands."
+        },
+        {
+          "name": "Failover redundancy vs. duplicate risk",
+          "description": "Routing each channel to a primary vendor with a secondary fallback turns a vendor outage into graceful degradation instead of a dead channel, but vendors differ in semantics, failover must not double-send the same notification across vendors, and every extra vendor is more credentials and health checks to operate. The status-callback path is what closes the loop on whether a message truly arrived.",
+          "chosen": "The design supports per-channel multi-vendor failover behind the router and ingests provider receipts asynchronously, accepting the extra vendor surface for delivery resilience."
+        }
       ]
     },
     {
       "id": "rate-limiting",
       "title": "7. Rate Limiting & Throttling",
       "description": "Cap notifications per user (don't spam) and smooth bursts toward providers (respect their limits). Limits apply at several scopes — per user, per tenant, per category — with stricter caps on marketing than transactional/security. Combine token-bucket limits, digest/collapse for chatty categories, and provider-side throttling, all backed by a fast shared counter store.",
-      "patterns": [
-        "Rate limiting / throttling"
-      ],
       "probeLinks": [
         "redis-rate-limiter",
         "twilio-rate-limits",
@@ -3230,6 +3248,14 @@
           "definition": "Coalescing many notifications into one summary, accumulated in a per-(user, category) window in the counter store and flushed on a timer or threshold.",
           "whyItMatters": "Turns spam into a useful roll-up for chatty categories.",
           "group": "Rate Limiting & Throttling"
+        },
+        {
+          "term": "Rate limiting / throttling",
+          "description": "Cap notifications per user and smooth bursts so users aren't spammed and providers aren't overwhelmed.",
+          "whyItMatters": "High-volume, multi-tenant, or provider-constrained delivery.",
+          "steps": [
+            "rate-limiting"
+          ]
         }
       ],
       "options": [
@@ -3356,16 +3382,19 @@
           "Limiter",
           "LimiterStore"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Per-user precision vs. counter infrastructure",
+          "description": "Per-user token buckets at multiple scopes (user, tenant, category) stop a buggy producer from hitting one person 500 times a minute and respect provider quotas, but distributed counters need a fast shared store like Redis on the send path. A single global rate cap is trivial, but it cannot protect an individual user and ends up either too loose globally or too strict for everyone.",
+          "chosen": "The design uses per-user token buckets layered with provider throttles, paying for a shared counter store because per-recipient protection is the actual requirement."
+        }
+      ]
     },
     {
       "id": "scale",
       "title": "8. Scaling the Pipeline",
       "description": "Two independent axes fix the final bottleneck. First, priority lanes (urgent / normal / bulk) keep a marketing blast from head-of-line-blocking an OTP. Second, inside each lane, partition by tenant so one noisy tenant can't starve others. A fair scheduler allocates worker capacity across tenants and lanes; workers autoscale on queue depth and oldest-message age, and queue age applies backpressure to fanout and producer admission.",
-      "patterns": [
-        "Sharded queues",
-        "Work queue"
-      ],
       "probeLinks": [
         "slack-tracing-notifications",
         "linkedin-atc",
@@ -3399,6 +3428,14 @@
           "definition": "Using queue depth / oldest-message age as a signal to slow upstream work: throttle fanout expansion and admission control on accept when delivery can't keep up.",
           "whyItMatters": "Without it, a 10M-recipient blast floods the queue faster than workers drain it, ballooning latency for everyone including urgent traffic.",
           "group": "Scaling the Pipeline"
+        },
+        {
+          "term": "Sharded queues",
+          "description": "Partition the queue so throughput scales and one hot tenant can't starve others.",
+          "whyItMatters": "When a single queue/consumer group becomes the throughput bottleneck.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -3522,7 +3559,19 @@
           "QueueA",
           "QueueB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Priority lanes vs. single-queue simplicity",
+          "description": "Separate urgent/normal/bulk lanes let an OTP bypass a marketing blast instead of waiting behind millions of bulk messages, but multiple lanes mean more queues, scheduling logic, and autoscaling signals; one shared queue is simplest yet guarantees head-of-line blocking during any big blast.",
+          "chosen": "The design splits traffic into priority lanes so urgency, not arrival order, decides what is delivered first."
+        },
+        {
+          "name": "Tenant isolation vs. partition sprawl",
+          "description": "Partitioning each lane by tenant keeps one noisy tenant's blast from starving everyone else and lets a fair scheduler allocate worker capacity, but the partition count multiplies and workers must autoscale on queue depth and message age; scaling only workers on a single queue avoids that management but offers no isolation at all.",
+          "chosen": "The design partitions per tenant with fair scheduling and depth-based autoscaling, accepting more moving parts for real multi-tenant fairness."
+        }
+      ]
     }
   ],
   "finalDesign": {

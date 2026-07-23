@@ -434,7 +434,7 @@ def step_specs(
         compact(data.get("description"), 500),
         compact(step.get("description"), 900),
         compact({"decisionPrompt": step.get("decisionPrompt")}, 500),
-        list_items("Patterns", step.get("patterns"), 6),
+        list_items("Trade-offs", step.get("tradeoffs"), 6),
         list_items("Why now", step.get("whyNow"), 4),
         list_items("Bottlenecks", step.get("bottlenecks"), 5),
         list_items("Common traps", step.get("traps"), 4),

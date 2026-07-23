@@ -1414,56 +1414,6 @@
       "makesIrrelevant": "Managed telemetry with Redis and queue integrations removes much of the custom scraping and dashboard plumbing, but not SLO definition or incident runbooks."
     }
   ],
-  "patterns": [
-    {
-      "name": "String cache-aside + lock",
-      "what": "GET/SET strings for sessions and cached JSON; SET NX EX as a distributed lock.",
-      "whenToUse": "Login sessions, hot read cache, and guarding a critical section like checkout.",
-      "steps": [
-        "strings"
-      ]
-    },
-    {
-      "name": "Atomic counters (INCR)",
-      "what": "Single-command atomic increment for counts, windows, and IDs.",
-      "whenToUse": "View counts, rate limiting, and generating monotonic unique IDs.",
-      "steps": [
-        "integers"
-      ]
-    },
-    {
-      "name": "Hash-per-entity",
-      "what": "Store an object's fields in one Redis hash for partial reads/writes.",
-      "whenToUse": "A shopping cart or any small mutable object keyed by owner.",
-      "steps": [
-        "hashes"
-      ]
-    },
-    {
-      "name": "Sorted-set leaderboard",
-      "what": "ZADD scores and ZREVRANGE for real-time ranking.",
-      "whenToUse": "Trending products, seller leaderboards, top-N of anything.",
-      "steps": [
-        "sorted-sets"
-      ]
-    },
-    {
-      "name": "List as a work queue",
-      "what": "LPUSH producers, BRPOP consumers for async jobs.",
-      "whenToUse": "Order emails, fulfillment, any fire-and-forget background work.",
-      "steps": [
-        "lists-bitmaps"
-      ]
-    },
-    {
-      "name": "Bitmap analytics",
-      "what": "One bit per user per day; BITCOUNT/BITOP for DAU and retention.",
-      "whenToUse": "Cardinality-style analytics where a bit per entity is cheap.",
-      "steps": [
-        "lists-bitmaps"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1512,7 +1462,14 @@
           "instead": "Move each hot path onto the Redis structure that fits it, keeping the DB as the durable record."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One store vs. fit-for-purpose stores",
+          "description": "A single RDBMS backing every feature is correct and easy to reason about, but it forces every product view through a disk-backed SELECT plus a hot-row counter UPDATE, every trending page through a heavy sort, and checkout through inline email — one engine straining to serve workloads with very different shapes.",
+          "chosen": "The design keeps the RDBMS as the durable system of record but treats it as a baseline whose bottlenecks map cleanly onto purpose-built Redis structures for each hot path."
+        }
+      ]
     },
     {
       "id": "strings",
@@ -1554,10 +1511,15 @@
           "definition": "Expire cache entries after a bounded, randomized time.",
           "whyItMatters": "Bounds staleness and prevents a synchronized expiry stampede onto the DB.",
           "example": "SET prod:99 {...} EX 300 with ±10% jitter."
+        },
+        {
+          "term": "String cache-aside + lock",
+          "description": "GET/SET strings for sessions and cached JSON; SET NX EX as a distributed lock.",
+          "whyItMatters": "Login sessions, hot read cache, and guarding a critical section like checkout.",
+          "steps": [
+            "strings"
+          ]
         }
-      ],
-      "patterns": [
-        "String cache-aside + lock"
       ],
       "whyNow": [
         "Sessions and cache are the highest-volume reads; fixing them first removes most DB read load before anything else."
@@ -1656,7 +1618,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-strings.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-strings.jpg",
+      "tradeoffs": [
+        {
+          "name": "Lock liveness vs. lock safety",
+          "description": "A distributed lock with no expiry deadlocks the resource forever when its holder crashes, while adding a TTL (SET NX EX) means a slow-but-alive holder can lose the lock mid-work; the atomic set-with-expiry trades a small false-expiry risk for guaranteed eventual release.",
+          "chosen": "The design uses SET NX EX so a dead holder can never block the resource permanently, accepting that TTL choice becomes a tuning concern."
+        },
+        {
+          "name": "Cache freshness vs. database load",
+          "description": "Cache-aside with a short TTL serves hot product reads from memory instead of the DB, but every cached read can be up to one TTL stale, and naive expiry lets many keys lapse together and stampede the database.",
+          "chosen": "The design accepts short-TTL staleness on product reads and adds jitter to expiry times, trading perfect freshness for taking the read hot path off the database."
+        }
+      ]
     },
     {
       "id": "integers",
@@ -1703,10 +1677,15 @@
           "definition": "A shared monotonic INCR counter as a unique-ID source.",
           "whyItMatters": "Generates unique order IDs without a DB sequence round trip; ranges cut chatter.",
           "example": "INCRBY order:id 1000 -> reserve a block per instance."
+        },
+        {
+          "term": "Atomic counters (INCR)",
+          "description": "Single-command atomic increment for counts, windows, and IDs.",
+          "whyItMatters": "View counts, rate limiting, and generating monotonic unique IDs.",
+          "steps": [
+            "integers"
+          ]
         }
-      ],
-      "patterns": [
-        "Atomic counters (INCR)"
       ],
       "whyNow": [
         "Counting and ID generation are the write-side twin of step 2's read caching — both remove hot-row DB pressure."
@@ -1794,7 +1773,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-integers.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-integers.jpg",
+      "tradeoffs": [
+        {
+          "name": "Count exactness vs. write volume",
+          "description": "A per-view INCR is atomic and exact, but at 200k reads/s it adds 200k derived Redis writes/s that dominate write load; sampling (INCR 1-in-N and scale up) or per-instance aggregation with periodic INCRBY slashes that load at the cost of approximate or slightly delayed counts.",
+          "chosen": "The design accepts approximate view counts at scale — sampled or batch-aggregated — because a display counter does not justify making counter writes the system's biggest write workload."
+        },
+        {
+          "name": "In-memory speed vs. durable record",
+          "description": "Keeping the live counter in Redis makes each increment a single in-memory op with no hot-row lock, but Redis is not the durable record; periodically flushing totals to the DB keeps the durable copy roughly current without paying a durable write per view.",
+          "chosen": "The design counts in Redis and flushes to the DB in the background, trading real-time durability of the counter for removing per-view write cost from the database."
+        }
+      ]
     },
     {
       "id": "hashes",
@@ -1831,9 +1822,6 @@
           "example": "HINCRBY cart:42 p99 1 bumps one line's quantity."
         }
       ],
-      "patterns": [
-        "Hash-per-entity"
-      ],
       "whyNow": [
         "The cart is the most-edited per-user object; a hash gives field-level edits the earlier string cache can't."
       ],
@@ -1855,7 +1843,19 @@
           "instead": "Use a hash so each line is an independent field updated atomically."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-hashes.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-hashes.jpg",
+      "tradeoffs": [
+        {
+          "name": "Field-level edits vs. single-blob simplicity",
+          "description": "Storing the cart as one JSON string is the simplest representation, but every one-line edit means reading, deserializing, and rewriting the whole object; a Hash costs a slightly richer command vocabulary (HSET, HINCRBY, HDEL, HGETALL) in exchange for touching only the line that changed.",
+          "chosen": "The design stores the cart as a Redis Hash because carts are edited one line at a time, making field-level operations the natural unit of work."
+        },
+        {
+          "name": "Auto-expiry convenience vs. cart retention",
+          "description": "A TTL on the cart key makes abandoned carts clean themselves up with zero housekeeping code, but it also means a returning shopper can find an empty cart and abandonment data vanishes unless analytics snapshots it before expiry.",
+          "chosen": "The design puts a TTL on cart keys and lets abandonment analytics snapshot carts first, preferring automatic cleanup over indefinitely accumulating stale carts."
+        }
+      ]
     },
     {
       "id": "sorted-sets",
@@ -1894,10 +1894,15 @@
           "definition": "Reduce old scores over time so 'trending' reflects recent activity.",
           "whyItMatters": "Keeps rankings current without a full recompute.",
           "example": "Windowed keys trending:{hour} combined with decaying weights via ZUNIONSTORE."
+        },
+        {
+          "term": "Sorted-set leaderboard",
+          "description": "ZADD scores and ZREVRANGE for real-time ranking.",
+          "whyItMatters": "Trending products, seller leaderboards, top-N of anything.",
+          "steps": [
+            "sorted-sets"
+          ]
         }
-      ],
-      "patterns": [
-        "Sorted-set leaderboard"
       ],
       "whyNow": [
         "Ranking was the last heavy per-request DB sort; a ZSET makes it an incremental in-memory read."
@@ -1974,7 +1979,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/05-sorted-sets.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-sorted-sets.jpg",
+      "tradeoffs": [
+        {
+          "name": "Write-time ranking vs. read-time sorting",
+          "description": "The RDBMS approach re-sorts a growing aggregate table on every trending page load; a ZSET instead pays O(log n) on every ZINCRBY at write time so the top-10 read is a cheap O(log n + m) ZREVRANGE — moving the sort cost from the read path to the far more tolerant write path.",
+          "chosen": "The design maintains rank continuously in a sorted set, paying per-update log cost so leaderboard reads are effectively free at any traffic level."
+        },
+        {
+          "name": "Trending freshness vs. score history",
+          "description": "Raw cumulative scores let old hits dominate trending forever; time-decay (periodic multiply-down) or windowed buckets keep the board fresh but deliberately forget history and add a maintenance job or extra keys.",
+          "chosen": "The design applies time-decay or window bucketing so trending reflects what is hot now, accepting that long-run popularity must be tracked elsewhere."
+        }
+      ]
     },
     {
       "id": "lists-bitmaps",
@@ -2099,11 +2116,15 @@
           "definition": "A bit per entity in a string, addressed with SETBIT/BITCOUNT/BITOP.",
           "whyItMatters": "DAU and N-day retention for millions of users in a few KB per day.",
           "example": "SETBIT dau:2026-07-04 42 1; BITCOUNT dau:2026-07-04."
+        },
+        {
+          "term": "List as a work queue",
+          "description": "LPUSH producers, BRPOP consumers for async jobs.",
+          "whyItMatters": "Order emails, fulfillment, any fire-and-forget background work.",
+          "steps": [
+            "lists-bitmaps"
+          ]
         }
-      ],
-      "patterns": [
-        "List as a work queue",
-        "Bitmap analytics"
       ],
       "whyNow": [
         "These remove the last inline side effect (email) and add analytics the earlier structures couldn't express cheaply."
@@ -2184,6 +2205,18 @@
             "Queue",
             "Worker"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Hand-rolled simplicity vs. built-in delivery guarantees",
+          "description": "A bare LPUSH/BRPOP list is dead simple and very fast, but for the no-drop order path you must hand-roll processing lists, a reaper, retry counters, and a dead-letter list; Redis Streams or a broker like Kafka/SQS ship consumer groups, acks, PEL reclaim, and replay out of the box at the cost of more moving parts to run.",
+          "chosen": "At ~10k jobs/s with a no-drop requirement the design chooses Streams or a dedicated broker, because the delivery machinery a list forces you to build by hand is exactly what these systems provide natively."
+        },
+        {
+          "name": "Fast enqueue vs. atomic commit",
+          "description": "LPUSHing the job directly after the DB commit is the fastest path, but a crash between commit and push loses the job and a retried push duplicates it; routing the enqueue through a transactional outbox row written in the checkout transaction closes that window at the cost of a relay and an outbox table.",
+          "chosen": "The design writes the order and the outbox job in one DB transaction and lets a relay feed the queue, because checkout side effects must be neither lost nor doubled."
         }
       ]
     },
@@ -2289,7 +2322,19 @@
           "instead": "Keep the durable RDBMS authoritative for orders; use Redis for speed and derived/ephemeral state."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-ha.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-ha.jpg",
+      "tradeoffs": [
+        {
+          "name": "Persistence overhead vs. restart safety",
+          "description": "Once Redis holds sessions, carts, counters, and the queue, a cold restart is an outage; AOF with per-second fsync and RDB snapshots bound that loss to about a second of writes, at the cost of disk I/O and slightly slower writes that a pure cache would never pay.",
+          "chosen": "The design enables AOF plus snapshots because this Redis is no longer disposable, while still keeping money-critical facts like committed orders in the durable RDBMS."
+        },
+        {
+          "name": "Evictable cache vs. must-keep state",
+          "description": "Under memory pressure Redis can evict keys, which is fine for cache-aside product entries that reload from the DB but catastrophic for the queue, carts, and sessions that exist nowhere else; one instance cannot safely apply a single eviction policy to both kinds of data.",
+          "chosen": "The design separates roles so cache data is evictable and re-derivable while queue, cart, and session keys are never evicted, keeping their source of truth or backing store explicit."
+        }
+      ]
     }
   ],
   "finalDesign": {

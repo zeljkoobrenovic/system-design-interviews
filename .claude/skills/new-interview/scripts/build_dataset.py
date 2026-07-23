@@ -113,11 +113,6 @@ data = {
          "fields": [{"name": "short_code", "type": "varchar(10) PK"},
                     {"name": "long_url", "type": "text"}]},
     ],
-    "patterns": [
-        {"name": "Cache-aside", "what": "Check cache, load DB on miss, backfill.",
-         "whenToUse": "Read-heavy lookups.", "steps": ["cache"]},
-    ],
-
     "steps": [
         {
             "id": "naive",
@@ -144,7 +139,9 @@ data = {
             ],
             "view": view(["Client", "App", "Cache", "DB"], ["lb-app", "app-cache", "cache-db", "app-db"], highlight=["Cache"]),
             "decisionPrompt": "On a cache miss, who loads from the DB and backfills?",
-            "patterns": ["Cache-aside"],
+            "tradeoffs": [{"name": "Latency vs. freshness",
+                           "description": "Serving redirects from cache is fast but risks stale mappings; always reading the DB stays fresh but melts under read load.",
+                           "chosen": "Cache-aside with TTLs — hot redirects stay in memory and staleness is bounded."}],
             "concepts": [{"term": "Cache-aside",
                           "definition": "App checks cache, reads DB on miss, then backfills the cache.",
                           "whyItMatters": "Simple and resilient; a cache outage just means more DB load.",

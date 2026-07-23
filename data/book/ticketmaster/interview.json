@@ -2590,97 +2590,11 @@
       "makesIrrelevant": "Managed logs, metrics, traces, and audit retention remove most collector and storage operations while leaving custom SLO and invariant definitions in the app."
     }
   ],
-  "patterns": [
-    {
-      "name": "Distributed lock / seat locking",
-      "what": "Acquire an exclusive, short-lived lock on each contended resource (seat) before mutating it.",
-      "whenToUse": "Multiple clients race to claim the same scarce item.",
-      "steps": [
-        "reserve-lock"
-      ],
-      "icon": "assets/icons/patterns/distributed-lock-seat-locking.png",
-      "group": "Atomic Reservation with Seat Locking"
-    },
-    {
-      "name": "Optimistic concurrency control",
-      "what": "Read a version, write only if it's unchanged (compare-and-set), retry on conflict.",
-      "whenToUse": "High contention where holding pessimistic locks would serialize everything.",
-      "steps": [
-        "overbooking"
-      ],
-      "icon": "assets/icons/patterns/optimistic-concurrency-control.png",
-      "group": "Overbooking Prevention & Consistency"
-    },
-    {
-      "name": "Virtual waiting room",
-      "what": "Admit users from a queue at a controlled rate so the core system sees bounded load.",
-      "whenToUse": "Flash crowds far exceeding capacity, where fairness and overload protection matter.",
-      "steps": [
-        "waiting-room"
-      ],
-      "icon": "assets/icons/patterns/virtual-waiting-room.png",
-      "group": "Virtual Waiting Room (fairness + overload protection)"
-    },
-    {
-      "name": "TTL / lease expiry",
-      "what": "Give holds a time-to-live and reclaim them automatically when it lapses.",
-      "whenToUse": "Reserved-but-not-bought resources that must recirculate if abandoned.",
-      "steps": [
-        "hold-expiry"
-      ],
-      "icon": "assets/icons/patterns/ttl-lease-expiry.png",
-      "group": "Holds & TTL Expiry"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "Dedupe retried reserve/checkout calls so a user doesn't double-hold or double-buy.",
-      "whenToUse": "State-changing calls over an unreliable network under load.",
-      "steps": [
-        "reserve-lock",
-        "checkout"
-      ],
-      "icon": "assets/icons/patterns/idempotency-key.png",
-      "group": "Atomic Reservation with Seat Locking"
-    },
-    {
-      "name": "Read model / cache",
-      "what": "Serve seat maps and availability from a fast, eventually-consistent projection, not the inventory primary.",
-      "whenToUse": "Very read-heavy browse traffic over a write-contended store.",
-      "steps": [
-        "browse"
-      ],
-      "icon": "assets/icons/patterns/read-model-cache.png",
-      "group": "Browse: Seat Map Read Model"
-    },
-    {
-      "name": "Load shedding / admission control",
-      "what": "Reject or queue excess load early so the protected core stays correct.",
-      "whenToUse": "Demand can exceed capacity by orders of magnitude.",
-      "steps": [
-        "waiting-room"
-      ],
-      "icon": "assets/icons/patterns/load-shedding-admission-control.png",
-      "group": "Virtual Waiting Room (fairness + overload protection)"
-    },
-    {
-      "name": "Sharding by key",
-      "what": "Partition inventory by event so one hot event's contention is isolated from others.",
-      "whenToUse": "A few hot events would otherwise overwhelm shared infrastructure.",
-      "steps": [
-        "scale"
-      ],
-      "icon": "assets/icons/patterns/sharding-by-key.png",
-      "group": "Scaling Hot Events & Anti-Abuse"
-    }
-  ],
   "steps": [
     {
       "id": "naive-buy",
       "title": "1. Naive 'Buy a Seat' (the baseline)",
       "description": "Start with the simplest path: the client posts a purchase for a seat, the API checks availability and writes 'sold'. With one buyer this works fine — but the whole design exists because, at on-sale, thousands hit the same seat in the same millisecond.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "ticketmaster-eras-onsale",
         "ticketmaster-queue",
@@ -2704,6 +2618,9 @@
           "whyItMatters": "Ticketing is buyers-per-seat contention, not raw throughput; that shapes every choice.",
           "icon": "assets/icons/concepts/contention.png",
           "group": "Naive 'Buy a Seat' (the baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -2753,15 +2670,19 @@
           "Inventory"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-buy.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-buy.jpg",
+      "tradeoffs": [
+        {
+          "name": "Check-then-act vs. atomic claim",
+          "description": "Checking availability and then writing 'sold' as two steps is the natural, simple flow — and it is exactly the race: two requests read seat A12 as available in the same millisecond and both write sold. At on-sale, thousands hit the same seat simultaneously, so the gap between check and act is not an edge case but the common case.",
+          "chosen": "The baseline is kept only to show the race; every later step exists to replace check-then-act with a single atomic claim per seat."
+        }
+      ]
     },
     {
       "id": "browse",
       "title": "2. Browse: Seat Map Read Model",
       "description": "Browsing and seat-map polling dwarf purchases. Serve availability from a read model / cache (and static seat maps from a CDN), accepting slight staleness — the authoritative check happens at reserve time anyway.",
-      "patterns": [
-        "Read model / cache"
-      ],
       "probeLinks": [
         "ticketmaster-queue",
         "cloudflare-waiting-room",
@@ -2785,6 +2706,15 @@
           "whyItMatters": "Lets reads be cheap and stale while keeping the purchase correct.",
           "icon": "assets/icons/concepts/authoritative-check-at-write.png",
           "group": "Browse: Seat Map Read Model"
+        },
+        {
+          "term": "Read model / cache",
+          "description": "Serve seat maps and availability from a fast, eventually-consistent projection, not the inventory primary.",
+          "whyItMatters": "Very read-heavy browse traffic over a write-contended store.",
+          "icon": "assets/icons/patterns/read-model-cache.png",
+          "steps": [
+            "browse"
+          ]
         }
       ],
       "deepDives": [
@@ -2850,16 +2780,19 @@
           "Cache"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-browse.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-browse.jpg",
+      "tradeoffs": [
+        {
+          "name": "Staleness vs. read scalability",
+          "description": "Serving seat maps from a read model, cache, and CDN lets browsing and polling — which dwarf purchases — scale cheaply, but the map a user sees can be slightly out of date. Serving every browse from the authoritative inventory would keep the map perfectly fresh at the cost of crushing the primary with read traffic that never buys anything.",
+          "chosen": "The design serves availability from a slightly stale read model, because the authoritative check happens at reserve time anyway — only the reservation, never the display, must be exact."
+        }
+      ]
     },
     {
       "id": "reserve-lock",
       "title": "3. Atomic Reservation with Seat Locking",
       "description": "Replace check-then-act with an atomic claim: acquire a short-lived exclusive lock on each requested seat before marking it held. If any seat is already locked or sold, the whole reservation fails fast with 409. Idempotency keys make retries safe.",
-      "patterns": [
-        "Distributed lock / seat locking",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "redis-locks",
         "kleppmann-locks-fencing",
@@ -2890,6 +2823,25 @@
           "whyItMatters": "If the lock store is lost or wrong, the worst case is extra 409s — never a double-sell. (Made rigorous in Step 7.)",
           "icon": "assets/icons/concepts/lock-as-accelerator-not-source-of-truth.png",
           "group": "Atomic Reservation with Seat Locking"
+        },
+        {
+          "term": "Distributed lock / seat locking",
+          "description": "Acquire an exclusive, short-lived lock on each contended resource (seat) before mutating it.",
+          "whyItMatters": "Multiple clients race to claim the same scarce item.",
+          "icon": "assets/icons/patterns/distributed-lock-seat-locking.png",
+          "steps": [
+            "reserve-lock"
+          ]
+        },
+        {
+          "term": "Idempotency key",
+          "description": "Dedupe retried reserve/checkout calls so a user doesn't double-hold or double-buy.",
+          "whyItMatters": "State-changing calls over an unreliable network under load.",
+          "icon": "assets/icons/patterns/idempotency-key.png",
+          "steps": [
+            "reserve-lock",
+            "checkout"
+          ]
         }
       ],
       "options": [
@@ -3082,17 +3034,20 @@
           "Lock",
           "Hold"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Lock-store speed vs. single source of truth",
+          "description": "TTL locks in a fast in-memory store make claims very fast, keep contention off the inventory primary, and auto-expire so a crashed client cannot strand seats — but the lock store and inventory can diverge on failure, demanding reconciliation and fencing, and it is another stateful system to run. Conditional UPDATEs in the database keep one source of truth with no divergence, but hot rows serialize and can thrash the primary on the biggest drops.",
+          "chosen": "The design takes short-lived TTL locks in a fast store to absorb on-sale contention, accepting the divergence risk that a later step resolves by making inventory the arbiter."
+        }
+      ]
     },
     {
       "id": "multi-seat-locking",
       "parent": "reserve-lock",
       "title": "3a. Multi-Seat Locking Details",
       "description": "Going deeper on the atomic reservation: how to grab several specific seats all-or-nothing under contention without deadlock, and how to make the locks safe across crashes. The mechanics here are what make the no-double-sell guarantee real.",
-      "patterns": [
-        "Distributed lock / seat locking",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "redis-locks",
         "kleppmann-locks-fencing",
@@ -3180,15 +3135,19 @@
           "Idem"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/04-multi-seat-locking.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-multi-seat-locking.jpg",
+      "tradeoffs": [
+        {
+          "name": "All-or-nothing vs. deadlock risk",
+          "description": "Grabbing several specific adjacent seats atomically means holding multiple locks at once, and two requests acquiring {A12, A13} in opposite orders can each hold one and wait forever. Acquiring in a canonical seat order (or claiming the group in one atomic operation) prevents deadlock, at the cost of stricter locking discipline; giving up all-or-nothing would avoid the problem but leave buyers with split pairs.",
+          "chosen": "The design keeps the all-or-nothing group claim and imposes ordered, crash-safe acquisition, because partial holds of adjacent seats are a product failure, not a fallback."
+        }
+      ]
     },
     {
       "id": "hold-expiry",
       "title": "4. Holds & TTL Expiry",
       "description": "A reservation creates a hold with a short TTL so a user can check out. If they abandon it, an expiry mechanism releases the seats and the locks so inventory recirculates. Without this, scarce seats leak out of the market.",
-      "patterns": [
-        "TTL / lease expiry"
-      ],
       "probeLinks": [
         "redis-locks",
         "kleppmann-locks-fencing",
@@ -3211,6 +3170,15 @@
           "whyItMatters": "Determines how fast scarce seats return to availability.",
           "icon": "assets/icons/concepts/reaping-expiry.png",
           "group": "Holds & TTL Expiry"
+        },
+        {
+          "term": "TTL / lease expiry",
+          "description": "Give holds a time-to-live and reclaim them automatically when it lapses.",
+          "whyItMatters": "Reserved-but-not-bought resources that must recirculate if abandoned.",
+          "icon": "assets/icons/patterns/ttl-lease-expiry.png",
+          "steps": [
+            "hold-expiry"
+          ]
         }
       ],
       "options": [
@@ -3324,16 +3292,19 @@
         "highlight": [
           "Expiry"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Prompt recirculation vs. mechanism count",
+          "description": "Relying on the lock store's TTL alone is the simplest expiry — locks just lapse — but the inventory's held state and the hold row are never cleaned, drifting from reality, and there is no clean event to refresh the availability cache. A sweeper worker reaps expired holds promptly and a lazy check at access catches stragglers, at the cost of two mechanisms and clock-skew handling.",
+          "chosen": "The design runs a sweeper plus a lazy access-time check, paying for two mechanisms so scarce seats return to the market with bounded staleness instead of leaking."
+        }
+      ]
     },
     {
       "id": "waiting-room",
       "title": "5. Virtual Waiting Room (fairness + overload protection)",
       "description": "At on-sale, 1M+ users hit a few thousand seats. A virtual waiting room admits users to the booking core at a controlled rate, giving rough first-come fairness and protecting the reserve path from a thundering herd.",
-      "patterns": [
-        "Virtual waiting room",
-        "Load shedding / admission control"
-      ],
       "probeLinks": [
         "ticketmaster-queue",
         "seatgeek-waiting-room-aws",
@@ -3360,6 +3331,15 @@
           "whyItMatters": "Prevents collapse; converts an overload into an orderly wait.",
           "icon": "assets/icons/concepts/admission-control.png",
           "group": "Virtual Waiting Room (fairness + overload protection)"
+        },
+        {
+          "term": "Load shedding / admission control",
+          "description": "Reject or queue excess load early so the protected core stays correct.",
+          "whyItMatters": "Demand can exceed capacity by orders of magnitude.",
+          "icon": "assets/icons/patterns/load-shedding-admission-control.png",
+          "steps": [
+            "waiting-room"
+          ]
         }
       ],
       "deepDives": [
@@ -3633,6 +3613,18 @@
             "Gate"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Fairness vs. simplicity",
+          "description": "Plain per-user rate limiting at the API needs no queue tier, but under a million-user spike the rejected majority retries in a storm, aggressive clients and bots win, and users see raw errors instead of a place in line. A virtual waiting room admits users at a controlled rate with rough first-come fairness, but it is a whole queue-plus-gate tier that must itself survive the spike the core cannot.",
+          "chosen": "The design builds the waiting room with an admission gate, judging that fairness and a queue that absorbs the burst are worth an extra highly available tier."
+        },
+        {
+          "name": "First-come vs. lottery admission",
+          "description": "First-come queue position matches the public expectation of an on-sale but rewards being fastest — including bots — and concentrates all arrivals into one cliff. A lottery or scheduled-window admission removes the incentive to spam refresh and spreads load over a window, but many buyers dislike a lottery and it needs a registration phase and an auditable selection.",
+          "chosen": "The design keeps first-come admission through the waiting room, layering anti-bot defenses later rather than replacing the familiar on-sale model with a lottery."
+        }
       ]
     },
     {
@@ -3640,10 +3632,6 @@
       "parent": "waiting-room",
       "title": "5a. Admission-Token Enforcement",
       "description": "Going deeper on the waiting room: how a queue position becomes a signed admission token that the reservation endpoint actually checks, so the queue genuinely gates load and fairness instead of being cosmetic. Without enforcement, the waiting room is theater.",
-      "patterns": [
-        "Virtual waiting room",
-        "Load shedding / admission control"
-      ],
       "probeLinks": [
         "ticketmaster-queue",
         "aws-virtual-waiting-room",
@@ -3733,16 +3721,19 @@
           "Gate"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-admission-tokens.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-admission-tokens.jpg",
+      "tradeoffs": [
+        {
+          "name": "Enforced gating vs. cosmetic queueing",
+          "description": "If the reserve API never checks queue position, the waiting room is theater: it displays a line while any client that skips the UI hits the reserve path directly, so neither load shedding nor fairness is real. Turning a position into a signed admission token the reservation endpoint verifies makes the gate genuine, at the cost of token issuance, signing, and validation on the hot path.",
+          "chosen": "The design makes the reserve endpoint require a signed admission token, because a waiting room that is not enforced protects nothing."
+        }
+      ]
     },
     {
       "id": "checkout",
       "title": "6. Checkout & Payment Integration",
       "description": "Checkout drives an order state machine (pending_payment -> confirmed, with cancelled/refund_pending branches), not just a charge plus an order row. It re-verifies (and briefly renews) the hold, records a payment attempt, charges the idempotent payment system, then flips seats from held to sold via inventory CAS. Expired holds fail cleanly; a charge that can't be converted is refunded.",
-      "patterns": [
-        "Idempotency key",
-        "Saga / state machine"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "aws-idempotent-apis",
@@ -3766,6 +3757,9 @@
           "whyItMatters": "Payment and inventory are separate systems; a saga handles partial failure.",
           "icon": "assets/icons/concepts/compensation.png",
           "group": "Checkout & Payment Integration"
+        },
+        {
+          "term": "Saga / state machine"
         }
       ],
       "flows": [
@@ -4054,6 +4048,18 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/08-checkout-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Seat guarantee vs. payment guarantee",
+          "description": "Holding the seat first and then charging means the buyer pays against a guaranteed seat — no oversell, no charge-then-no-seat — but the hold TTL must cover the payment window or a successful charge lands on an expired hold. Charging first never commits inventory before money arrives, but under contention the seat can be gone after the charge, forcing refunds that spike exactly during the hottest on-sales.",
+          "chosen": "The design holds, then charges, then flips held to sold via CAS, putting the refund-and-anger scenario on the rare TTL edge instead of on every contended purchase."
+        },
+        {
+          "name": "Synchronous flow vs. saga machinery",
+          "description": "A synchronous hold-then-charge-then-confirm driven by an order state machine is simple enough to reason about and fast for the buyer, but partial failures need reconciliation to catch charge-versus-order drift. A full saga with outbox-driven stages and compensations survives crashes with order, payment, and inventory eventually agreeing, but is the most complex option and its eventual consistency delays the buyer's confirmation.",
+          "chosen": "The design keeps checkout synchronous with an explicit state machine and reconciliation, reserving saga machinery for when latency or reliability needs actually demand it."
+        }
       ]
     },
     {
@@ -4061,10 +4067,6 @@
       "parent": "checkout",
       "title": "6a. Checkout State Machine & Reconciliation",
       "description": "Going deeper on checkout: model the order as an explicit state machine and handle the awkward window where payment is in flight. Hold renewal, durable payment attempts, and reconciliation are what keep money and seats consistent when steps fail or race.",
-      "patterns": [
-        "Saga / state machine",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "aws-idempotent-apis",
@@ -4164,16 +4166,19 @@
           "Recon"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/09-checkout-state-machine.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/09-checkout-state-machine.jpg",
+      "tradeoffs": [
+        {
+          "name": "Hold lifetime vs. payment window",
+          "description": "A short hold TTL recirculates abandoned seats quickly, but payment can take longer than the hold — an 8-second charge against a 5-second TTL risks the seat being resold mid-payment. Renewing or freezing the hold once payment is in flight protects the buyer, but stretches how long a seat can be off the market, and a durable payment-attempt record plus reconciliation must resolve any charge that outlives its hold.",
+          "chosen": "The design renews the hold when payment begins and reconciles charge-versus-order drift afterward, treating the payment service as a slow lane that must never race the TTL."
+        }
+      ]
     },
     {
       "id": "overbooking",
       "title": "7. Overbooking Prevention & Consistency",
       "description": "Make 'never oversell' a hard invariant even across the lock store, inventory, and general-admission counters. Use the seat status as the single source of truth with optimistic concurrency; for GA, use an atomic counter that can never go negative.",
-      "patterns": [
-        "Optimistic concurrency control",
-        "Distributed lock / seat locking"
-      ],
       "probeLinks": [
         "redis-locks",
         "kleppmann-locks-fencing",
@@ -4197,6 +4202,15 @@
           "whyItMatters": "Bounds GA sales without per-seat rows; must be atomic to avoid going negative.",
           "icon": "assets/icons/concepts/atomic-counter-ga.png",
           "group": "Overbooking Prevention & Consistency"
+        },
+        {
+          "term": "Optimistic concurrency control",
+          "description": "Read a version, write only if it's unchanged (compare-and-set), retry on conflict.",
+          "whyItMatters": "High contention where holding pessimistic locks would serialize everything.",
+          "icon": "assets/icons/patterns/optimistic-concurrency-control.png",
+          "steps": [
+            "overbooking"
+          ]
         }
       ],
       "deepDives": [
@@ -4396,6 +4410,18 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/10-overbooking-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "In-memory speed vs. durable authority",
+          "description": "Making the lock store the source of truth resolves all contention at in-memory latency — hold the lock, own the seat — but a failover, eviction, or TTL bug lets two buyers both believe they won, staking a money-critical invariant on volatile state. Making the durable seat status with CAS the system of record caps per-seat write rate at DB speed, but gives a clear arbiter whenever lock and inventory disagree.",
+          "chosen": "The design makes the inventory seat status authoritative and demotes the lock store to a contention accelerator, so 'never oversell' rests on durable CAS, not on lock-store uptime."
+        },
+        {
+          "name": "Two systems vs. one hot row",
+          "description": "Dropping the lock store entirely and deciding every sale with a single serializable transaction per seat row is the simplest correct design with only one system to trust — but thousands of buyers hitting one row create the contention and lock waits the lock store was absorbing. Keeping both systems buys hot-path speed at the cost of monitoring and reconciling their agreement.",
+          "chosen": "The design keeps the two-tier arrangement — fast locks in front, DB CAS as the deciding write — accepting consistency monitoring to avoid hot-row collapse on mega on-sales."
+        }
       ]
     },
     {
@@ -4403,9 +4429,6 @@
       "parent": "overbooking",
       "title": "7a. General-Admission Counters",
       "description": "Going deeper on the GA case: general admission has no seats, just a pool with a remaining count. The correctness tool is an atomic decrement-if-positive rather than per-seat locks, with its own reconciliation — and it's worth being explicit about how GA differs from reserved seating.",
-      "patterns": [
-        "Optimistic concurrency control"
-      ],
       "probeLinks": [
         "postgres-isolation",
         "postgres-select-for-update",
@@ -4493,16 +4516,19 @@
           "Recon"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/11-ga-counters.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/11-ga-counters.jpg",
+      "tradeoffs": [
+        {
+          "name": "Counter simplicity vs. seat granularity",
+          "description": "General admission has no seats to lock, so an atomic decrement-if-positive on a pool count is far simpler and faster than per-seat locking — 5,000 simultaneous buyers against 100 spots resolve on one counter that can never go negative. What is given up is per-unit state: there is no individual seat record to hold, audit, or reconcile, so GA needs its own reconciliation for the counter against sold orders.",
+          "chosen": "The design uses an atomic decrement-if-positive for GA pools, matching the mechanism to the inventory shape instead of forcing seatless tickets through seat locks."
+        }
+      ]
     },
     {
       "id": "scale",
       "title": "8. Scaling Hot Events & Anti-Abuse",
       "description": "A handful of mega-events drive nearly all contention. Shard inventory by event so one hot drop is isolated, scale its waiting room and reserve path independently, and add bot/scalper defenses so fairness survives adversaries.",
-      "patterns": [
-        "Sharding by key",
-        "Load shedding / admission control"
-      ],
       "probeLinks": [
         "ticketmaster-eras-onsale",
         "ticketmaster-scalpers",
@@ -4531,6 +4557,15 @@
           "whyItMatters": "Scalpers automate to beat fairness; defenses are part of correctness here.",
           "icon": "assets/icons/concepts/anti-abuse.png",
           "group": "Scaling Hot Events & Anti-Abuse"
+        },
+        {
+          "term": "Sharding by key",
+          "description": "Partition inventory by event so one hot event's contention is isolated from others.",
+          "whyItMatters": "A few hot events would otherwise overwhelm shared infrastructure.",
+          "icon": "assets/icons/patterns/sharding-by-key.png",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -4668,7 +4703,14 @@
           "ReserveA",
           "ReserveB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Isolation vs. operational overhead",
+          "description": "One shared pool and reserve path for all events is the simplest topology with no routing, but a single stadium tour generating 95% of load degrades every other event on the platform — no blast-radius isolation. Sharding inventory per event and giving hot drops a dedicated autoscaled waiting room and reserve lane isolates the contention, at the cost of routing, per-event capacity planning, and tooling to detect and promote hot events.",
+          "chosen": "The design shards by event with a dedicated lane per hot drop, paying the routing and planning overhead so one mega on-sale can never take down the rest of the catalog."
+        }
+      ]
     }
   ],
   "finalDesign": {

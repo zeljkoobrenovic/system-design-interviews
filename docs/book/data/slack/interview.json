@@ -684,71 +684,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Channel-centric fanout",
-      "what": "Deliver a posted message to all subscribed members of the channel in real time.",
-      "whenToUse": "Group/channel messaging (vs 1:1).",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Channel Fanout over Live Connections"
-    },
-    {
-      "name": "Subscription registry",
-      "what": "Track which channels each connected client subscribes to so fanout knows where to push.",
-      "whenToUse": "Routing channel messages across a sharded gateway fleet.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Channel Fanout over Live Connections"
-    },
-    {
-      "name": "Per-channel ordering + history",
-      "what": "Assign a per-channel sequence; persist durably so history is ordered and replayable.",
-      "whenToUse": "Searchable, scrollable, ordered channel history.",
-      "steps": [
-        "history"
-      ],
-      "group": "Ordered Durable History"
-    },
-    {
-      "name": "Permission model (workspace/channel ACL)",
-      "what": "Workspaces contain channels; membership + roles gate read/post/search.",
-      "whenToUse": "Multi-tenant team chat with private channels.",
-      "steps": [
-        "permissions"
-      ],
-      "group": "Workspaces, Channels, and Permissions"
-    },
-    {
-      "name": "Permission-scoped search",
-      "what": "Index messages but filter search results to channels the requester can access.",
-      "whenToUse": "Searchable history that must respect access control.",
-      "steps": [
-        "search"
-      ],
-      "group": "Permission-Scoped Search"
-    },
-    {
-      "name": "Ephemeral presence",
-      "what": "Best-effort online/typing state, separate from the durable message path.",
-      "whenToUse": "Live awareness without durability cost.",
-      "steps": [
-        "presence"
-      ],
-      "group": "Presence and Typing"
-    },
-    {
-      "name": "Permission revocation under distributed state",
-      "what": "On membership change, invalidate live subscriptions and bump a membership version so delivery and search read current access — no stale cache keeps a removed user connected or searching.",
-      "whenToUse": "Private channels where a user can be removed while connected, with cached ACLs in fanout and search.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling Large Channels and Gateways"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -799,7 +734,14 @@
           "instead": "Model workspaces/channels/membership first, then fan a posted message out to that channel's members in real time."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Build speed vs. delivery and scoping",
+          "description": "One flat channel with clients polling a single messages table is trivial to build, but polling is high-latency and floods the store with empty reads, and with no workspace, membership, or permission model there is no way to scope who receives or can search a message. The simplicity buys a working demo at the cost of every property team chat actually needs.",
+          "chosen": "The baseline is kept only to expose the gaps: the design immediately replaces polling with push delivery and adds a membership model that everything else scopes against."
+        }
+      ]
     },
     {
       "id": "permissions",
@@ -838,6 +780,14 @@
           "whyItMatters": "Membership defines both delivery targets and search scope — it's foundational, not an add-on.",
           "example": "Private channel: only members route/receive/search its messages.",
           "group": "Workspaces, Channels, and Permissions"
+        },
+        {
+          "term": "Permission model (workspace/channel ACL)",
+          "description": "Workspaces contain channels; membership + roles gate read/post/search.",
+          "whyItMatters": "Multi-tenant team chat with private channels.",
+          "steps": [
+            "permissions"
+          ]
         }
       ],
       "probeLinks": [
@@ -847,9 +797,6 @@
         "discord-permissions-docs",
         "zanzibar-paper"
       ],
-      "patterns": [
-        "Permission model (workspace/channel ACL)"
-      ],
       "whyNow": [
         "The workspace/channel/permission model is what distinguishes team chat from 1:1; everything else depends on membership."
       ],
@@ -858,7 +805,14 @@
         "after": "Workspaces/channels with membership + permissions as the backbone.",
         "newRisk": "Posting to a channel must reach all members in real time — channel fanout."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-permissions.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-permissions.jpg",
+      "tradeoffs": [
+        {
+          "name": "Model-first vs. feature-first",
+          "description": "Designing the workspace/channel/membership layer before message delivery front-loads modeling work that ships no visible feature, but fanout, history, and search all depend on 'who is allowed in this channel'. Building delivery first means bolting permission checks onto every feature afterward, where a missed check leaks private messages.",
+          "chosen": "The design establishes membership and permissions as the multi-tenant backbone first, so the routing target set and the search scope both derive from one authoritative model."
+        }
+      ]
     },
     {
       "id": "fanout",
@@ -1021,6 +975,22 @@
           "whyItMatters": "Generalizes 1:1 routing to N recipients; the registry makes cross-gateway delivery possible.",
           "example": "Post -> registry: members on gw3, gw7, gw9 -> push to each.",
           "group": "Channel Fanout over Live Connections"
+        },
+        {
+          "term": "Channel-centric fanout",
+          "description": "Deliver a posted message to all subscribed members of the channel in real time.",
+          "whyItMatters": "Group/channel messaging (vs 1:1).",
+          "steps": [
+            "fanout"
+          ]
+        },
+        {
+          "term": "Subscription registry",
+          "description": "Track which channels each connected client subscribes to so fanout knows where to push.",
+          "whyItMatters": "Routing channel messages across a sharded gateway fleet.",
+          "steps": [
+            "fanout"
+          ]
         }
       ],
       "probeLinks": [
@@ -1031,10 +1001,6 @@
         "websocket-rfc",
         "kafka-design",
         "redis-pubsub"
-      ],
-      "patterns": [
-        "Channel-centric fanout",
-        "Subscription registry"
       ],
       "whyNow": [
         "Channel fanout is the core real-time difference from WhatsApp; the subscription registry is how it routes across a sharded fleet."
@@ -1127,6 +1093,18 @@
             "Fanout",
             "Subs"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Push vs. pull delivery",
+          "description": "Pushing over live WebSockets gives instant delivery from one subscriber lookup, but a post to a 5,000-member channel becomes thousands of pushes and busy large channels can melt gateways; it also requires a subscription registry tracking which gateway holds each member. Pull-from-history does no per-message fanout and is cheap for huge announcement channels, but members only see messages when they next look, losing the real-time feel.",
+          "chosen": "The design pushes to online members, accepting fanout as the scaling cost because real-time delivery is the product, and offline members catch up from history anyway."
+        },
+        {
+          "name": "One delivery path vs. per-channel policy",
+          "description": "A single push path is simpler to build and reason about but pays worst-case fanout on the largest channels. A hybrid that flips huge channels to pull caps the explosion where it would happen, at the price of two delivery paths to test, a threshold to tune, and mixed live-versus-lazy semantics in the client.",
+          "chosen": "The design starts with uniform push and defers the hybrid split, keeping the pull-mode escape hatch for when large-channel fanout actually becomes the bottleneck."
         }
       ]
     },
@@ -1274,6 +1252,14 @@
           "whyItMatters": "Consistent ordering across members and accurate unread/catch-up state.",
           "example": "Channel seq 412..418; user's last_read=415 -> 3 unread.",
           "group": "Ordered Durable History"
+        },
+        {
+          "term": "Per-channel ordering + history",
+          "description": "Assign a per-channel sequence; persist durably so history is ordered and replayable.",
+          "whyItMatters": "Searchable, scrollable, ordered channel history.",
+          "steps": [
+            "history"
+          ]
         }
       ],
       "probeLinks": [
@@ -1285,9 +1271,6 @@
         "kafka-design",
         "redis-streams"
       ],
-      "patterns": [
-        "Per-channel ordering + history"
-      ],
       "whyNow": [
         "Durable ordered history is what makes channels searchable and catch-up-able; it's the data backbone search builds on."
       ],
@@ -1295,7 +1278,19 @@
         "before": "Live push only.",
         "after": "Durable, ordered, per-user-tracked channel history.",
         "newRisk": "Searching that history must respect permissions and stay fast."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Consistent order vs. write concurrency",
+          "description": "Assigning a monotonic per-channel sequence on write gives every member the same order and makes catch-up a simple range read after a cursor, but the sequence allocation is a serialization point that can become a contention hotspot in a very hot channel. Server timestamps let writes scale out freely with no counter, but clock skew reorders near-simultaneous messages and identical timestamps need a tiebreak or members disagree on order.",
+          "chosen": "The design assigns a per-channel sequence at write time, accepting a per-channel serialization point because one consistent, gap-checkable order is what scrollback and reconnect catch-up depend on."
+        },
+        {
+          "name": "Counter vs. log infrastructure",
+          "description": "A per-channel append-only log makes the offset itself the order — clean total ordering, natural durability, and one ordered feed for fanout, indexing, and catch-up — but operating a partitioned log means rebalancing, retention, and leader failovers that stall a channel's writes. A sequence counter in the message store is lighter to run but is one more thing to make atomic on the write path.",
+          "chosen": "The design keeps ordering in the message store via a sequence rather than adopting a partitioned log, avoiding heavier infrastructure until throughput demands it."
+        }
+      ]
     },
     {
       "id": "search",
@@ -1478,9 +1473,6 @@
         "zanzibar-paper",
         "discord-permissions-docs"
       ],
-      "patterns": [
-        "Permission-scoped search"
-      ],
       "whyNow": [
         "Searchable history is a defining team-chat feature, and permission-scoping is the correctness twist that 1:1 chat doesn't have."
       ],
@@ -1575,6 +1567,18 @@
             "SearchIdx",
             "Indexer"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Shared index vs. isolation by construction",
+          "description": "One shared full-text index with a query-time permission filter is simple to operate and reflects membership changes immediately, but the accessible-channel filter can be heavy for users in many channels and a single filter bug leaks a private-channel hit. Partitioning the index per channel makes leakage impossible by construction, but querying means scatter-gather across every permitted partition and managing huge numbers of small indexes.",
+          "chosen": "The design keeps one shared index and filters every query through current membership at the search-service boundary, trusting an enforced API chokepoint over physical partitioning."
+        },
+        {
+          "name": "Query cost vs. storage duplication",
+          "description": "A per-user materialized index makes every search fast and inherently scoped with no filter at all, but a popular channel's messages get copied into every member's index, and each membership change forces fixing up many user indexes — storage and indexing cost balloon with channel size. Filtering a shared index at query time keeps exactly one copy of each message at the price of per-query filter overhead.",
+          "chosen": "The design pays the query-time filter cost rather than the duplication cost, because channels with thousands of members make per-user copies untenable."
         }
       ]
     },
@@ -1717,9 +1721,6 @@
         }
       ],
       "decisionPrompt": "Should 'user is typing' go through the same durable, persisted path as messages?",
-      "patterns": [
-        "Ephemeral presence"
-      ],
       "probeLinks": [
         "slack-realtime-messaging",
         "slack-websockets-envoy",
@@ -1745,7 +1746,19 @@
         "before": "Only durable messaging.",
         "after": "Live presence/typing, separate and best-effort.",
         "newRisk": "Large channels and gateway failures stress fanout and reconnection at scale."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Ephemeral best-effort vs. durable delivery",
+          "description": "Deriving presence and typing from connection heartbeats and broadcasting best-effort keeps this high-frequency, low-value traffic off the durable message path — missing one update is harmless. Persisting it through the reliable path would survive restarts and be auditable, but wastes write capacity on data that is stale in seconds and couples cheap signals to the correctness-critical store.",
+          "chosen": "The design treats presence as lossy ephemeral pub/sub, re-derivable from live connections, because awareness signals do not deserve message-grade guarantees."
+        },
+        {
+          "name": "Push freshness vs. polling load",
+          "description": "Broadcasting presence changes keeps 'who is online' and typing indicators feeling live, but every transient change fans out to potentially huge channels, so broadcasts must be throttled and scoped. Client polling avoids push fanout entirely, but the polling interval directly trades freshness for request volume and typing indicators feel laggy.",
+          "chosen": "The design pushes presence updates but throttles and scopes the broadcasts, capping fanout so awareness traffic never dominates real message delivery."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -1800,9 +1813,6 @@
         "discord-rate-limits",
         "zanzibar-paper"
       ],
-      "patterns": [
-        "Permission revocation under distributed state"
-      ],
       "recap": {
         "before": "Functional channels.",
         "after": "Buffered fanout, rebuildable routing, reconnect-tolerant, pull for huge channels.",
@@ -1851,7 +1861,29 @@
           "mitigation": "Buffered fanout queue + autoscaled workers + per-channel pull-mode switch keyed on sustained queue depth."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "concepts": [
+        {
+          "term": "Permission revocation under distributed state",
+          "description": "On membership change, invalidate live subscriptions and bump a membership version so delivery and search read current access — no stale cache keeps a removed user connected or searching.",
+          "whyItMatters": "Private channels where a user can be removed while connected, with cached ACLs in fanout and search.",
+          "steps": [
+            "scale"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Real-time delivery vs. backpressure shedding",
+          "description": "An @everyone post to a 50,000-member channel is tens of thousands of pushes; draining fanout through a queue with scalable workers absorbs the burst, but sustained queue lag means some members see the message late. Insisting on immediate push for everyone would melt gateways at exactly the worst moment; shedding a lagging channel to pull mode sacrifices its real-time feel to protect the system.",
+          "chosen": "The design buffers fanout behind a queue and uses queue depth as the backpressure signal, deliberately trading bounded delivery lag for gateway survival under mega-channel bursts."
+        },
+        {
+          "name": "Ordering vs. blast-radius isolation",
+          "description": "Partitioning the fanout queue by channel preserves per-channel ordering and confines a busy channel's backlog to its own partition, but one enormous post still monopolizes that partition. A dead-letter path keeps a poison message from stalling the channel, at the cost of a side flow to monitor and reconcile.",
+          "chosen": "The design partitions fanout by channel with a dead-letter escape, accepting that one hot channel slows only itself rather than the whole workspace."
+        }
+      ]
     }
   ],
   "finalDesign": {

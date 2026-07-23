@@ -936,80 +936,11 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Append-only log",
-      "what": "Store messages as an immutable, ordered, append-only sequence; position = offset.",
-      "whenToUse": "High-throughput durable streams where sequential writes and replay matter.",
-      "steps": [
-        "durable-log"
-      ],
-      "group": "Durable Partitioned Log"
-    },
-    {
-      "name": "Partitioning by key",
-      "what": "Split a topic into partitions; key hashing keeps a key's messages ordered on one partition.",
-      "whenToUse": "Scaling throughput while preserving per-key ordering.",
-      "steps": [
-        "durable-log",
-        "scale"
-      ],
-      "group": "Durable Partitioned Log"
-    },
-    {
-      "name": "Consumer groups + offsets",
-      "what": "Independent groups track their own offset; partitions are balanced across group members.",
-      "whenToUse": "Multiple independent readers and horizontal consumer scaling.",
-      "steps": [
-        "consumer-groups"
-      ],
-      "group": "Consumer Groups & Offsets"
-    },
-    {
-      "name": "At-least-once + idempotency",
-      "what": "Redeliver until acked, and dedupe so the effect is exactly-once.",
-      "whenToUse": "Reliable delivery over unreliable consumers/networks.",
-      "steps": [
-        "delivery-semantics"
-      ],
-      "group": "Delivery Semantics & Idempotency"
-    },
-    {
-      "name": "Visibility timeout / ack",
-      "what": "Hide an in-flight message via a lease until acked, or make it re-leasable when the visibility timeout lapses.",
-      "whenToUse": "Queue-style consumption where a consumer may crash mid-process.",
-      "steps": [
-        "ack-visibility"
-      ],
-      "group": "Acknowledgement, Visibility & Dead-Lettering"
-    },
-    {
-      "name": "Dead-letter queue",
-      "what": "Route repeatedly-failing messages aside instead of blocking or dropping.",
-      "whenToUse": "Any retrying consumer with poison messages.",
-      "steps": [
-        "ack-visibility"
-      ],
-      "group": "Acknowledgement, Visibility & Dead-Lettering"
-    },
-    {
-      "name": "Leader-follower replication",
-      "what": "Replicate each partition to followers; ack after replication for durability.",
-      "whenToUse": "No-loss durability and availability under broker failure.",
-      "steps": [
-        "replication"
-      ],
-      "group": "Replication & Durability"
-    }
-  ],
   "steps": [
     {
       "id": "in-memory-queue",
       "title": "1. In-Memory Queue (the baseline)",
       "description": "Start with a single broker holding an in-memory FIFO queue: producers push, one consumer pops. This is genuinely fine for local, ephemeral, best-effort work where losing a few in-flight items is acceptable. It fails our durability requirement, though: it works until the broker restarts (messages lost) or load exceeds one node — which is exactly why the rest of the design exists.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "kafka-design",
         "rabbitmq-acks",
@@ -1030,6 +961,9 @@
           "definition": "In-memory messages vanish on crash.",
           "whyItMatters": "Motivates the durable, replicated log.",
           "group": "In-Memory Queue (the baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -1077,16 +1011,19 @@
           "Consumer"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-in-memory-queue.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-in-memory-queue.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. durability",
+          "description": "A single in-memory FIFO is trivially fast and fine for ephemeral best-effort work, but every un-consumed message lives only in one process's RAM. The moment the broker restarts or load exceeds one node, messages are gone — which violates the durability requirement outright.",
+          "chosen": "The design accepts this baseline only as a starting point and immediately moves to a persisted log, because durability after ack is a hard requirement."
+        }
+      ]
     },
     {
       "id": "durable-log",
       "title": "2. Durable Partitioned Log",
       "description": "Persist each topic as an append-only log, split into partitions. Sequential appends give high write throughput; a message's offset is its position. A key hashes to a partition so a key's messages stay ordered.",
-      "patterns": [
-        "Append-only log",
-        "Partitioning by key"
-      ],
       "probeLinks": [
         "kafka-paper",
         "kafka-design",
@@ -1107,6 +1044,23 @@
           "definition": "Writing to the end of a file/log, not random updates.",
           "whyItMatters": "Sequential I/O is far faster than random — the basis of log throughput.",
           "group": "Durable Partitioned Log"
+        },
+        {
+          "term": "Append-only log",
+          "description": "Store messages as an immutable, ordered, append-only sequence; position = offset.",
+          "whyItMatters": "High-throughput durable streams where sequential writes and replay matter.",
+          "steps": [
+            "durable-log"
+          ]
+        },
+        {
+          "term": "Partitioning by key",
+          "description": "Split a topic into partitions; key hashing keeps a key's messages ordered on one partition.",
+          "whyItMatters": "Scaling throughput while preserving per-key ordering.",
+          "steps": [
+            "durable-log",
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -1298,15 +1252,19 @@
             "P0"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Sequential appends vs. in-place mutability",
+          "description": "An append-only log turns every write into a sequential disk append, giving very high throughput plus a natural retention and replay window — but you give up in-place updates, so consumers must track their own offsets. A row-per-message table with a consumed flag is familiar and queryable, but flipping flags means random updates that thrash the DB and bloat indexes at high volume.",
+          "chosen": "The design picks the append-only partitioned log because sequential writes are what make broker throughput possible, and cheap offsets replace the mutable consumed flag."
+        }
       ]
     },
     {
       "id": "consumer-groups",
       "title": "3. Consumer Groups & Offsets",
       "description": "Let independent consumer groups read the same topic, each tracking its own committed offset. Within a group, partitions are balanced across members so they scale out; a coordinator reassigns partitions when members join or leave (rebalance).",
-      "patterns": [
-        "Consumer groups + offsets"
-      ],
       "probeLinks": [
         "kafka-design",
         "kafka-share-groups",
@@ -1327,6 +1285,14 @@
           "definition": "Reassigning partitions when membership changes.",
           "whyItMatters": "Keeps work distributed and recovers a crashed member's partitions.",
           "group": "Consumer Groups & Offsets"
+        },
+        {
+          "term": "Consumer groups + offsets",
+          "description": "Independent groups track their own offset; partitions are balanced across group members.",
+          "whyItMatters": "Multiple independent readers and horizontal consumer scaling.",
+          "steps": [
+            "consumer-groups"
+          ]
         }
       ],
       "deepDives": [
@@ -1580,15 +1546,24 @@
             "C2"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Central coordination vs. client autonomy",
+          "description": "A broker-side group coordinator gives one authoritative owner of the partition-to-consumer assignment, central offset storage, and generation fencing against stale commits — at the price of extra control-plane machinery that must be highly available. Letting clients agree among themselves removes that moving part but makes ownership a distributed-agreement problem where split-brain can hand one partition to two consumers.",
+          "chosen": "The design uses a broker-coordinated group because exactly-one partition ownership is easier to guarantee and debug with a single authority than with client-side consensus."
+        },
+        {
+          "name": "Rebalance safety vs. group availability",
+          "description": "The coordinated protocol recomputes assignments in a brief stop-the-world pause and bumps a generation number so a paused old owner cannot overwrite the new owner's progress; cooperative incremental rebalancing avoids the pause by moving only affected partitions, but pushes failure detection into client heartbeats and is harder to reason about.",
+          "chosen": "The design accepts short stop-the-world rebalances in exchange for generation fencing, which makes crash and reassignment races provably safe."
+        }
       ]
     },
     {
       "id": "delivery-semantics",
       "title": "4. Delivery Semantics & Idempotency",
       "description": "Make the guarantees explicit. The default is at-least-once (redeliver until acked), which means duplicates; achieve exactly-once effect by deduping with producer idempotency ids and idempotent consumers. True exactly-once delivery is impossible. Broker-side producer dedup gives exactly-once append to the log within a bounded producer session/window — not exactly-once processing across consume -> process -> produce, which additionally needs transactions, an outbox, or idempotent consumer-side writes.",
-      "patterns": [
-        "At-least-once + idempotency"
-      ],
       "probeLinks": [
         "kafka-semantics",
         "rabbitmq-acks",
@@ -1610,6 +1585,14 @@
           "definition": "A (producer_id, producer_epoch, seq) tag the broker uses to drop duplicate appends within a bounded window.",
           "whyItMatters": "Makes producer retries safe without duplicating log records; the epoch fences a zombie producer after a restart.",
           "group": "Delivery Semantics & Idempotency"
+        },
+        {
+          "term": "At-least-once + idempotency",
+          "description": "Redeliver until acked, and dedupe so the effect is exactly-once.",
+          "whyItMatters": "Reliable delivery over unreliable consumers/networks.",
+          "steps": [
+            "delivery-semantics"
+          ]
         }
       ],
       "flows": [
@@ -1796,16 +1779,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/04-delivery-semantics-opt2.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Broker dedup vs. consumer idempotency",
+          "description": "Deduping retried publishes at the broker by (producer id, sequence) means every downstream consumer sees a single copy, but the broker must keep per-producer dedup state and pay a lookup on the hot publish path. Pushing correctness to idempotent consumers keeps the broker dumb and fast, but every consumer must build its own dedup and the log itself contains duplicates.",
+          "chosen": "The design puts idempotent-producer dedup in the broker so duplicates are removed once at the source, while noting consumers still need idempotency for end-to-end effect."
+        },
+        {
+          "name": "Dedup window size vs. duplicate leakage",
+          "description": "The broker's dedup state is bounded by a retention window: a bigger window catches longer-delayed retries but costs memory per (producer, partition), while a smaller window is cheap but lets a very late duplicate slip through as a fresh append.",
+          "chosen": "The design bounds dedup to a session window, accepting that pathologically delayed duplicates beyond it are handled by consumer-side idempotency rather than unbounded broker state."
+        }
       ]
     },
     {
       "id": "ack-visibility",
       "title": "5. Queue Semantics on Top of the Log (Alternative Mode)",
       "description": "This step adds a *second consumption mode*, not just another component. Offset logs and leased work queues both solve consumer failure, but they track different state: a log tracks one group *position*; a leased queue tracks per-message *ownership and retry count*. In work-queue mode a received message becomes invisible for a visibility timeout (a lease with a receipt handle); the consumer acks (deletes) on success or it reappears for retry after the timeout, and a message that fails repeatedly goes to a dead-letter queue. The final design supports both modes with separate state machines — pick log mode for ordered streaming/replay, queue mode for competing-consumer task distribution.",
-      "patterns": [
-        "Visibility timeout / ack",
-        "Dead-letter queue"
-      ],
       "probeLinks": [
         "kafka-share-groups",
         "sqs-visibility",
@@ -1828,6 +1819,14 @@
           "definition": "A side queue for messages that exceed a retry limit.",
           "whyItMatters": "Keeps poison messages from blocking the queue while preserving them.",
           "group": "Acknowledgement, Visibility & Dead-Lettering"
+        },
+        {
+          "term": "Visibility timeout / ack",
+          "description": "Hide an in-flight message via a lease until acked, or make it re-leasable when the visibility timeout lapses.",
+          "whyItMatters": "Queue-style consumption where a consumer may crash mid-process.",
+          "steps": [
+            "ack-visibility"
+          ]
         }
       ],
       "traps": [
@@ -2143,15 +2142,24 @@
             "Lease"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Per-message state vs. per-group position",
+          "description": "A leased work queue tracks ownership, timers, and retry count for every in-flight message, which enables competing consumers, out-of-order completion, and a per-message DLQ — but it is real broker bookkeeping. Offset commits store just one position per partition per group, which is cheap and scalable, but one stuck message blocks the whole partition and redelivery happens in batches.",
+          "chosen": "The design adds visibility-timeout queue semantics as a second mode alongside log mode, so task-distribution workloads get per-message retry and dead-lettering while streaming workloads keep cheap offsets."
+        },
+        {
+          "name": "Fast redelivery vs. false duplicates",
+          "description": "The visibility timeout is a dial: a short timeout re-delivers a crashed consumer's message quickly but re-delivers to a slow-but-alive consumer too, causing duplicate processing; a long timeout avoids false duplicates but leaves messages stuck longer after real crashes.",
+          "chosen": "The design uses a tuned visibility timeout with a max-retry DLQ, accepting occasional duplicate delivery as the price of never losing or indefinitely stalling a message."
+        }
       ]
     },
     {
       "id": "replication",
       "title": "6. Replication & Durability",
       "description": "Replicate each partition from a leader to followers; the leader acks a publish only after enough followers have the record (in-sync replicas). On leader failure, a follower is promoted. This is what makes 'no loss after ack' true.",
-      "patterns": [
-        "Leader-follower replication"
-      ],
       "probeLinks": [
         "kafka-design",
         "rabbitmq-quorum",
@@ -2185,6 +2193,14 @@
           "definition": "The minimum ISR size required to accept a write.",
           "whyItMatters": "If too few replicas are in-sync, the leader refuses writes rather than risk acking data only one node holds.",
           "group": "Replication & Durability"
+        },
+        {
+          "term": "Leader-follower replication",
+          "description": "Replicate each partition to followers; ack after replication for durability.",
+          "whyItMatters": "No-loss durability and availability under broker failure.",
+          "steps": [
+            "replication"
+          ]
         }
       ],
       "deepDives": [
@@ -2444,16 +2460,19 @@
             "Follower"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Durability vs. publish latency",
+          "description": "Acking only after enough in-sync replicas hold the record makes 'no loss after ack' actually true and lets you tune durability via the replica count, but every publish pays replication latency and availability now depends on having enough healthy replicas. Acking on the leader's local write is the fastest possible path, but a leader crash before replication silently loses acked messages.",
+          "chosen": "The design acks after quorum/ISR replication because the durability contract to producers is the whole point of the system, and the latency cost is tunable."
+        }
       ]
     },
     {
       "id": "scale",
       "title": "7. Scaling Partitions & Brokers",
       "description": "Scale throughput by adding partitions and spreading partition leaders across brokers. A router maps keys to partitions; metadata tracks which broker leads each. Adding capacity means rebalancing partitions, done carefully to preserve ordering and minimize movement.",
-      "patterns": [
-        "Partitioning by key",
-        "Leader-follower replication"
-      ],
       "probeLinks": [
         "kafka-design",
         "kafka-tiered-storage",
@@ -2620,7 +2639,19 @@
           "P1",
           "P2"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Parallelism vs. total ordering",
+          "description": "Spreading more partitions across brokers scales producer and consumer throughput linearly and eliminates hot brokers, but ordering shrinks to per-partition and consumer parallelism is capped by partition count. Keeping one big partition preserves a total order over the topic but caps you at one consumer and one node's throughput.",
+          "chosen": "The design scales out with many partitions and spread leaders, keeping ordering only per key via hash-to-partition routing."
+        },
+        {
+          "name": "Adding partitions vs. key-mapping stability",
+          "description": "Growing the partition count is how you add capacity, but it changes the key-to-partition mapping, so a key's messages can land in a new partition mid-stream and break its ordering unless repartitioning is done carefully to minimize movement.",
+          "chosen": "The design accepts careful, deliberate repartitioning as an operational cost, planning partition counts from capacity numbers to make resizing rare."
+        }
+      ]
     }
   ],
   "finalDesign": {

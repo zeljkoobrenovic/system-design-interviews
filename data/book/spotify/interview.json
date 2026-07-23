@@ -1905,99 +1905,6 @@
       "makesIrrelevant": "Managed metrics, traces, logs, and columnar analytics remove much of the custom telemetry ingestion and dashboard plumbing, but not SLO definition or incident ownership."
     }
   ],
-  "patterns": [
-    {
-      "name": "Segmented audio + CDN",
-      "what": "Encode tracks into bitrates and small segments served from CDN for instant start and adaptive quality.",
-      "whenToUse": "Streaming media with global read fanout.",
-      "steps": [
-        "playback"
-      ],
-      "group": "Segmented Audio Delivery via CDN"
-    },
-    {
-      "name": "Catalog/library split",
-      "what": "Separate the shared immutable catalog from per-user mutable library/playlists.",
-      "whenToUse": "Shared content + personal collections with different scaling.",
-      "steps": [
-        "catalog"
-      ],
-      "group": "Catalog vs Library Split"
-    },
-    {
-      "name": "Search index off the catalog",
-      "what": "Maintain a rebuildable inverted index, fed from the catalog and ingestion, for prefix/typo-tolerant ranked search separate from the authoritative metadata DB.",
-      "whenToUse": "Large catalogs where users search/browse by relevance, not exact id.",
-      "steps": [
-        "catalog"
-      ],
-      "group": "Catalog vs Library Split"
-    },
-    {
-      "name": "Reference-by-id playlists",
-      "what": "Playlists store track ids; audio lives once and is referenced by many.",
-      "whenToUse": "Same track in millions of playlists.",
-      "steps": [
-        "library"
-      ],
-      "group": "Playlists and Library (Reference by ID)"
-    },
-    {
-      "name": "Offline download + sync",
-      "what": "Cache encrypted audio locally; reconcile library changes on reconnect.",
-      "whenToUse": "Listening without connectivity.",
-      "steps": [
-        "offline"
-      ],
-      "group": "Offline Download and Sync"
-    },
-    {
-      "name": "Per-play entitlement + DRM",
-      "what": "Authorize each play/download against subscription, region, and track availability, then issue short-TTL DRM/offline licenses; a versioned rights policy invalidates on takedown.",
-      "whenToUse": "Licensed media where access depends on user, place, device, and time.",
-      "steps": [
-        "playback",
-        "offline"
-      ],
-      "group": "Segmented Audio Delivery via CDN"
-    },
-    {
-      "name": "Play-event stream",
-      "what": "Stream play/skip events for recommendations, royalties, and resume.",
-      "whenToUse": "Behavior that drives personalization and accounting.",
-      "steps": [
-        "signals"
-      ],
-      "group": "Play Events: Recommendations and Royalties"
-    },
-    {
-      "name": "Idempotent royalty ledger",
-      "what": "Dedupe play events by id, filter fraud, apply the stream threshold, and write an auditable per-track ledger — isolated from recommendations.",
-      "whenToUse": "Money/accounting derived from an at-least-once event stream.",
-      "steps": [
-        "signals"
-      ],
-      "group": "Play Events: Recommendations and Royalties"
-    },
-    {
-      "name": "Async ingestion pipeline",
-      "what": "Encode uploaded masters into streaming assets off the serving path, as an idempotent state machine with deterministic output keys and a publish-last step.",
-      "whenToUse": "Adding content to the catalog without blocking playback.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Ingestion, Hot Content, and Scale"
-    },
-    {
-      "name": "Recommendation serving funnel",
-      "what": "Turn the play log into features, batch candidate generation + model outputs, then online retrieval/ranking for home and generated playlists, with popularity/editorial fallbacks for cold start.",
-      "whenToUse": "Personalized feeds where candidate generation is expensive but serving must be fast.",
-      "steps": [
-        "signals"
-      ],
-      "group": "Play Events: Recommendations and Royalties"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -2046,7 +1953,14 @@
           "instead": "Segment bitrate-encoded audio and serve segments from a CDN behind a manifest, prefetching the first segment for instant start."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Pipeline simplicity vs. start latency",
+          "description": "Streaming the whole encoded file straight from the app server needs no transcoding, segmentation, or CDN — one copy, one path, easy to reason about. But the client cannot start playing until enough of one big file arrives from a single distant origin, and every concurrent stream hits the app server, which collapses at tens of millions of listeners.",
+          "chosen": "The baseline is kept only to expose the two failures — poor start latency and an origin that takes every stream — that segmentation and edge delivery then fix."
+        }
+      ]
     },
     {
       "id": "playback",
@@ -2223,6 +2137,23 @@
           "whyItMatters": "Instant start, adaptive quality, and massive read fanout without touching the origin.",
           "example": "Prefetch segment 1 at 160kbps; switch to 320 if bandwidth allows.",
           "group": "Segmented Audio Delivery via CDN"
+        },
+        {
+          "term": "Segmented audio + CDN",
+          "description": "Encode tracks into bitrates and small segments served from CDN for instant start and adaptive quality.",
+          "whyItMatters": "Streaming media with global read fanout.",
+          "steps": [
+            "playback"
+          ]
+        },
+        {
+          "term": "Per-play entitlement + DRM",
+          "description": "Authorize each play/download against subscription, region, and track availability, then issue short-TTL DRM/offline licenses; a versioned rights policy invalidates on takedown.",
+          "whyItMatters": "Licensed media where access depends on user, place, device, and time.",
+          "steps": [
+            "playback",
+            "offline"
+          ]
         }
       ],
       "probeLinks": [
@@ -2236,11 +2167,6 @@
         "netflix-open-connect",
         "w3c-eme",
         "apple-fairplay-streaming"
-      ],
-      "patterns": [
-        "Segmented audio + CDN",
-        "Per-play entitlement + DRM",
-        "Async ingestion pipeline"
       ],
       "whyNow": [
         "Playback is the headline experience; CDN-served segments are how streaming scales and start latency is met."
@@ -2367,6 +2293,18 @@
           "expectedBehavior": "Clients fail over to the next-nearest edge using alternate manifest URLs; playback rebuffers briefly rather than stopping. The origin is shielded by the remaining edges.",
           "mitigation": "Multi-CDN / multi-POP manifest URLs, client-side retry with backoff, and a small client buffer to ride out a failover."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "CDN egress cost vs. origin survival",
+          "description": "Pre-segmenting tracks into multiple bitrates and serving them from CDN edges gets sub-second starts and lets ~30M concurrent streams hit caches instead of the origin, but CDN egress is a major recurring cost and every track must pass through a transcode-and-segment ingestion step. Streaming whole files from the origin avoids all that pipeline, but the origin's bandwidth and the listener's start latency both fail at scale.",
+          "chosen": "The design pays for CDN delivery of signed, short-TTL segment URLs, because instant start and origin protection are non-negotiable at streaming scale."
+        },
+        {
+          "name": "Peer offload vs. predictability",
+          "description": "Peer-to-peer assisted delivery scales hot releases with the audience and cuts CDN egress — each listener is also a seeder — but mobile and NAT'd clients cannot reliably peer, peer availability undermines the sub-second start guarantee, and sharing licensed audio between clients raises DRM concerns. Pure CDN delivery costs more but is predictable and keeps content protection in one controlled path.",
+          "chosen": "The design chooses CDN-only delivery, as Spotify itself eventually did, valuing guaranteed start latency and clean DRM over peer bandwidth savings."
+        }
       ]
     },
     {
@@ -2421,6 +2359,14 @@
           "whyItMatters": "Relevance ranking and fuzzy/prefix matching over 100M tracks can't come from row lookups; search is its own read path and data pipeline.",
           "example": "Typing 'bohem' returns 'Bohemian Rhapsody' ranked by popularity, filtered to the user's market.",
           "group": "Catalog vs Library Split"
+        },
+        {
+          "term": "Search index off the catalog",
+          "description": "Maintain a rebuildable inverted index, fed from the catalog and ingestion, for prefix/typo-tolerant ranked search separate from the authoritative metadata DB.",
+          "whyItMatters": "Large catalogs where users search/browse by relevance, not exact id.",
+          "steps": [
+            "catalog"
+          ]
         }
       ],
       "probeLinks": [
@@ -2428,10 +2374,6 @@
         "spotify-uris-ids",
         "redis-cache",
         "cassandra-paper"
-      ],
-      "patterns": [
-        "Catalog/library split",
-        "Search index off the catalog"
       ],
       "whyNow": [
         "The catalog/library split organizes the metadata side and sets up playlists as references — the natural structure for a music app. Search gets its own index here because 'search a large catalog' is a core requirement that a metadata DB can't serve well."
@@ -2448,7 +2390,19 @@
         "after": "Searchable shared catalog (index + browse) + per-user library, cleanly separated.",
         "newRisk": "Playlists referencing tracks must be efficient and not duplicate audio/metadata."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-catalog.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-catalog.jpg",
+      "tradeoffs": [
+        {
+          "name": "Split stores vs. one store",
+          "description": "The catalog (huge, shared, mostly immutable) and the library (per-user, small, mutable) have opposite shapes; separate services and stores let each scale on its own terms, at the cost of two systems and cross-service reads when a playlist hydrates track metadata. One combined store is simpler but forces one engine to serve both a 100M-track shared read workload and per-user mutable writes.",
+          "chosen": "The design splits catalog and library into separate services so the shared immutable data and the personal mutable data each get the storage and scaling model that fits."
+        },
+        {
+          "name": "Source of truth vs. queryability",
+          "description": "The catalog DB is authoritative but hopeless for prefix, typo-tolerant, relevance-ranked search over ~100M tracks — that needs an inverted index, not LIKE scans. A separate search index answers those queries well but is a second copy that lags ingestion slightly and must be rebuildable from the catalog.",
+          "chosen": "The design keeps the catalog DB as the source of truth and feeds a rebuildable search index from it, accepting slight index lag for real search quality."
+        }
+      ]
     },
     {
       "id": "library",
@@ -2562,9 +2516,6 @@
         }
       ],
       "decisionPrompt": "A track is in 10M playlists. How do you store playlists without duplicating the track?",
-      "patterns": [
-        "Reference-by-id playlists"
-      ],
       "probeLinks": [
         "spotify-playlist-snapshots",
         "spotify-uris-ids",
@@ -2588,6 +2539,14 @@
           "whyItMatters": "Inserts/reorders touch one row, and collaborative edits converge without a global lock.",
           "example": "Two users insert between items ranked 1.0 and 2.0 → 1.5 and 1.75; versions catch a stale overwrite.",
           "group": "Playlists and Library (Reference by ID)"
+        },
+        {
+          "term": "Reference-by-id playlists",
+          "description": "Playlists store track ids; audio lives once and is referenced by many.",
+          "whyItMatters": "Same track in millions of playlists.",
+          "steps": [
+            "library"
+          ]
         }
       ],
       "traps": [
@@ -2617,6 +2576,18 @@
           "scenario": "A track in a popular playlist is taken down right as thousands hydrate it.",
           "expectedBehavior": "Hydration resolves it through the cached catalog + rights policy and renders it greyed-out 'unavailable'; the rest of the playlist still loads and plays. No dangling reference breaks the page.",
           "mitigation": "Reference-by-id hydration through a cache + rights check; unavailable tracks degrade gracefully."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Reference vs. denormalized copies",
+          "description": "Storing only track ids means a track in 10M playlists exists once, metadata edits propagate instantly, and playlist rows stay tiny — but every playlist render must hydrate ids against the catalog, dangling references from deleted or region-restricted tracks need graceful handling, and hot tracks become catalog read hotspots. Embedding full metadata makes reads a single fetch but duplicates a popular track 10M times and makes takedowns nearly unenforceable across stale copies.",
+          "chosen": "The design references tracks by id and hydrates on read, because a single canonical copy is the only way metadata edits, rights restrictions, and storage cost stay manageable."
+        },
+        {
+          "name": "Per-row edits vs. whole-list writes",
+          "description": "Modeling each playlist entry as a playlist_item row with a fractional position rank means an insert or reorder touches one row and concurrent edits do not clobber each other; a single track_ids array is simpler but every edit rewrites the whole list and racing editors overwrite one another. Versioned edits with a 409-and-retry add client complexity but make collaborative playlists safe.",
+          "chosen": "The design stores per-item rows with explicit positions and optimistic concurrency via a playlist version, trading a slightly richer schema for cheap reorders and safe concurrent edits."
         }
       ]
     },
@@ -2660,6 +2631,14 @@
           "whyItMatters": "Enables connectivity-free listening while keeping the library consistent.",
           "example": "Download 24 tracks; add a playlist offline; both reconcile when back online.",
           "group": "Offline Download and Sync"
+        },
+        {
+          "term": "Offline download + sync",
+          "description": "Cache encrypted audio locally; reconcile library changes on reconnect.",
+          "whyItMatters": "Listening without connectivity.",
+          "steps": [
+            "offline"
+          ]
         }
       ],
       "probeLinks": [
@@ -2667,10 +2646,6 @@
         "w3c-eme",
         "apple-fairplay-streaming",
         "hls-rfc8216"
-      ],
-      "patterns": [
-        "Offline download + sync",
-        "Per-play entitlement + DRM"
       ],
       "whyNow": [
         "Offline is the audio-specific differentiator (smaller files make it practical); the download + sync model is the key design point."
@@ -2805,7 +2780,19 @@
           "mitigation": "Per-track offline license expiry + reconnect revalidation against the rights policy."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/05-offline.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-offline.jpg",
+      "tradeoffs": [
+        {
+          "name": "Offline access vs. content protection",
+          "description": "Caching chosen-bitrate segments locally gives full playback on a plane, but freely readable files would let subscribers extract licensed audio. Binding an expiring DRM license to the device and encrypting the local store protects the content, at the cost of an entitlement check, license issuance, and expiry/revocation states (pending, downloaded, expired, revoked) to manage before a single byte is cached.",
+          "chosen": "The design gates every download through entitlement plus a device-bound expiring license into an encrypted store, treating offline as a state machine rather than a file copy."
+        },
+        {
+          "name": "Offline editability vs. sync conflicts",
+          "description": "Letting users edit their library offline (new playlists, saves, reorders) keeps the product fully usable disconnected, but buffered local operations must later reconcile against a sync cursor, and concurrent edits from other devices can conflict. Blocking edits while offline would avoid all conflict resolution but cripples the offline experience.",
+          "chosen": "The design buffers offline edits as operations and replays them on reconnect, resolving conflicts against versioned ordered playlists rather than restricting what offline users can do."
+        }
+      ]
     },
     {
       "id": "signals",
@@ -2945,11 +2932,6 @@
         }
       ],
       "decisionPrompt": "Why route play events through a stream instead of writing each play to the DB synchronously?",
-      "patterns": [
-        "Play-event stream",
-        "Recommendation serving funnel",
-        "Idempotent royalty ledger"
-      ],
       "probeLinks": [
         "spotify-event-delivery-cloud",
         "spotify-listening-together",
@@ -2987,6 +2969,22 @@
           "whyItMatters": "Behavior data drives money, so abuse must be filtered before royalties — and kept separate from recommendation features.",
           "example": "1000 identical 31s plays from one device in an hour → quarantined, not counted.",
           "group": "Play Events: Recommendations and Royalties"
+        },
+        {
+          "term": "Idempotent royalty ledger",
+          "description": "Dedupe play events by id, filter fraud, apply the stream threshold, and write an auditable per-track ledger — isolated from recommendations.",
+          "whyItMatters": "Money/accounting derived from an at-least-once event stream.",
+          "steps": [
+            "signals"
+          ]
+        },
+        {
+          "term": "Recommendation serving funnel",
+          "description": "Turn the play log into features, batch candidate generation + model outputs, then online retrieval/ranking for home and generated playlists, with popularity/editorial fallbacks for cold start.",
+          "whyItMatters": "Personalized feeds where candidate generation is expensive but serving must be fast.",
+          "steps": [
+            "signals"
+          ]
         }
       ],
       "recap": {
@@ -3098,6 +3096,18 @@
           "why": "Listening history is sensitive personal data and it also drives payments; unbounded retention and no deletion path create privacy and compliance risk.",
           "instead": "Bound raw-event retention (~30 days) then aggregate/anonymize; honor user deletion/export across the feature store; keep fraud/abuse scoring separate from taste features."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Decoupling vs. immediacy",
+          "description": "Appending play/skip events to a durable partitioned stream decouples playback from analytics: a new-release burst is absorbed by the log, and recommendations, royalties, fraud, and metrics each consume at their own pace — but all counts are eventually consistent and the stream is real infrastructure. Synchronous DB writes make every play immediately queryable, but put a write on the playback path and turn a release spike into a write storm that couples playback availability to the analytics database.",
+          "chosen": "The design routes play events through a stream, because playback latency and availability must never depend on how fast plays can be counted."
+        },
+        {
+          "name": "At-least-once delivery vs. exactly-once effect",
+          "description": "An at-least-once log with offline buffering ensures no play is lost — plane listens flush on reconnect — but duplicates are inevitable, so every consumer must dedupe by event_id, and the royalty ledger in particular must be exactly-once in effect with fraud filtering before a play becomes billable. Demanding exactly-once delivery from the transport itself would simplify consumers but is impractical across flaky mobile clients.",
+          "chosen": "The design accepts at-least-once delivery and pushes idempotency to consumers, holding only the royalty ledger to exactly-once effect via event_id dedupe and fraud filters."
+        }
       ]
     },
     {
@@ -3164,6 +3174,14 @@
           "whyItMatters": "For media, quality-of-experience metrics are how operators catch CDN regressions, bad bitrate ladders, entitlement outages, fraud spikes, and pipeline backlogs.",
           "example": "Page when start-latency p99 or rebuffer ratio breaches target, or royalty-consumer lag grows.",
           "group": "Ingestion, Hot Content, and Scale"
+        },
+        {
+          "term": "Async ingestion pipeline",
+          "description": "Encode uploaded masters into streaming assets off the serving path, as an idempotent state machine with deterministic output keys and a publish-last step.",
+          "whyItMatters": "Adding content to the catalog without blocking playback.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "probeLinks": [
@@ -3224,7 +3242,19 @@
           "mitigation": "Versioned rights policy driving manifest/entitlement invalidation and offline-license revocation (steps 2, 5)."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Serving isolation vs. publish latency",
+          "description": "Running ingestion as an async state machine (received, transcoding, segmented, published) off the serving path means adding music can never affect playback, and deterministic output keys make retries idempotent — but a track is not playable until the whole pipeline completes and the atomic publish step lands. Publishing eagerly would surface content faster but risks half-visible tracks and encode failures leaking to listeners.",
+          "chosen": "The design keeps ingestion fully asynchronous with publish as the last atomic step, trading time-to-catalog for a serving path that new content can never destabilize."
+        },
+        {
+          "name": "Provisioned headroom vs. elastic absorption",
+          "description": "A new album drop concentrates enormous read volume on a handful of tracks; letting the CDN and caches absorb hot content means the spike lands on infrastructure built to replicate popular objects, while the origin and catalog see only misses. Sizing the origin path for release-day peaks instead would waste capacity almost all the time.",
+          "chosen": "The design leans on CDN edge caching to absorb release spikes, sizing the origin for steady-state cache-miss traffic rather than for the hottest hour of the year."
+        }
+      ]
     }
   ],
   "finalDesign": {

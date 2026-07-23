@@ -849,71 +849,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Trie / prefix index",
-      "what": "A tree keyed by characters so all completions of a prefix sit under one node.",
-      "whenToUse": "Prefix lookups over a large vocabulary.",
-      "steps": [
-        "trie"
-      ],
-      "group": "Trie Prefix Index"
-    },
-    {
-      "name": "Precomputed top-k",
-      "what": "Store the ranked best-k completions per prefix node so a query is a direct read, not a subtree scan.",
-      "whenToUse": "Read-heavy ranking where computing per query is too slow.",
-      "steps": [
-        "topk"
-      ],
-      "group": "Precomputed Top-K per Prefix"
-    },
-    {
-      "name": "Edge caching",
-      "what": "Cache popular prefixes near users (CDN/edge) since the same short prefixes are queried constantly.",
-      "whenToUse": "High QPS with a heavily skewed prefix distribution.",
-      "steps": [
-        "caching"
-      ],
-      "group": "Edge Caching"
-    },
-    {
-      "name": "Stream aggregation",
-      "what": "Aggregate the live query stream into rolling popularity counts.",
-      "whenToUse": "Deriving freshness/trends from a firehose of events.",
-      "steps": [
-        "freshness"
-      ],
-      "group": "Freshness from the Query Stream"
-    },
-    {
-      "name": "Batch index rebuild (CQRS)",
-      "what": "Rebuild the read-optimized index offline from counts, then swap it in atomically.",
-      "whenToUse": "When the query structure is expensive to update in place.",
-      "steps": [
-        "freshness"
-      ],
-      "group": "Freshness from the Query Stream"
-    },
-    {
-      "name": "Fuzzy matching",
-      "what": "Tolerate typos via edit-distance or n-gram expansion of the prefix.",
-      "whenToUse": "Real users mistype; exact prefix match alone misses intent.",
-      "steps": [
-        "spelling"
-      ],
-      "group": "Typo Tolerance & Personalization"
-    },
-    {
-      "name": "Sharding by prefix",
-      "what": "Partition the index by adaptive ranges over the leading prefix key, splitting hot ranges finer.",
-      "whenToUse": "When the index or QPS outgrows one node.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling by Prefix Sharding"
-    }
-  ],
   "steps": [
     {
       "id": "naive-prefix",
@@ -990,15 +925,19 @@
           "DB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-prefix.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-prefix.jpg",
+      "tradeoffs": [
+        {
+          "name": "Query-time work vs. precomputation",
+          "description": "A LIKE 'prefix%' ORDER BY score query needs no extra structures and is always current, but it scans and ranks matches on every keystroke — at 1M QPS over 100M terms it cannot possibly meet a tens-of-milliseconds budget.",
+          "chosen": "The design uses this scan as the baseline that motivates moving work out of the request path into a prefix index and precomputed rankings."
+        }
+      ]
     },
     {
       "id": "trie",
       "title": "2. Trie Prefix Index",
       "description": "Build a trie (prefix tree) keyed by characters: every completion of a prefix lives in the subtree under that prefix's node. Looking up a prefix becomes walking down the characters, turning a scan into an O(prefix length) traversal.",
-      "patterns": [
-        "Trie / prefix index"
-      ],
       "probeLinks": [
         "lucene-docs",
         "elasticsearch-docs",
@@ -1021,6 +960,14 @@
           "definition": "Everything under a prefix node completes that prefix.",
           "whyItMatters": "Reduces 'which terms match' to a tree position.",
           "group": "Trie Prefix Index"
+        },
+        {
+          "term": "Trie / prefix index",
+          "description": "A tree keyed by characters so all completions of a prefix sit under one node.",
+          "whyItMatters": "Prefix lookups over a large vocabulary.",
+          "steps": [
+            "trie"
+          ]
         }
       ],
       "options": [
@@ -1151,15 +1098,19 @@
           "Trie",
           "Builder"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Structure vs. simplicity",
+          "description": "An in-memory trie makes prefix resolution an O(prefix-length) walk with prefixes shared compactly, but it is a bespoke structure that needs a rebuild/update strategy; a sorted array with binary search is dead simple, yet short prefixes still map to enormous contiguous ranges that must be scanned and ranked, and updates shift the whole array.",
+          "chosen": "The design builds an in-memory trie because it turns every keystroke into a microsecond traversal that no flat-list layout can match."
+        }
+      ]
     },
     {
       "id": "topk",
       "title": "3. Precomputed Top-K per Prefix",
       "description": "At each trie node (prefix), precompute and store the ranked top-k completions by popularity. A query then walks to the node and returns its stored list directly — no subtree scan or per-query ranking. This is the key read optimization.",
-      "patterns": [
-        "Precomputed top-k"
-      ],
       "probeLinks": [
         "lucene-docs",
         "redis-sorted-sets",
@@ -1182,6 +1133,14 @@
           "definition": "Expensive ranking happens at build time; queries are cheap reads.",
           "whyItMatters": "Matches the workload — billions of reads, batched writes.",
           "group": "Precomputed Top-K per Prefix"
+        },
+        {
+          "term": "Precomputed top-k",
+          "description": "Store the ranked best-k completions per prefix node so a query is a direct read, not a subtree scan.",
+          "whyItMatters": "Read-heavy ranking where computing per query is too slow.",
+          "steps": [
+            "topk"
+          ]
         }
       ],
       "deepDives": [
@@ -1409,15 +1368,24 @@
             "Trie"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Read cost vs. result freshness",
+          "description": "Precomputing the ranked top-k at each trie node makes a keystroke a single read of a stored list, matching a workload where ranking once at build time serves billions of reads; the cost is that the lists go stale as popularity shifts and brand-new trending terms cannot appear until the next rebuild, whereas ranking the subtree at query time is always current but must sort millions of completions for a short prefix.",
+          "chosen": "The design precomputes top-k offline because the read-to-write skew is extreme, and it handles staleness with the freshness pipeline in a later step."
+        },
+        {
+          "name": "Custom build pipeline vs. off-the-shelf primitive",
+          "description": "A Redis sorted set per prefix gives incremental ZADD score updates and one-ZRANGE reads with no custom builder, but one set per prefix explodes the key count across 100M terms, short prefixes hold huge memory-heavy sets, and each executed query must write into the leaderboard of every one of its prefixes — heavy write amplification.",
+          "chosen": "The design accepts building a custom offline top-k pipeline over a shared trie rather than paying per-prefix duplication and multi-key write amplification."
+        }
       ]
     },
     {
       "id": "caching",
       "title": "4. Edge Caching",
       "description": "Prefix queries are wildly skewed — short, common prefixes dominate. Cache suggestion responses at the edge/CDN and in a prefix cache so the hottest prefixes never reach the index. Short TTLs keep them fresh enough.",
-      "patterns": [
-        "Edge caching"
-      ],
       "probeLinks": [
         "lucene-docs",
         "elasticsearch-docs",
@@ -1440,6 +1408,14 @@
           "definition": "Cache responses near users with a short expiry.",
           "whyItMatters": "Cuts latency and load while bounding staleness.",
           "group": "Edge Caching"
+        },
+        {
+          "term": "Edge caching",
+          "description": "Cache popular prefixes near users (CDN/edge) since the same short prefixes are queried constantly.",
+          "whyItMatters": "High QPS with a heavily skewed prefix distribution.",
+          "steps": [
+            "caching"
+          ]
         }
       ],
       "traps": [
@@ -1707,16 +1683,24 @@
             "Cache"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Hit rate vs. freshness",
+          "description": "Caching hot-prefix responses at the CDN edge with a short TTL serves the skewed head near the user so most QPS never reaches the index, but the TTL directly trades hit rate against staleness — set it too long and trending terms lag behind the live index.",
+          "chosen": "The design caches at the edge with short TTLs plus stale-while-revalidate, and keys entries on the index version so a swap invalidates naturally."
+        },
+        {
+          "name": "Shared cacheability vs. personalization",
+          "description": "Edge entries keyed only on prefix, locale, safe_mode, and index version are shared across all users, which is what makes the hit rate high; personalized responses cannot carry a user in that key, so personalization either kills edge cacheability or must move elsewhere.",
+          "chosen": "The design keeps the edge response global and applies personalization as an origin re-rank for opted-in requests, preserving the shared cacheable path."
+        }
       ]
     },
     {
       "id": "freshness",
       "title": "5. Freshness from the Query Stream",
       "description": "Keep suggestions current: executed searches flow into an event stream, an aggregator maintains rolling popularity counts, and the index is rebuilt (or incrementally updated) from those counts periodically and swapped in atomically.",
-      "patterns": [
-        "Stream aggregation",
-        "Batch index rebuild (CQRS)"
-      ],
       "probeLinks": [
         "lucene-docs",
         "elasticsearch-docs",
@@ -1760,6 +1744,22 @@
           "definition": "Build a new top-k index offline, then switch reads to it in one step.",
           "whyItMatters": "Updates the read path without partial/inconsistent states.",
           "group": "Freshness from the Query Stream"
+        },
+        {
+          "term": "Stream aggregation",
+          "description": "Aggregate the live query stream into rolling popularity counts.",
+          "whyItMatters": "Deriving freshness/trends from a firehose of events.",
+          "steps": [
+            "freshness"
+          ]
+        },
+        {
+          "term": "Batch index rebuild (CQRS)",
+          "description": "Rebuild the read-optimized index offline from counts, then swap it in atomically.",
+          "whyItMatters": "When the query structure is expensive to update in place.",
+          "steps": [
+            "freshness"
+          ]
         }
       ],
       "options": [
@@ -2030,15 +2030,24 @@
             "TopK"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Rebuild simplicity vs. trending latency",
+          "description": "Rebuilding the trie and top-k periodically from fresh counts and atomically swapping in a versioned artifact keeps the read path untouched and gives canary/rollback safety, but freshness is bounded by the rebuild interval so a viral brand-new term waits for the next build; mutating the live index in place is near-real-time but risks torn reads under heavy read traffic.",
+          "chosen": "The design uses periodic batch rebuild with atomic swap because versioned, validated artifacts are simpler and safer than live mutation, and version-keyed caches invalidate for free."
+        },
+        {
+          "name": "One index vs. base plus overlay",
+          "description": "Adding a small real-time trending overlay on top of the batch base surfaces viral terms in seconds and stays bounded, but it creates two paths that must merge consistently at read time and overlay rankings can disagree with the next rebuild until absorbed.",
+          "chosen": "The design defaults to the single rebuilt index for simplicity, treating the bounded overlay as the extension to reach seconds-level trending freshness."
+        }
       ]
     },
     {
       "id": "spelling",
       "title": "6. Typo Tolerance & Personalization",
       "description": "Real users mistype and have individual intent. Add fuzzy matching (edit-distance / n-gram expansion) so 'recieve' still suggests 'receive', and optionally blend personalized suggestions from the user's own history with the global top-k.",
-      "patterns": [
-        "Fuzzy matching"
-      ],
       "probeLinks": [
         "elastic-fuzzy-query",
         "microsoft-deep-qac",
@@ -2060,6 +2069,14 @@
           "definition": "Merge the user's history with global suggestions, weighted.",
           "whyItMatters": "Surfaces what this user likely means without ignoring global popularity.",
           "group": "Typo Tolerance & Personalization"
+        },
+        {
+          "term": "Fuzzy matching",
+          "description": "Tolerate typos via edit-distance or n-gram expansion of the prefix.",
+          "whyItMatters": "Real users mistype; exact prefix match alone misses intent.",
+          "steps": [
+            "spelling"
+          ]
         }
       ],
       "deepDives": [
@@ -2258,16 +2275,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/06-spelling-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Typo coverage vs. latency budget",
+          "description": "Expanding the typed prefix into a few edit-distance-1 variants reuses the existing trie and top-k path with bounded extra lookups per keystroke, but it only catches small typos — transpositions, phonetic errors, and two-edit mistakes slip through unless you widen the variant set and eat more of the latency budget; a separate n-gram index covers those better at the cost of building, storing, and re-ranking a second index.",
+          "chosen": "The design uses bounded edit-distance-1 prefix expansion, ranking exact matches above fuzzy ones, because it fixes the common case with no new index to maintain."
+        }
       ]
     },
     {
       "id": "scale",
       "title": "7. Scaling by Prefix Sharding",
       "description": "When the index or QPS outgrows one node, shard by an adaptive prefix-range map over the leading prefix key — splitting hot ranges finer — fronted by a prefix router and the edge cache. Replicate shards for the read load. Most traffic is still absorbed by caching; sharding handles index size and misses.",
-      "patterns": [
-        "Sharding by prefix",
-        "Edge caching"
-      ],
       "probeLinks": [
         "elasticsearch-docs",
         "tail-at-scale",
@@ -2298,6 +2318,14 @@
           "definition": "A routing table of adaptive prefix ranges to shards (and their live index version), splitting hot ranges finer.",
           "whyItMatters": "Static alphabet splits skew; adaptive ranges balance load and coordinate versioned rebuilds.",
           "group": "Scaling by Prefix Sharding"
+        },
+        {
+          "term": "Sharding by prefix",
+          "description": "Partition the index by adaptive ranges over the leading prefix key, splitting hot ranges finer.",
+          "whyItMatters": "When the index or QPS outgrows one node.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -2447,7 +2475,19 @@
           "Router",
           "Routing"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Sharding vs. full replication",
+          "description": "Replicating the whole index to every node needs no routing — any node answers any prefix — but caps the vocabulary at one machine's memory; prefix-range sharding removes that cap and routes each prefix to exactly one owning shard with no scatter-gather, at the price of maintaining a range map and coordinating per-shard rebuilds.",
+          "chosen": "The design shards by adaptive prefix ranges behind a router with per-shard read replicas, since the index has outgrown one node and the hot head needs finer splits than a static alphabet cut."
+        },
+        {
+          "name": "Static ranges vs. adaptive rebalancing",
+          "description": "A fixed alphabet cut is easy to reason about but prefix traffic is wildly skewed, so hot ranges overload their shards; adaptive ranges split the hot head finer and balance load, but hot ranges must be continuously detected and re-split as skew shifts, and fuzzy expansion needs bounded fan-out across ranges.",
+          "chosen": "The design accepts range-map maintenance and uses adaptive splitting because static ranges cannot survive the short-prefix hot head."
+        }
+      ]
     }
   ],
   "finalDesign": {

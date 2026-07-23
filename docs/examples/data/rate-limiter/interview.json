@@ -1248,7 +1248,14 @@
           "Client",
           "Server"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. scale readiness",
+          "description": "An in-process counter per (principal, rule) is the simplest correct limiter — no network hops, atomic by construction, trivially fast 429 decisions — but its guarantee holds only while there is exactly one server. The moment traffic needs a second instance, the local counters stop describing the principal's true global rate.",
+          "chosen": "The design deliberately starts with the single-server in-process counter as the baseline, taking its zero-cost correctness now while flagging horizontal scale as the pattern that will break it."
+        }
+      ]
     },
     {
       "id": "distributed",
@@ -1391,7 +1398,14 @@
           "S2",
           "S3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Stateless fleet vs. enforcement accuracy",
+          "description": "A fleet of stateless backends behind a load balancer scales capacity and survives instance loss, but each server now counts only the requests it happens to see, so a principal's effective limit inflates to roughly N times the configured value and enforcement drifts with routing luck. Keeping enforcement accurate again requires some authoritative shared count, which reintroduces state the fleet was designed to avoid.",
+          "chosen": "The design accepts that scaling out breaks per-instance counting and concludes a shared, authoritative counter is required, setting up the centralized store in the next step."
+        }
+      ]
     },
     {
       "id": "centralized-counter",
@@ -1802,6 +1816,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Exactness vs. per-request latency",
+          "description": "A central in-memory store makes every decision an atomic INCR against one authoritative key, so the global limit is exact across the fleet — but every request pays a network hop to the store, even if a Redis-style store keeps it sub-millisecond. Local counters with async reconciliation have a zero-hop hot path but enforce only approximately, letting bursts transiently exceed the configured limit before counts converge.",
+          "chosen": "The design centralizes counters in a shared in-memory store with TTL'd keys, judging a sub-millisecond hop a fair price for exact global enforcement."
+        },
+        {
+          "name": "Shared dependency vs. routing coupling",
+          "description": "The central store is a shared dependency and potential single point of failure that needs replication and failover, and a very hot key can bottleneck one shard. Sticky routing by limit key avoids the shared store entirely by pinning each key's counter to one server, but that pins a hot key's whole traffic to a single node, loses in-flight counts on rebalancing, and couples the load balancer to limiting logic.",
+          "chosen": "The design keeps routing and limiting decoupled and instead hardens the counter store with replication and failover, rather than smearing counter ownership into the load balancer."
+        }
       ]
     },
     {
@@ -2095,6 +2121,18 @@
               }
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Implementation simplicity vs. boundary accuracy",
+          "description": "A fixed window is just INCR plus EXPIRE with O(1) memory and a sub-millisecond decision, but it permits up to twice the configured limit across a window boundary and does not reflect the true rolling rate. A sliding window smooths out boundary bursts and stays accurate over the rolling interval — the weighted approximation is still O(1) — at the cost of slightly more Lua-script complexity, and exact timestamp logs cost O(N) memory.",
+          "chosen": "The design starts from the fixed-window baseline for its simplicity and explainability, noting that only the Lua script changes if boundary bursting proves unacceptable."
+        },
+        {
+          "name": "Strict caps vs. burst tolerance",
+          "description": "Window-based counters cap requests per interval rigidly, which suits hard quotas but punishes legitimately bursty clients. A token bucket refills at a steady rate up to a capacity, naturally expressing an 'X req/sec sustained, burst Y' product promise, but it introduces two parameters to tune and makes remaining-quota harder to report in a human-friendly way.",
+          "chosen": "The design keeps the simple windowed counter as its default and reserves token bucket for products whose promise is explicitly a sustained rate with allowed bursts."
         }
       ]
     },
@@ -2484,6 +2522,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Propagation speed vs. infrastructure",
+          "description": "Publishing versioned rule changes on an event bus gets limiters refreshed within seconds and makes rollback a matter of republishing the previous version, but it adds a bus to operate, cold-start limiters must still pull current rules, and a missed event strands a limiter on stale rules until the next refresh. Periodic polling is self-healing and dead simple with no bus, but propagation delay equals the poll interval and fleet-wide polling adds steady read load; shipping rules as deploy-time config is maximally auditable but ties live limit tuning to deploy cadence.",
+          "chosen": "The design pushes versioned rule-change events over a bus to limiters that serve from an in-memory rule cache, valuing near-instant propagation and cheap rollback over having one less piece of infrastructure."
+        }
       ]
     },
     {
@@ -2705,7 +2750,14 @@
           "Analytics",
           "Dash"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Edge locality vs. global accuracy",
+          "description": "Enforcing at the gateway or CDN edge rejects abusive traffic before it crosses regions or touches the backend, which is the cheapest possible place to say no — but a truly global limit then needs a shared counter store that is only eventually consistent across regions, so global enforcement becomes approximate while per-region limits against a local store stay fast and exact. Emitting decisions asynchronously to analytics keeps the hot path clean but means dashboards and rule tuning trail live traffic.",
+          "chosen": "The design moves enforcement to the edge and splits limits by scope — per-region limits decided against fast local stores, global limits against a shared eventually consistent store — with decisions streamed asynchronously into the analytics pipeline."
+        }
+      ]
     }
   ],
   "finalDesign": {

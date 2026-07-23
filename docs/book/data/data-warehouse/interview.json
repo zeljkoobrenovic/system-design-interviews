@@ -985,108 +985,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "ELT (load raw, transform in-warehouse)",
-      "what": "Land raw data first, then transform inside the warehouse, instead of transforming before load (ETL).",
-      "whenToUse": "Modern cloud warehouses; keeps raw for reprocessing and uses warehouse compute.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Ingest into a Raw Lake (ELT, not ETL)"
-    },
-    {
-      "name": "CDC + batch ingestion",
-      "what": "Capture DB changes (CDC) and pull batch/API extracts, landing both immutably.",
-      "whenToUse": "Mixed real-time and periodic sources.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Ingest into a Raw Lake (ELT, not ETL)"
-    },
-    {
-      "name": "Idempotent partitioned loads",
-      "what": "Load by partition with idempotency so re-runs replace rather than duplicate.",
-      "whenToUse": "Reliable, retryable, backfillable pipelines.",
-      "steps": [
-        "transform"
-      ],
-      "group": "Idempotent Loads and ELT Transformation"
-    },
-    {
-      "name": "Atomic snapshot publish",
-      "what": "Write a temp/unpublished snapshot, validate it, then commit it atomically; only committed snapshots are queryable and only then does the watermark advance.",
-      "whenToUse": "Any time readers must never see a half-written partition and failed runs must leave the last good data in place.",
-      "steps": [
-        "transform",
-        "orchestrate"
-      ],
-      "group": "Idempotent Loads and ELT Transformation"
-    },
-    {
-      "name": "Governed raw lake",
-      "what": "Encrypt raw, classify sensitive columns on landing, enforce least-privilege + audited access, mask/tokenize modeled outputs per class, and propagate retention/deletion/legal-hold across raw and modeled.",
-      "whenToUse": "ELT platforms that retain unmodified raw, which concentrates sensitivity and erasure risk in the lake.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Ingest into a Raw Lake (ELT, not ETL)"
-    },
-    {
-      "name": "Schema registry + evolution",
-      "what": "Track table schemas/versions and evolve them safely (additive, typed).",
-      "whenToUse": "Sources whose schemas change over time.",
-      "steps": [
-        "schema"
-      ],
-      "group": "Schema Evolution"
-    },
-    {
-      "name": "Partitioning + columnar",
-      "what": "Partition tables (by date) and store columnar so queries prune and scan less.",
-      "whenToUse": "Analytical queries over huge tables.",
-      "steps": [
-        "serve"
-      ],
-      "group": "Partitioning and Columnar Serving"
-    },
-    {
-      "name": "Workload isolation + cost controls",
-      "what": "Run dashboards and ad-hoc analysts on separate warehouses/queues with concurrency limits, quotas/budgets, kill/cancel, and per-query cost attribution.",
-      "whenToUse": "Mixed interactive + heavy workloads where one scan could starve others or blow the budget.",
-      "steps": [
-        "serve"
-      ],
-      "group": "Partitioning and Columnar Serving"
-    },
-    {
-      "name": "Reprocessing / backfill",
-      "what": "Rebuild outputs from retained raw data when logic/schema changes.",
-      "whenToUse": "Fixing bugs or applying new transforms to history.",
-      "steps": [
-        "backfill"
-      ],
-      "group": "Reprocessing and Backfills"
-    },
-    {
-      "name": "Quality-gated orchestration",
-      "what": "Run DAG nodes only when dependencies are fresh, transform to a temp snapshot, then let blocking quality checks gate the atomic publish (advisory checks warn but allow).",
-      "whenToUse": "Multi-pipeline platforms where a bad partition must never become queryable or propagate to dependents.",
-      "steps": [
-        "orchestrate"
-      ],
-      "group": "Orchestration, Quality, and Lineage"
-    },
-    {
-      "name": "Run/snapshot lineage",
-      "what": "Record, per run, which source offsets and transform version produced which output snapshot — lineage at run/snapshot granularity, not just table-to-table edges.",
-      "whenToUse": "Debugging, impact analysis, and audit across an evolving pipeline.",
-      "steps": [
-        "orchestrate"
-      ],
-      "group": "Orchestration, Quality, and Lineage"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1152,7 +1050,14 @@
           "instead": "Load raw first (ELT) into an immutable lake, then transform into a separate partitioned columnar warehouse."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One-script convenience vs. reprocessability and isolation",
+          "description": "A nightly transform-then-load script into the operational database is the least infrastructure possible, but the transform discards the raw data — a transform bug leaves nothing to rebuild three months of history from — and pointing analyst scans at the same database the application writes to couples analytical load onto the transactional hot path.",
+          "chosen": "The design uses this baseline to motivate the two structural fixes that follow: keep raw data immutably, and separate analytical serving from the operational store."
+        }
+      ]
     },
     {
       "id": "ingest",
@@ -1285,6 +1190,30 @@
           "whyItMatters": "ELT keeps unmodified raw for reprocessing, which makes the raw lake the most sensitive store — without a policy plane, retaining raw overstates how safe it is.",
           "example": "raw.orders.email lands tagged class=pii; analysts get a tokenized value; a GDPR erasure crypto-shreds the key unless a legal hold is set.",
           "group": "Ingest into a Raw Lake (ELT, not ETL)"
+        },
+        {
+          "term": "ELT (load raw, transform in-warehouse)",
+          "description": "Land raw data first, then transform inside the warehouse, instead of transforming before load (ETL).",
+          "whyItMatters": "Modern cloud warehouses; keeps raw for reprocessing and uses warehouse compute.",
+          "steps": [
+            "ingest"
+          ]
+        },
+        {
+          "term": "CDC + batch ingestion",
+          "description": "Capture DB changes (CDC) and pull batch/API extracts, landing both immutably.",
+          "whyItMatters": "Mixed real-time and periodic sources.",
+          "steps": [
+            "ingest"
+          ]
+        },
+        {
+          "term": "Governed raw lake",
+          "description": "Encrypt raw, classify sensitive columns on landing, enforce least-privilege + audited access, mask/tokenize modeled outputs per class, and propagate retention/deletion/legal-hold across raw and modeled.",
+          "whyItMatters": "ELT platforms that retain unmodified raw, which concentrates sensitivity and erasure risk in the lake.",
+          "steps": [
+            "ingest"
+          ]
         }
       ],
       "probeLinks": [
@@ -1302,11 +1231,6 @@
         "iceberg-docs",
         "aws-lake-formation-filtering"
       ],
-      "patterns": [
-        "ELT (load raw, transform in-warehouse)",
-        "CDC + batch ingestion",
-        "Governed raw lake"
-      ],
       "whyNow": [
         "ELT + an immutable raw lake is the foundational decision; reprocessing, schema flexibility, and decoupling all flow from keeping raw data."
       ],
@@ -1320,6 +1244,13 @@
           "trap": "Honoring a deletion request by deleting only the modeled rows.",
           "why": "ELT retains the subject in immutable raw, so the next backfill that reprocesses those partitions re-creates the 'erased' rows — the deletion silently regresses.",
           "instead": "Crypto-shred the subject's key (or tombstone it) in raw, schedule rewrites of the affected modeled partitions, and record the erasure so future backfills apply the same policy — unless a legal hold blocks it."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "ELT vs. ETL",
+          "description": "Landing untouched raw data first means any modeled output can be rebuilt when logic or schemas change and ingest cadence decouples from transform schedules, but storage roughly doubles and sensitive fields reach the lake before masking, so governance must cover raw too; transforming before load keeps storage small and masks early, at the price of discarding the raw you would need to reprocess.",
+          "chosen": "The design lands raw first (ELT) because reprocessability is the foundation every later step — schema evolution, backfills — depends on."
         }
       ]
     },
@@ -1470,6 +1401,23 @@
           "whyItMatters": "Makes pipelines safe to retry and backfill without duplicates.",
           "example": "Reload dt=2026-06-01 -> overwrite that partition, not add to it.",
           "group": "Idempotent Loads and ELT Transformation"
+        },
+        {
+          "term": "Idempotent partitioned loads",
+          "description": "Load by partition with idempotency so re-runs replace rather than duplicate.",
+          "whyItMatters": "Reliable, retryable, backfillable pipelines.",
+          "steps": [
+            "transform"
+          ]
+        },
+        {
+          "term": "Atomic snapshot publish",
+          "description": "Write a temp/unpublished snapshot, validate it, then commit it atomically; only committed snapshots are queryable and only then does the watermark advance.",
+          "whyItMatters": "Any time readers must never see a half-written partition and failed runs must leave the last good data in place.",
+          "steps": [
+            "transform",
+            "orchestrate"
+          ]
         }
       ],
       "probeLinks": [
@@ -1482,10 +1430,6 @@
         "uber-hudi-incremental-etl",
         "airbnb-iceberg-warehouse",
         "beam-guide"
-      ],
-      "patterns": [
-        "Idempotent partitioned loads",
-        "Atomic snapshot publish"
       ],
       "whyNow": [
         "Idempotent partitioned processing is the reliability backbone; it's what makes retries and backfills correct."
@@ -1593,6 +1537,18 @@
             "Quality"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Partition overwrite vs. keyed merge",
+          "description": "Idempotent partition overwrite with temp-write, validate, atomic publish makes retries duplicate-free and backfills clean, but it rewrites unchanged rows on every load and only works when inputs align to partitions — late CDC events for an old partition force a full partition rewrite; MERGE by key handles late updates and slowly-changing dimensions surgically but is far more expensive at billion-row scale and hinges on a perfect unique business key.",
+          "chosen": "The design overwrites whole partitions atomically because bounded, replayable, duplicate-free loads matter more than row-level write efficiency."
+        },
+        {
+          "name": "Write simplicity vs. read cost",
+          "description": "Append-plus-dedup-on-read makes every load a fast blind append and preserves full history of late corrections, but duplicates pile up with each retry and every query pays a dedup over natural key and version — a fragile contract where one imperfect key leaks stale rows into results.",
+          "chosen": "The design pays its correctness cost once at write time via atomic partition replacement rather than taxing every read with deduplication."
+        }
       ]
     },
     {
@@ -1641,9 +1597,6 @@
         "confluent-schema-evolution",
         "odcs-spec",
         "datahub-docs"
-      ],
-      "patterns": [
-        "Schema registry + evolution"
       ],
       "whyNow": [
         "Schema evolution is the most common real-world pipeline-breaker; handling it via a registry is the maturity signal."
@@ -1733,7 +1686,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-schema.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-schema.jpg",
+      "tradeoffs": [
+        {
+          "name": "Automatic evolution vs. deliberate versioning",
+          "description": "Letting schema changes flow through automatically keeps pipelines running when a source adds a column, but renames and type changes handled implicitly silently corrupt data; validating everything against a registry and versioning breaking changes catches corruption at the boundary, at the cost of human-in-the-loop mapping work when sources break their contract.",
+          "chosen": "The design auto-propagates only additive nullable changes and forces breaking changes through explicit versioned mappings, using schema-on-read raw to reinterpret history under new schemas."
+        }
+      ]
     },
     {
       "id": "serve",
@@ -1893,6 +1853,14 @@
           "whyItMatters": "Layout alone degrades over time (small files, stale stats) and a few heavy queries can starve everyone and blow the budget — health + isolation are what keep the capacity numbers achievable and the cost bounded.",
           "example": "Dashboards run on an isolated warehouse; a nightly compaction merges small files and refreshes stats; cost telemetry attributes scan bytes to each pipeline/query workload.",
           "group": "Partitioning and Columnar Serving"
+        },
+        {
+          "term": "Workload isolation + cost controls",
+          "description": "Run dashboards and ad-hoc analysts on separate warehouses/queues with concurrency limits, quotas/budgets, kill/cancel, and per-query cost attribution.",
+          "whyItMatters": "Mixed interactive + heavy workloads where one scan could starve others or blow the budget.",
+          "steps": [
+            "serve"
+          ]
         }
       ],
       "probeLinks": [
@@ -1903,10 +1871,6 @@
         "airbnb-iceberg-warehouse",
         "aws-redshift-elt-patterns",
         "aws-lake-formation-filtering"
-      ],
-      "patterns": [
-        "Partitioning + columnar",
-        "Workload isolation + cost controls"
       ],
       "whyNow": [
         "Query performance is the warehouse's reason to exist; partitioning + columnar is the standard mechanism analysts feel directly."
@@ -2029,6 +1993,18 @@
             "Query"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Warehouse performance vs. open-lake flexibility",
+          "description": "Loading modeled tables into a partitioned columnar warehouse gives tuned, predictable pruning-plus-column-scan latency for the ~200 queries/min BI load, but it duplicates data out of the lake and couples compute to the engine's pricing; querying Parquet in place via an open table format avoids the second copy and lets multiple engines share the files, at the cost of higher, less predictable latency over object storage and small-file/concurrency headaches for interactive BI.",
+          "chosen": "The design serves analysts from a partitioned columnar warehouse because interactive dashboard latency is the requirement the lake alone cannot reliably meet."
+        },
+        {
+          "name": "Ad-hoc breadth vs. precomputed speed",
+          "description": "Precomputed OLAP cubes make fixed-dimension dashboards sub-second, but only the modeled dimensions are fast — new questions fall back to full scans — and cubes lag fresh data while their dimension combinations explode maintenance cost; partition-pruned columnar scans stay reasonably fast for arbitrary queries without freezing the question set.",
+          "chosen": "The design relies on partitioning plus columnar scans for general queries and pre-aggregates only common rollups for dashboards, rather than committing to full cubes."
+        }
       ]
     },
     {
@@ -2072,6 +2048,14 @@
           "whyItMatters": "Fixes bugs/logic changes across history without losing or duplicating data.",
           "example": "Re-run Jan-Mar partitions -> overwrite them with corrected logic.",
           "group": "Reprocessing and Backfills"
+        },
+        {
+          "term": "Reprocessing / backfill",
+          "description": "Rebuild outputs from retained raw data when logic/schema changes.",
+          "whyItMatters": "Fixing bugs or applying new transforms to history.",
+          "steps": [
+            "backfill"
+          ]
         }
       ],
       "probeLinks": [
@@ -2083,9 +2067,6 @@
         "uber-hudi-incremental-etl",
         "netflix-data-bridge",
         "dbt-incremental-models"
-      ],
-      "patterns": [
-        "Reprocessing / backfill"
       ],
       "whyNow": [
         "Backfill is the capstone that ties ELT + idempotency together; it's a top real-world requirement and a clear senior signal."
@@ -2180,7 +2161,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-backfill.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-backfill.jpg",
+      "tradeoffs": [
+        {
+          "name": "Historical repair vs. fresh-data SLAs",
+          "description": "Rebuilding three corrupted months from the raw lake reuses the same idempotent partition pipeline so history is repaired cleanly with no duplicates or half-written reads, but a large backfill competes for the same compute as daily loads — unthrottled, historical work starves the fresh-data SLAs the business watches.",
+          "chosen": "The design runs backfills through the identical temp-write, validate, atomic-publish path but admits them at lower priority with budgeted concurrency so fresh partitions always land on time."
+        }
+      ]
     },
     {
       "id": "orchestrate",
@@ -2219,10 +2207,6 @@
       "whyNow": [
         "Closing on orchestration + data quality + lineage shows the platform is operable, trustworthy, and dependency-aware — the production reality."
       ],
-      "patterns": [
-        "Quality-gated orchestration",
-        "Run/snapshot lineage"
-      ],
       "concepts": [
         {
           "term": "Blocking vs advisory quality gates",
@@ -2237,6 +2221,22 @@
           "whyItMatters": "Run/snapshot-level lineage is what makes impact analysis and audit precise: you can answer 'which transform version and inputs produced this exact bad partition?' instead of just 'these tables are related'.",
           "example": "fct_orders snap_77 -> produced by run r_9, transformVersion v42, from raw.orders up to lsn:48211.",
           "group": "Orchestration, Quality, and Lineage"
+        },
+        {
+          "term": "Quality-gated orchestration",
+          "description": "Run DAG nodes only when dependencies are fresh, transform to a temp snapshot, then let blocking quality checks gate the atomic publish (advisory checks warn but allow).",
+          "whyItMatters": "Multi-pipeline platforms where a bad partition must never become queryable or propagate to dependents.",
+          "steps": [
+            "orchestrate"
+          ]
+        },
+        {
+          "term": "Run/snapshot lineage",
+          "description": "Record, per run, which source offsets and transform version produced which output snapshot — lineage at run/snapshot granularity, not just table-to-table edges.",
+          "whyItMatters": "Debugging, impact analysis, and audit across an evolving pipeline.",
+          "steps": [
+            "orchestrate"
+          ]
         }
       ],
       "probeLinks": [
@@ -2383,7 +2383,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-orchestrate.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-orchestrate.jpg",
+      "tradeoffs": [
+        {
+          "name": "Dependency gating vs. pipeline latency",
+          "description": "Making transform B wait on table A's declared completion (the watermark) guarantees B never runs on stale or partial input and failed steps retry resumably, but every dependency edge adds waiting — a late upstream load delays the whole downstream DAG rather than letting consumers proceed on whatever data exists.",
+          "chosen": "The design gates DAG steps on upstream watermarks because silently computing on incomplete data is worse than a late-but-correct table."
+        },
+        {
+          "name": "Blocking checks vs. advisory checks",
+          "description": "Gating the atomic publish on data-quality checks means a failed freshness, row-count, or schema check leaves the last good snapshot serving and pages the owner, protecting consumers from bad data at the cost of withheld freshness; making every check advisory keeps data flowing but lets anomalies reach dashboards.",
+          "chosen": "The design splits checks into blocking gates at the publish boundary and advisory warnings, so severe violations hold the snapshot while minor ones only alert."
+        }
+      ]
     }
   ],
   "finalDesign": {

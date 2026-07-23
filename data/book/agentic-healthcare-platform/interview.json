@@ -1755,82 +1755,6 @@
       "makesIrrelevant": "Managed monitoring and model-eval tooling removes dashboard plumbing, but not clinician-labeled evaluation sets or safety-governance review."
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The clinical decision-support pipeline runs on this harness, with the deterministic safety layer and human-clinician abstain gate around the Decision-Support Pipeline layered on top of it.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-      "what": "An authored DAG (retrieve -> reason -> calibrate -> abstain-or-recommend), not an autonomous loop.",
-      "whenToUse": "Where a wrong action can harm a patient.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A licensed clinician authorizes every recommendation before it acts.",
-      "whenToUse": "Before anything affects a patient.",
-      "steps": [
-        "gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "The agent reasons freely but a calibrator, safety layer, and clinician sign-off fence the action.",
-      "whenToUse": "Recommend-only autonomy with hard safety boundaries.",
-      "steps": [
-        "gate",
-        "safety"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground in clinical guidelines and the patient record, not model memory.",
-      "whenToUse": "Every recommendation must cite evidence and patient data.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate calibration, abstention quality, and harm-avoidance against clinician ground truth.",
-      "whenToUse": "Measuring safety, not just accuracy.",
-      "steps": [
-        "calibration",
-        "eval"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "PHI-scoped access; the decision is bound to a licensed clinician principal.",
-      "whenToUse": "Accessing the chart and recording authorized actions.",
-      "steps": [
-        "privacy"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat free-text notes and records as untrusted; partition from EHR write authority.",
-      "whenToUse": "Notes and records are attacker-reachable input.",
-      "steps": [
-        "privacy"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "Queue async decision-support work and the sign-off worklist; under overload, admission control sheds non-urgent work and prioritizes urgent cases rather than degrading safety or flooding clinicians.",
-      "whenToUse": "Diurnal clinical query peaks and a bounded clinician review capacity (worklist depth and case age are first-class).",
-      "steps": [
-        "gate"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1859,9 +1783,6 @@
         "caption": "An agent answers clinical questions straight from the model — no chart grounding, no safety checks, no clinician gate. The highest-stakes baseline in the series."
       },
       "decisionPrompt": "Why is a confidently wrong clinical answer more dangerous than a wrong legal citation?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)"
-      ],
       "probeLinks": [
         "med-palm",
         "amie-diagnostic",
@@ -1877,6 +1798,22 @@
           "definition": "The deterministic runtime that wraps the model and drives the agent loop — context assembly, tool-call parsing/execution, and budget/stop-condition enforcement. Distinct from an eval harness (offline scoring).",
           "whyItMatters": "The Decision-Support Pipeline runs on this harness, and the clinical safety layer and human-clinician abstain gate are layered on top of it rather than rebuilt inside the loop.",
           "example": "A clinical request enters the harness, which assembles the patient context and guidelines, runs the scoped reasoning agent, and routes the recommendation to a human clinician — never auto-acts on the patient."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The clinical decision-support pipeline runs on this harness, with the deterministic safety layer and human-clinician abstain gate around the Decision-Support Pipeline layered on top of it.",
+          "steps": [
+            "naive"
+          ]
+        },
+        {
+          "term": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
+          "description": "An authored DAG (retrieve -> reason -> calibrate -> abstain-or-recommend), not an autonomous loop.",
+          "whyItMatters": "Where a wrong action can harm a patient.",
+          "steps": [
+            "naive"
+          ]
         }
       ],
       "recap": {
@@ -1891,7 +1828,14 @@
           "instead": "Ground in guidelines and the chart, check safety deterministically, abstain when unsure, and require sign-off."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Convenience vs. patient harm",
+          "description": "Answering clinical questions straight from the model is instant and frictionless for a clinician or patient, but nothing stands between a confidently wrong dose or differential and the bedside — no grounding in this patient's chart, no allergy or interaction checks, no notion of refusal, no clinician in the loop. Unlike a bad PR or a bad filing, the downside here is irreversible bodily harm.",
+          "chosen": "The design abandons the direct-answer baseline entirely and rebuilds around grounding, calibration, a deterministic safety layer, and clinician sign-off, because the harm side of this trade is unacceptable at any convenience gain."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -1922,9 +1866,6 @@
         "caption": "Recommendations are grounded in two sources: versioned clinical guidelines/formularies and the patient's own record (retrieved PHI-scoped through PHIScope)."
       },
       "decisionPrompt": "Why must a recommendation be grounded in BOTH the guideline and this patient's chart?",
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "hl7-fhir",
         "smart-app-launch",
@@ -1938,6 +1879,14 @@
           "definition": "Grounding a recommendation in both the current guideline and this patient's chart (meds, labs, allergies, problems).",
           "whyItMatters": "A guideline-correct answer can still be wrong for this patient (an allergy, an interaction, a contraindication).",
           "example": "A standard antibiotic is guideline-correct but contraindicated by a documented allergy in the chart."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground in clinical guidelines and the patient record, not model memory.",
+          "whyItMatters": "Every recommendation must cite evidence and patient data.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -1948,7 +1897,14 @@
         "after": "Recommendations are grounded in guidelines and the patient's chart.",
         "newRisk": "Grounding doesn't guarantee the agent knows when its grounding is insufficient."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg",
+      "tradeoffs": [
+        {
+          "name": "Answer coverage vs. abstain on stale data",
+          "description": "Answering from whatever chart data is available maximizes how often the agent can help, but a medication list older than the freshness window or a missing allergy list makes a grounded-looking recommendation unsafe. Requiring both a current versioned guideline and a fresh patient-fact snapshot — and abstaining when either is stale or incomplete — trades away coverage for reproducible safety.",
+          "chosen": "The design grounds every recommendation in both the versioned guideline and this patient's chart snapshot, and treats a stale or incomplete snapshot as itself a reason to abstain."
+        }
+      ]
     },
     {
       "id": "calibration",
@@ -2021,9 +1977,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/03-calibration-opt2.jpg"
         }
       ],
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "modern-nn-calibration",
         "selective-classification",
@@ -2036,6 +1989,15 @@
           "definition": "The platform declines to answer when grounding or calibrated confidence is below threshold, rather than producing a low-confidence recommendation.",
           "whyItMatters": "In a harm-to-a-person domain, a confident wrong answer is the worst outcome; abstention is the safe default.",
           "example": "Sparse chart data on a rare presentation -> abstain and route to a clinician."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate calibration, abstention quality, and harm-avoidance against clinician ground truth.",
+          "whyItMatters": "Measuring safety, not just accuracy.",
+          "steps": [
+            "calibration",
+            "eval"
+          ]
         }
       ],
       "whyNow": [
@@ -2045,7 +2007,19 @@
         "before": "The agent always produced an answer.",
         "after": "The agent abstains when grounding or confidence is insufficient.",
         "newRisk": "Even a confident, grounded recommendation can be unsafe for hard rules (allergies, interactions)."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. calibrated risk tiers",
+          "description": "A single global threshold on the model's self-reported confidence is trivial to implement and explain, but a self-score is poorly calibrated and gameable, and one bar over-abstains on low-risk guideline lookups while under-abstaining on high-risk dosing — the worst of both. Per-task risk-tiered thresholds over a calibrated evaluator match the abstention bar to the harm of being wrong, at the cost of ground-truth sets, calibration curves, and threshold governance.",
+          "chosen": "The design combines grounding sufficiency, a calibrated uncertainty score, and per-task risk-tier thresholds, accepting the build-and-govern cost so dosing carries a higher bar than chart summarization."
+        },
+        {
+          "name": "Helpfulness vs. knowing when not to answer",
+          "description": "Every abstention is a clinician question left unanswered, which feels like product failure; but in this domain a confident wrong answer is far worse than 'I can't determine this'. Contradiction checks across sources and out-of-distribution flags deliberately convert borderline answers into abstentions, spending helpfulness to buy safety.",
+          "chosen": "The design treats a well-founded abstention as a successful output, detecting it through evidence insufficiency, calibrated uncertainty, and OOD signals rather than forcing an answer."
+        }
+      ]
     },
     {
       "id": "safety",
@@ -2125,9 +2099,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/04-safety-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Bounded autonomy (agent + deterministic gate)"
-      ],
       "probeLinks": [
         "cql-spec",
         "rxnorm-api",
@@ -2156,6 +2127,18 @@
           "trap": "Trusting the model to remember every contraindication.",
           "why": "Models are probabilistic and can be injected or simply wrong; life-critical rules can't ride on that.",
           "instead": "Enforce contraindication/interaction/allergy/dose checks deterministically."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Fail closed vs. clinician load",
+          "description": "Failing open on missing facts keeps the workflow smooth on incomplete charts, but it silently turns 'we don't know' into 'it's safe' — a blank allergy list would read as no allergies and could let a contraindicated drug reach the worklist as if cleared. Failing closed returns missing_data and routes to abstention or review, which means more escalations and per-task definitions of freshness windows and required facts.",
+          "chosen": "The design fails closed: missing or stale facts produce an explicit missing_data outcome routed to review, accepting extra clinician load because absence of data is never evidence of safety."
+        },
+        {
+          "name": "Model judgment vs. hard rules",
+          "description": "Letting the model weigh contraindications and interactions keeps everything in one flexible reasoning step, but some failures must never depend on a probabilistic component. A deterministic layer for contraindications, drug-drug interactions, allergies, and dose limits is rigid and needs versioned rule and formulary sources, but its pass/block/warn/missing_data results are reproducible and un-overridable by the model.",
+          "chosen": "The design puts the never-events behind deterministic, versioned checks the model cannot override, recording rule versions on each case so decisions are reproducible after rules change."
         }
       ]
     },
@@ -2248,11 +2231,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/05-gate-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)",
-        "Queue-based load leveling; admission control"
-      ],
       "probeLinks": [
         "cds-hooks",
         "fda-cds-guidance",
@@ -2271,6 +2249,31 @@
           "definition": "Each case moves through explicit states (drafted, blocked_by_safety, abstained, awaiting_signoff, modified_by_clinician, authorized, rejected, expired, ehr_write_failed) on a triaged clinician worklist, with one append-only transition row per change.",
           "whyItMatters": "A single sign-off call hides the real workflow; modify/reject/request-evidence/expire/retry are where a human-in-the-loop system is actually safe or actually thin.",
           "example": "An unreviewed urgent case ages on the worklist and escalates; a signed-off write that fails the EHR becomes ehr_write_failed to retry, not a silent loss."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A licensed clinician authorizes every recommendation before it acts.",
+          "whyItMatters": "Before anything affects a patient.",
+          "steps": [
+            "gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "The agent reasons freely but a calibrator, safety layer, and clinician sign-off fence the action.",
+          "whyItMatters": "Recommend-only autonomy with hard safety boundaries.",
+          "steps": [
+            "gate",
+            "safety"
+          ]
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "Queue async decision-support work and the sign-off worklist; under overload, admission control sheds non-urgent work and prioritizes urgent cases rather than degrading safety or flooding clinicians.",
+          "whyItMatters": "Diurnal clinical query peaks and a bounded clinician review capacity (worklist depth and case age are first-class).",
+          "steps": [
+            "gate"
+          ]
         }
       ],
       "deepDives": [
@@ -2413,7 +2416,19 @@
         "before": "A recommendation could be treated as an action.",
         "after": "Only clinician-authorized recommendations act; the agent stays decision support.",
         "newRisk": "PHI must be protected and every recommendation defensible under a safety case."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Throughput vs. accountability",
+          "description": "Letting the agent write 'low-risk' actions directly to the EHR raises throughput and spares clinicians routine review, but low-risk is itself a clinical judgment that can be wrong, and an injected note or stale fact can make a routine write harmful — and it moves responsibility and the regulatory line onto the platform. Recommend-only keeps every ordering, prescribing, and charting action bound to a licensed clinician principal, bounding throughput by review capacity.",
+          "chosen": "The design is strictly recommend-only: an authorized EHR write happens only after clinician sign-off bound to their principal, keeping the liability and regulatory line with the clinician."
+        },
+        {
+          "name": "Worklist coverage vs. alert fatigue",
+          "description": "Routing everything the system produces to the sign-off worklist maximizes clinician oversight, but a flooded worklist causes alert fatigue and rubber-stamping — which quietly destroys the value of the gate itself. Triage, abstention surfacing, and modify/reject/request-evidence actions keep review meaningful, at the cost of state-machine complexity in the recommendation store.",
+          "chosen": "The design invests in a well-triaged worklist with a full case state machine (drafted, blocked_by_safety, abstained, awaiting_signoff), because the gate only works if clinicians can give each item real attention."
+        }
+      ]
     },
     {
       "id": "privacy",
@@ -2449,10 +2464,6 @@
         "caption": "PHI-scoped retrieval (only this patient, for their care team) under HIPAA/no-train; both PHI access and the recommendation itself are audited for the safety case."
       },
       "decisionPrompt": "How do you keep one patient's PHI from reaching another patient's query, and what makes a recommendation defensible?",
-      "patterns": [
-        "Delegation not impersonation (OAuth token exchange, act claim)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "hhs-minimum-necessary",
         "hhs-security-rule",
@@ -2465,6 +2476,22 @@
           "definition": "A documented, auditable argument that the system is acceptably safe: grounding, calibration, deterministic checks, human authorization, and traceable evidence.",
           "whyItMatters": "Harm-to-a-person systems must be defensible, not just functional; regulators and clinicians rely on it.",
           "example": "Each recommendation links to guideline version, chart facts used, safety-check results, and the signing clinician."
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "PHI-scoped access; the decision is bound to a licensed clinician principal.",
+          "whyItMatters": "Accessing the chart and recording authorized actions.",
+          "steps": [
+            "privacy"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat free-text notes and records as untrusted; partition from EHR write authority.",
+          "whyItMatters": "Notes and records are attacker-reachable input.",
+          "steps": [
+            "privacy"
+          ]
         }
       ],
       "whyNow": [
@@ -2494,7 +2521,14 @@
         "after": "Retrieval is PHI-scoped and every recommendation is auditable under a safety case.",
         "newRisk": "Safety and calibration must be measured, not assumed."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-privacy.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-privacy.jpg",
+      "tradeoffs": [
+        {
+          "name": "Access breadth vs. minimum necessary",
+          "description": "Broad chart retrieval gives the agent maximal context for any question, but one clinician's query must never reach an unrelated patient, and every chart read is itself a regulated, logged event under HIPAA. Identity-scoped retrieval limited to the patient and care team, with break-glass and minimum-necessary policies, narrows what the agent can see in exchange for defensible PHI handling.",
+          "chosen": "The design scopes retrieval to the patient and their care team through identity, logs every PHI access with who/which-patient/which-fields, and treats notes as untrusted input partitioned from EHR write authority."
+        }
+      ]
     },
     {
       "id": "eval",
@@ -2524,9 +2558,6 @@
         "caption": "Decision-support workflows run on the pipeline; clinician decisions become ground truth, and eval weights calibration, abstention quality, and harm avoidance over raw accuracy."
       },
       "decisionPrompt": "Why is raw accuracy the wrong primary metric, and what replaces it?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "medhelm",
         "amie-feasibility",
@@ -2562,7 +2593,14 @@
         "after": "Calibration, abstention, and harm avoidance are evaluated continuously, with drift detection, per-task slices, and incident review.",
         "newRisk": "Other phase-3 verticals add real-time, contestability, and physical-experiment gates — see the plan."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-eval.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-eval.jpg",
+      "tradeoffs": [
+        {
+          "name": "Raw accuracy vs. harm-weighted evaluation",
+          "description": "Optimizing headline accuracy is simple and looks good, but a high accuracy number can hide a few confident, harmful errors — the exact failures that matter most here. Weighting evaluation toward calibration, abstention quality, and harm avoidance against clinician ground truth, sliced per specialty and task, costs more evaluation effort and reports a less flattering single number.",
+          "chosen": "The design replaces raw accuracy with harm-weighted, per-task evaluation that rewards correct abstentions and punishes confident unsafe answers, run as a continuous governance loop with drift detection rather than a one-time launch gate."
+        }
+      ]
     }
   ],
   "finalDesign": {

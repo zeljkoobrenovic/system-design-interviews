@@ -1632,62 +1632,6 @@
       "makesIrrelevant": "A managed metrics and trace backend removes most custom time-series storage from the serving_metrics control plane."
     }
   ],
-  "patterns": [
-    {
-      "name": "Politeness-aware crawl frontier",
-      "what": "A prioritized URL queue that respects robots.txt and per-host rate limits.",
-      "whenToUse": "Crawling at scale without hammering or getting blocked by sites.",
-      "steps": [
-        "crawl"
-      ],
-      "group": "Crawl the Web with a URL Frontier"
-    },
-    {
-      "name": "Inverted index",
-      "what": "Map each term to the list of documents (and positions) containing it.",
-      "whenToUse": "Fast keyword lookup over a large corpus.",
-      "steps": [
-        "index"
-      ],
-      "group": "Build the Inverted Index"
-    },
-    {
-      "name": "Document partitioning (sharding)",
-      "what": "Split the index by document so each shard holds full postings for its docs.",
-      "whenToUse": "Corpora too large for one machine; enables parallel scatter/gather.",
-      "steps": [
-        "serve"
-      ],
-      "group": "Shard the Index and Scatter-Gather Queries"
-    },
-    {
-      "name": "Scatter-gather query",
-      "what": "Send the query to all shards, collect top-k from each, merge and re-rank.",
-      "whenToUse": "Document-partitioned indexes where any doc can match.",
-      "steps": [
-        "serve"
-      ],
-      "group": "Shard the Index and Scatter-Gather Queries"
-    },
-    {
-      "name": "Two-phase ranking",
-      "what": "Cheap candidate retrieval per shard, then an expensive re-rank of the merged candidates.",
-      "whenToUse": "When full ranking over all matches is too costly.",
-      "steps": [
-        "rank"
-      ],
-      "group": "Rank Results"
-    },
-    {
-      "name": "Result + doc caching",
-      "what": "Cache popular query results and hot document snippets.",
-      "whenToUse": "Skewed query/document popularity (a few queries dominate).",
-      "steps": [
-        "cache"
-      ],
-      "group": "Caching for QPS and Latency"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1740,7 +1684,14 @@
           "instead": "Build an inverted index once so a query is a posting-list lookup; shard it and scatter-gather for scale."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Query-time work vs. index-time work",
+          "description": "Scanning every stored document per query needs no preprocessing at all, but the cost is linear in the corpus for every single search — over 100B documents one query blows the sub-second budget by orders of magnitude, and 100K QPS is physically impossible. Moving the work to index time means building and maintaining a massive precomputed structure so each query touches only relevant postings.",
+          "chosen": "The design uses the hopeless scan baseline to justify paying the index-time cost once so that query-time cost stops scaling with corpus size."
+        }
+      ]
     },
     {
       "id": "crawl",
@@ -1781,6 +1732,14 @@
           "whyItMatters": "Balances coverage, freshness, and politeness; the heart of a scalable crawler.",
           "example": "Per-host buckets with next_fetch_at delays + priority by importance/freshness.",
           "group": "Crawl the Web with a URL Frontier"
+        },
+        {
+          "term": "Politeness-aware crawl frontier",
+          "description": "A prioritized URL queue that respects robots.txt and per-host rate limits.",
+          "whyItMatters": "Crawling at scale without hammering or getting blocked by sites.",
+          "steps": [
+            "crawl"
+          ]
         }
       ],
       "probeLinks": [
@@ -1791,9 +1750,6 @@
         "common-crawl",
         "google-anatomy",
         "bigtable-paper"
-      ],
-      "patterns": [
-        "Politeness-aware crawl frontier"
       ],
       "whyNow": [
         "Crawling is the data source; a politeness-aware frontier is what makes large-scale crawling both effective and acceptable to the web."
@@ -1900,7 +1856,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-crawl.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-crawl.jpg",
+      "tradeoffs": [
+        {
+          "name": "Crawl throughput vs. politeness",
+          "description": "Fetching as fast as the fleet allows maximizes coverage and freshness, but hammers individual hosts, violates robots.txt, and gets the crawler blocked. Per-host rate limits and politeness delays protect the web (and your reputation) but cap how quickly any one site can be crawled, so throughput must come from breadth across hosts.",
+          "chosen": "The design routes all fetching through a prioritized, politeness-aware URL frontier that enforces per-host delays, scaling throughput by crawling many hosts in parallel rather than any host hard."
+        },
+        {
+          "name": "Coverage vs. refetch efficiency",
+          "description": "Re-crawling everything often keeps the index fresh but wastes fleet capacity refetching unchanged pages and duplicate URLs. Prioritizing important and fresh URLs, canonicalizing URLs, and deduplicating by content hash spends the crawl budget where it matters, at the cost of prioritization logic and the risk of neglecting low-priority pages.",
+          "chosen": "The design prioritizes by importance and freshness with URL canonicalization and content-hash dedup, accepting slower revisit of unimportant pages to spend fetches on what changes."
+        }
+      ]
     },
     {
       "id": "index",
@@ -1951,9 +1919,6 @@
         "reddit-search",
         "linkedin-galene"
       ],
-      "patterns": [
-        "Inverted index"
-      ],
       "whyNow": [
         "The inverted index is the core data structure of search; everything in serving operates on its posting lists."
       ],
@@ -1962,7 +1927,14 @@
         "after": "Term posting lists + a link graph.",
         "newRisk": "The index is far too large for one machine — it must be sharded, and queries must hit all shards."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-index.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-index.jpg",
+      "tradeoffs": [
+        {
+          "name": "Compression vs. decode cost",
+          "description": "Storing postings uncompressed makes reading them trivial, but a multi-PB corpus becomes unaffordable to store and to stream through per query. Delta-encoding sorted docIDs and compressing blocks shrinks the index dramatically, at the cost of decode work at query time — mitigated by skip lists and block-max metadata that let execution skip whole chunks.",
+          "chosen": "The design compresses gap-encoded postings with per-block skip metadata, judging that skipping most of a posting list beats reading an uncompressed one."
+        }
+      ]
     },
     {
       "id": "serve",
@@ -2091,6 +2063,22 @@
           "whyItMatters": "Parallelizes search across the whole corpus within the latency budget.",
           "example": "Aggregator merges 10K x top-100 into a global candidate set.",
           "group": "Shard the Index and Scatter-Gather Queries"
+        },
+        {
+          "term": "Document partitioning (sharding)",
+          "description": "Split the index by document so each shard holds full postings for its docs.",
+          "whyItMatters": "Corpora too large for one machine; enables parallel scatter/gather.",
+          "steps": [
+            "serve"
+          ]
+        },
+        {
+          "term": "Scatter-gather query",
+          "description": "Send the query to all shards, collect top-k from each, merge and re-rank.",
+          "whyItMatters": "Document-partitioned indexes where any doc can match.",
+          "steps": [
+            "serve"
+          ]
         }
       ],
       "probeLinks": [
@@ -2102,10 +2090,6 @@
         "lucene-docs",
         "elasticsearch-docs",
         "bigtable-paper"
-      ],
-      "patterns": [
-        "Document partitioning (sharding)",
-        "Scatter-gather query"
       ],
       "whyNow": [
         "Sharded scatter-gather is how search scales to billions of docs while staying sub-second; the document-vs-term partitioning choice is the key senior decision."
@@ -2199,6 +2183,13 @@
             "IndexShards"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Document vs. term partitioning",
+          "description": "Document partitioning gives every shard a complete mini-index for its slice, so any shard answers any query independently and load stays even — but every query fans out to all shards and tail latency is set by the slowest one. Term partitioning lets a single-term query hit one shard, yet multi-term queries must ship and intersect huge posting lists across nodes, and hot terms create severe skew.",
+          "chosen": "The design partitions by document, accepting universal fan-out because its cost is predictable and parallelizable while cross-shard intersection and hot-term skew are not."
+        }
       ]
     },
     {
@@ -2252,7 +2243,14 @@
         "after": "Document partitioning chosen for even load and parallel scatter-gather.",
         "newRisk": "Every query touches all shards — tail latency is the slowest shard (addressed with replicas/hedging)."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-partitioning-scheme.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-partitioning-scheme.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fan-out cost vs. cross-shard joins",
+          "description": "For a 3-word query, document partitioning costs one scatter to every shard where each intersects its local postings and returns top-k — total work scales with shard count but no data moves between shards. Term partitioning touches only three shards but must ship potentially enormous posting lists across the network to intersect them, an unpredictable and skew-prone cost.",
+          "chosen": "The design settles on document partitioning as web search does: predictable per-shard local work beats network-bound posting-list intersection, and popular terms cannot hotspot a single shard."
+        }
+      ]
     },
     {
       "id": "serve-scale",
@@ -2422,7 +2420,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-serve-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-serve-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Flat fan-out vs. aggregation tree",
+          "description": "Fanning out flat from one query process to 10K shards makes merging simple, but no single box can open 10K connections per query at ~30K cache-miss QPS or absorb ~10MB of gathered top-k. A two-level broker tree bounds per-process connections and merge load by adding an intermediate hop of latency and more moving parts.",
+          "chosen": "The design fans out through an n-ary broker tree where each worker talks to a few hundred shards and intermediate tiers merge sub-results, trading one extra hop for a topology that survives 300M shard-requests/s."
+        },
+        {
+          "name": "Completeness vs. tail latency",
+          "description": "Waiting for every shard's answer gives exhaustive results, but at 10K shards some replica is always slow, so the p99 would be set by the worst straggler. Deadlines with partial-result returns and small per-shard top-k keep responses sub-second, at the cost of occasionally missing a document a slow shard would have contributed.",
+          "chosen": "The design bounds per-shard work and applies overload controls so responses return on time, accepting slightly incomplete gathers over straggler-dominated latency."
+        }
+      ]
     },
     {
       "id": "rank",
@@ -2598,9 +2608,6 @@
         "linkedin-galene",
         "facebook-graph-search"
       ],
-      "patterns": [
-        "Two-phase ranking"
-      ],
       "whyNow": [
         "Ranking is what makes results useful; two-phase ranking is the standard way to combine quality and latency."
       ],
@@ -2676,6 +2683,18 @@
             "LinkGraph"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Ranking depth vs. scoring cost",
+          "description": "Running the full rich model over all 100K matches per query leaves no recall ceiling but is far too expensive at 100K QPS and blows the latency budget — and only the top handful is ever shown. Two-phase ranking scores cheaply with BM25 per shard and re-ranks only the merged top candidates, at the risk that a good document is cut in phase one before the re-ranker sees it.",
+          "chosen": "The design uses cheap BM25 recall plus a learned re-rank over the small merged candidate set, bounding expensive scoring to where it changes what users see."
+        },
+        {
+          "name": "Text relevance vs. authority and abuse resistance",
+          "description": "Static link-authority ordering is a precomputed lookup — extremely fast — but ignores what the query actually asks and is gameable by link farms; pure text matching follows intent but is trivially spammable with keyword stuffing. Blending relevance, authority, freshness, and an explicit spam/quality score defends result quality at the cost of maintaining several signal pipelines.",
+          "chosen": "The design blends text relevance with precomputed authority, freshness, and a per-doc spam/quality demotion, because no single signal is both intent-aware and abuse-resistant."
+        }
       ]
     },
     {
@@ -2711,9 +2730,6 @@
         ]
       },
       "decisionPrompt": "What fraction of queries are repeats, and how does that change your capacity plan?",
-      "patterns": [
-        "Result + doc caching"
-      ],
       "probeLinks": [
         "tail-at-scale",
         "elasticsearch-docs",
@@ -2730,6 +2746,14 @@
           "whyItMatters": "Repeated queries skip the entire scatter-gather + rank path.",
           "example": "Top trending queries served from cache with a short TTL.",
           "group": "Caching for QPS and Latency"
+        },
+        {
+          "term": "Result + doc caching",
+          "description": "Cache popular query results and hot document snippets.",
+          "whyItMatters": "Skewed query/document popularity (a few queries dominate).",
+          "steps": [
+            "cache"
+          ]
         }
       ],
       "recap": {
@@ -2737,7 +2761,14 @@
         "after": "Popular queries and hot docs served from cache.",
         "newRisk": "Stale results vs freshness; the index must keep updating as the crawl finds new content."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/08-cache.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-cache.jpg",
+      "tradeoffs": [
+        {
+          "name": "Cache staleness vs. fleet size",
+          "description": "Serving popular queries from a result cache turns ~100K QPS into only ~30-40K QPS that actually scatter to shards — the difference between an affordable fleet and an impossible one — but cached results go stale relative to the live index. Short TTLs for news-like queries and invalidation on new segment publishes bound the staleness at the cost of a lower hit rate on fresh topics.",
+          "chosen": "The design leans on a ~60-70% hit-rate result cache with freshness-tiered TTLs, accepting bounded staleness as the price of an affordable serving fleet."
+        }
+      ]
     },
     {
       "id": "freshness",
@@ -2889,6 +2920,18 @@
           "scenario": "A new ranker model or quality-score recompute regresses result quality after rollout.",
           "expectedBehavior": "The ranker version is a tracked control-plane value; quality metrics (spam demotion rate, click/feedback indicators if in scope) flag the regression and the serving fleet is rolled back to the previous model version, decoupled from segment generation so ranking can revert without re-publishing the index.",
           "mitigation": "Versioned ranker models with canary/shadow evaluation before full rollout, quality-metric alerts, and one-flip rollback to the last good model version; flush/repopulate result cache on the revert."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. read amplification",
+          "description": "A periodic full rebuild produces one clean, optimally merged index with consistent authority scores, but new content is unsearchable until the next multi-hour, petabyte-scale build — failing the searchable-within-minutes goal. Incremental immutable segments make a breaking-news article searchable minutes after crawl, but many small segments slow queries until background merging (which competes with serving for CPU/IO) compacts them.",
+          "chosen": "The design ships small immutable segments continuously with background merging and generation-based publish markers, taking read amplification and merge overhead in exchange for minutes-level freshness."
+        },
+        {
+          "name": "Append-only segments vs. real delete semantics",
+          "description": "Immutable segments simplify indexing and serving, but updates, deletes, redirects, and takedowns cannot be edits in place — they become new versions plus tombstones the serving path must consult, adding lookup overhead and bookkeeping until merges physically drop dead documents.",
+          "chosen": "The design keeps segments immutable and expresses all changes as new versions plus tombstones behind a generation flip, preserving atomic, validated visibility at the cost of tombstone checks at read time."
         }
       ]
     }

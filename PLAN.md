@@ -214,20 +214,17 @@ All fields below are optional except `highLevelArchitecture` and either
     }
   ],
 
-  // Reusable design patterns this case teaches. Renders as an Overview entry
-  // ("Patterns"), grouped by `group`; `steps` cross-links each pattern to
-  // where it appears.
-  "patterns": [
-    { "name": "Cache-aside", "group": "Caching and read path", "what": "...", "whenToUse": "...", "steps": ["cache"],
-      "icon": "assets/icons/patterns/cache-aside.png" }
-  ],
+  // NOTE: the old dataset-level "patterns" entry was removed. Pattern content
+  // now lives in step "concepts" (vocabulary) and step "tradeoffs" (decisions);
+  // the Overview "Trade-offs" entry is derived from step.tradeoffs the same way
+  // "Concepts" is derived from step.concepts.
 
   // Standalone pattern reference. Renders as a "Pattern Catalog" entry, grouped
   // by `category`. A dataset with patternCatalog[] and NO steps[] is valid — it
   // is a catalog dataset, not a walkthrough (see data/book/patterns).
-  //   - `aliases[]`: case-study tag synonyms that map to this canonical name
+  //   - `aliases[]`: case-study synonyms that map to this canonical name
   //     (rendered as "Also called" chips); makes the catalog name the canonical
-  //     vocabulary so case `step.patterns[]` tags can be linked back to it.
+  //     vocabulary for concept/trade-off names used by the case studies.
   //   - `pairsWith[]` / `commonlyConfusedWith[]`: other catalog pattern names,
   //     rendered as relationship chips ("Pairs with" / "Confused with").
   //   - `usedBy[]`: each entry is either a free-text case name (string) OR an
@@ -292,7 +289,16 @@ All fields below are optional except `highLevelArchitecture` and either
         }
       ],
       "whyNow": ["Why this step belongs here in the build order."],
-      "patterns": ["Cache-aside", "TTL expiry"],   // optional; reusable-pattern tags (chips), names from dataset-level patterns[]
+      "tradeoffs": [                                // optional; the tensions this step's decision balances.
+        // Renders as "Trade-offs" cards on the step, and feeds the derived
+        // Overview "Trade-offs" entry (deduped across steps, grouped by the
+        // step's title unless `group` is set, linked back to its steps).
+        { "name": "Latency vs. freshness",
+          "description": "Serving from cache is fast but risks stale URLs; reading through keeps data fresh at the cost of DB load.",
+          "chosen": "Cache-aside with short TTLs — hot reads stay fast and staleness is bounded.",
+          "group": "Caching and read path",         // optional; overview grouping override
+          "icon": "assets/icons/tradeoffs/cache.png" } // optional; falls back to the shared decision icon
+      ],
       "probeLinks": ["youtube-dnn"],                // optional; IDs from toProbeFurther.links[], rendered at step end
       "traps": [                                    // optional; common mistakes at this step
         { "trap": "The mistake", "why": "Why it's wrong", "instead": "The better move" }
@@ -424,11 +430,14 @@ All fields below are optional except `highLevelArchitecture` and either
 }
 ```
 
-The fields above (`patterns`, `patternCatalog`, `step.concepts`, `step.patterns`, `step.traps`,
+The fields above (`patternCatalog`, `step.concepts`, `step.tradeoffs`, `step.traps`,
 `step.probeLinks`, `interviewScript`, `levelVariants`, `toProbeFurther`) are the **book differentiators** — all
-optional, so example datasets render unchanged. `patterns` and
-deduped `step.concepts` are grouped by their optional `group` on the Overview
-pages; step pages still render the local concept and pattern cards flat.
+optional, so example datasets render unchanged. Deduped `step.concepts` and
+`step.tradeoffs` are grouped by their optional `group` (defaulting to the
+step's title) on the Overview "Concepts" and "Trade-offs" pages; step pages
+still render the local concept and trade-off cards flat. Dataset-level
+`patterns` and `step.patterns` were removed and are rejected by the validator —
+fold that content into `step.concepts` / `step.tradeoffs`.
 `step.traps` are exercised in the canonical `url-shortener` example;
 `data/book/payment-system` uses all of them.
 Generated visual assets are optional too: absent `assets`/`icon`, `aiVisual`,

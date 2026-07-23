@@ -1698,62 +1698,6 @@
       "makesIrrelevant": "Managed telemetry with alert rules removes custom health scripts, but not domain-specific fraud dashboards and drift monitors."
     }
   ],
-  "patterns": [
-    {
-      "name": "Inline rules + ML decisioning",
-      "what": "Combine fast deterministic rules with an ML score to a single decision synchronously.",
-      "whenToUse": "Real-time risk decisions on a user action.",
-      "steps": [
-        "decision"
-      ],
-      "group": "Inline Decisioning: Rules + ML"
-    },
-    {
-      "name": "Streaming velocity features",
-      "what": "Compute counters (events per entity per window) in near-real-time from the event stream.",
-      "whenToUse": "Catching bursts/abuse that need fresh aggregates.",
-      "steps": [
-        "features"
-      ],
-      "group": "Streaming Velocity Features"
-    },
-    {
-      "name": "Entity link graph",
-      "what": "Link users/devices/cards/IPs to surface rings and shared-identity abuse.",
-      "whenToUse": "Coordinated fraud that single-entity signals miss.",
-      "steps": [
-        "graph"
-      ],
-      "group": "Entity Graph for Coordinated Abuse"
-    },
-    {
-      "name": "Sync-vs-async decisioning",
-      "what": "Block obvious fraud inline; flag ambiguous cases for async review or step-up challenge.",
-      "whenToUse": "Balancing latency, recall, and false positives.",
-      "steps": [
-        "review"
-      ],
-      "group": "Sync vs Async: Block, Challenge, Review"
-    },
-    {
-      "name": "Human-in-the-loop labeling",
-      "what": "Route ambiguous cases to analysts whose labels become training data.",
-      "whenToUse": "When automated confidence is low and labels are scarce.",
-      "steps": [
-        "review"
-      ],
-      "group": "Sync vs Async: Block, Challenge, Review"
-    },
-    {
-      "name": "Feedback loop / retraining",
-      "what": "Turn confirmed outcomes (chargebacks, reviews) into labels to retrain models.",
-      "whenToUse": "Adapting to evolving adversaries.",
-      "steps": [
-        "feedback"
-      ],
-      "group": "The Feedback Loop: Labels and Retraining"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1805,7 +1749,14 @@
           "instead": "Give every action a stable id + idempotency key from the start and persist an audit record of each decision — even the naive baseline should be replay-safe and explainable."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Explainable rules vs. fraud coverage",
+          "description": "A few hard-coded checks — blocklist, amount over $X, banned country — are cheap, fast, and fully explainable, but they only catch fraud someone already wrote a rule for. A ring of fresh accounts that each look clean sails through, fraudsters sit just under the threshold, and because the rules are hard-coded in the app, reacting to a new attack means a code deploy.",
+          "chosen": "The design keeps the naive inline if-rules only as the baseline whose blind spots — novel fraud, coordinated rings, crude cutoffs, slow reaction — motivate the risk engine."
+        }
+      ]
     },
     {
       "id": "decision",
@@ -1952,6 +1903,14 @@
           "whyItMatters": "Retries don't double-count or create conflicting decisions, and a later dispute can be replayed against exactly what the engine saw.",
           "example": "Same idempotencyKey -> original decision returned; record shows policy p_2026_06, model m_42.",
           "group": "Inline Decisioning: Rules + ML"
+        },
+        {
+          "term": "Inline rules + ML decisioning",
+          "description": "Combine fast deterministic rules with an ML score to a single decision synchronously.",
+          "whyItMatters": "Real-time risk decisions on a user action.",
+          "steps": [
+            "decision"
+          ]
         }
       ],
       "probeLinks": [
@@ -1960,9 +1919,6 @@
         "uber-michelangelo",
         "google-rules-ml",
         "feast-docs"
-      ],
-      "patterns": [
-        "Inline rules + ML decisioning"
       ],
       "whyNow": [
         "The inline decision is the product; framing it as rules + ML with an explainable output is the core architecture."
@@ -2072,6 +2028,18 @@
             "Rules",
             "Model"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Instant deterministic levers vs. learned generalization",
+          "description": "A rules-only engine is explainable, auditable, and instantly updatable, but misses the fuzzy and novel patterns no static condition expresses; a model-only engine catches those but offers no immediate lever for a brand-new attack (retrain and redeploy) and leaves no deterministic fallback if scoring fails. Running both covers each other's gaps at the cost of two engines to tune and a policy for who wins when they disagree.",
+          "chosen": "The design combines them: hard rules short-circuit known-bad instantly, and the model score plus rule signals map to the decision for everything else."
+        },
+        {
+          "name": "Decision richness vs. inline latency budget",
+          "description": "Every component added to the inline path — rule evaluation, feature reads, model scoring, score-to-decision policy — buys accuracy but spends part of a tens-of-milliseconds budget on an action the user is waiting on. Stripping the path keeps checkout fast but throws away signal exactly where money is decided.",
+          "chosen": "The design accepts more moving parts inline but keeps each cheap, letting hard rules short-circuit so the full pipeline only runs when the cheap checks don't decide."
         }
       ]
     },
@@ -2258,9 +2226,6 @@
         "uber-realtime-data",
         "scarff-streaming-fraud"
       ],
-      "patterns": [
-        "Streaming velocity features"
-      ],
       "whyNow": [
         "Fresh behavioral features are what make fraud detection work; the stream->aggregate->feature-store path is the standard mechanism."
       ],
@@ -2282,7 +2247,19 @@
         "before": "Decision with weak inputs.",
         "after": "Fresh, dedup'd velocity/reputation features feeding rules + model.",
         "newRisk": "Sophisticated fraud is coordinated across many entities — single-entity features miss rings."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Feature freshness vs. pipeline complexity",
+          "description": "Batch-recomputed features are simple, cheap jobs over the event log, but hours-stale counters miss exactly the burst fraud that matters — a card cycling 20 merchants in 5 minutes looks clean until the next batch lands, and adversaries exploit the lag. A stateful streaming aggregator keeps velocity counters seconds-fresh, but the pipeline must be fault-tolerant, replayable, and tolerant of late or out-of-order events.",
+          "chosen": "The design runs a streaming aggregator into a low-latency feature store, paying the operational cost because seconds-fresh velocity signal is the core of behavioral detection."
+        },
+        {
+          "name": "Precomputation vs. exactness on demand",
+          "description": "Computing counters live from recent events at decision time is always exactly fresh with no store to keep in sync, but scanning the event log per request cannot fit the tens-of-ms inline budget and hammers the event store on every checkout and login. Precomputed counters read in single-digit milliseconds but can be momentarily skewed by late events.",
+          "chosen": "The design precomputes into the feature store and reads at decision time, trading momentary skew from late events for a latency the inline path can afford."
+        }
+      ]
     },
     {
       "id": "graph",
@@ -2330,9 +2307,6 @@
         "nvidia-gnn-fraud",
         "linkedin-abusive-sequences"
       ],
-      "patterns": [
-        "Entity link graph"
-      ],
       "whyNow": [
         "Graph features catch organized fraud that per-event scoring misses; it's the depth that separates a strong fraud answer."
       ],
@@ -2341,7 +2315,14 @@
         "after": "Ring/cluster detection via the entity graph.",
         "newRisk": "Not every case is clear-cut — ambiguous ones need a path beyond instant allow/block."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/04-graph.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-graph.jpg",
+      "tradeoffs": [
+        {
+          "name": "Ring detection vs. inline cheapness",
+          "description": "Traversing the entity link graph at decision time would use the freshest connections to spot a new account tied to a fraud cluster, but graph traversal cannot fit the inline budget. Materializing graph features — cluster size, shared-device count, links to known-bad entities — into the feature store keeps the decision path to sub-5ms key reads, at the cost of features that lag slightly behind edge writes.",
+          "chosen": "The design writes edges near-real-time and precomputes graph features into the same feature store the model reads, keeping traversal strictly off the inline path."
+        }
+      ]
     },
     {
       "id": "review",
@@ -2485,6 +2466,22 @@
           "whyItMatters": "Avoids blocking good users while still catching fraud and gathering labels.",
           "example": "Score>0.9 block; 0.5-0.9 challenge; flagged -> review queue.",
           "group": "Sync vs Async: Block, Challenge, Review"
+        },
+        {
+          "term": "Sync-vs-async decisioning",
+          "description": "Block obvious fraud inline; flag ambiguous cases for async review or step-up challenge.",
+          "whyItMatters": "Balancing latency, recall, and false positives.",
+          "steps": [
+            "review"
+          ]
+        },
+        {
+          "term": "Human-in-the-loop labeling",
+          "description": "Route ambiguous cases to analysts whose labels become training data.",
+          "whyItMatters": "When automated confidence is low and labels are scarce.",
+          "steps": [
+            "review"
+          ]
         }
       ],
       "probeLinks": [
@@ -2493,10 +2490,6 @@
         "stripe-radar-rules",
         "temporal-docs",
         "linkedin-abuse-scale"
-      ],
-      "patterns": [
-        "Sync-vs-async decisioning",
-        "Human-in-the-loop labeling"
       ],
       "whyNow": [
         "The decision-type split is the practical heart of a risk engine; conflating everything into block/allow causes false positives and missed fraud."
@@ -2589,6 +2582,18 @@
             "Analyst"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Customer friction vs. fraud loss",
+          "description": "A single inline allow/block threshold forces a guess on every borderline score: block and you turn away real customers, allow and fraud completes. Adding a step-up challenge lets a legitimate user in the uncertain middle prove themselves, and async review resolves the truly ambiguous — but challenges still cost some conversions and the queue must be staffed.",
+          "chosen": "The design splits decisions into block, challenge, and review by confidence, hard-blocking only high-confidence fraud so borderline customers get a path through."
+        },
+        {
+          "name": "Instant verdicts vs. label generation",
+          "description": "Pure inline decisions need no humans and give every transaction an instant answer, but they produce no ground truth beyond slow chargebacks, starving retraining. Routing ambiguous cases through an analyst-worked case state machine — evidence snapshot, priority, SLA, resolution — is operationally heavy, but each resolution emits a high-quality label the model loop needs.",
+          "chosen": "The design runs the review queue as a full case workflow, treating analyst resolutions as both customer outcomes and the premium label source for retraining."
+        }
       ]
     },
     {
@@ -2641,7 +2646,14 @@
         "after": "Calibrated block/challenge/review tiers tuned to per-action costs.",
         "newRisk": "Thresholds drift as fraud adapts — they need monitoring and the feedback loop."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-decision-tiers.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-decision-tiers.jpg",
+      "tradeoffs": [
+        {
+          "name": "False positives vs. false negatives",
+          "description": "The thresholds between allow, challenge, review, and block encode a business cost matrix that is rarely symmetric: a blocked good customer costs revenue and trust, a missed fraud costs the loss — and the balance differs between a $5 charge and a $5,000 one. Tighten cutoffs and friction rises; loosen them and losses rise.",
+          "chosen": "The design calibrates the score and sets per-action thresholds from the explicit cost matrix, treating the cutoffs as tuned, living policy rather than fixed constants."
+        }
+      ]
     },
     {
       "id": "feedback",
@@ -2689,6 +2701,14 @@
           "whyItMatters": "Safe rollout/rollback prevents a bad model from going wide, and trust weighting blunts noisy or poisoned labels.",
           "example": "m_43 canaried before champion; user-report labels weighted below chargebacks.",
           "group": "The Feedback Loop: Labels and Retraining"
+        },
+        {
+          "term": "Feedback loop / retraining",
+          "description": "Turn confirmed outcomes (chargebacks, reviews) into labels to retrain models.",
+          "whyItMatters": "Adapting to evolving adversaries.",
+          "steps": [
+            "feedback"
+          ]
         }
       ],
       "probeLinks": [
@@ -2700,9 +2720,6 @@
         "credit-card-fraud-survey",
         "scarff-streaming-fraud"
       ],
-      "patterns": [
-        "Feedback loop / retraining"
-      ],
       "whyNow": [
         "The feedback loop is what keeps the engine ahead of adversaries; point-in-time labeling is the subtle ML-systems correctness point."
       ],
@@ -2711,7 +2728,19 @@
         "after": "Outcomes -> point-in-time labels -> retrained models; rules updated instantly.",
         "newRisk": "Inline scoring is on the critical path — it must be fast and fail safe at high volume."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-feedback.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-feedback.jpg",
+      "tradeoffs": [
+        {
+          "name": "Label authority vs. label latency",
+          "description": "Chargebacks are authoritative ground truth but arrive weeks late; analyst labels are high-confidence but few; user reports are plentiful, fast, and noisy — and potentially adversarial. Training only on authoritative labels means learning weeks behind the attack; ingesting everything equally lets noise and manipulation poison the model.",
+          "chosen": "The design ingests all label sources but tags each with a source-trust level so the trainer can weight or quarantine low-trust labels."
+        },
+        {
+          "name": "Point-in-time snapshots vs. storage economy",
+          "description": "Persisting the full feature vector and score for every decision costs storage on every single action, most of which will never get a label. But when a chargeback lands three weeks later, training against today's feature values instead of decision-time values misaligns label and features and corrupts the model — the snapshot is what makes delayed labels usable.",
+          "chosen": "The design captures a per-decision feature snapshot so late-arriving labels join to the features as they were at decision time."
+        }
+      ]
     },
     {
       "id": "serving",
@@ -2874,7 +2903,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/08-serving.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-serving.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fail open vs. fail closed",
+          "description": "When the model or feature store times out during checkout, blocking the host action protects against fraud but turns an infrastructure blip into lost revenue and angry customers; allowing everything through keeps checkout alive but waves high-risk actions past unchecked. A single universal policy gets one of these badly wrong for some action.",
+          "chosen": "The design fails safe per action and risk level — degrading to rules-only or cached verdicts rather than one blanket fail-open — so a risk-engine outage never takes down checkout wholesale."
+        },
+        {
+          "name": "Model richness vs. tail latency",
+          "description": "A heavier model and more features buy accuracy, but scoring sits inline on checkout, so every addition eats the explicitly sliced p95 ~35ms / p99 ~50ms budget — rules ~5ms, feature reads ~10ms, model ~15ms, graph features ~5ms. Bounding the model and caching repeated entity lookups protect the tail at the cost of some modeling headroom.",
+          "chosen": "The design fixes a per-component latency budget and keeps heavy computation offline, alerting on fallback rate and feature staleness rather than only on errors."
+        }
+      ]
     }
   ],
   "finalDesign": {

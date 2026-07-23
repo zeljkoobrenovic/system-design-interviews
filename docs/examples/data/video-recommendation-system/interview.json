@@ -393,6 +393,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Dense labels vs. long-term satisfaction",
+          "description": "Clicks are dense, immediate, and easy to log, so a CTR objective trains fast and evaluates cleanly — but it rewards clickbait that wins the click and disappoints the viewer, degrading retention while dashboards look good. Satisfaction signals like likes, surveys, and low skip rates align with what the product actually wants, yet they are sparse, delayed, and harder to learn.",
+          "chosen": "The design optimizes a blended long-term satisfaction objective, accepting sparser labels and multi-objective tuning to protect retention from clickbait."
+        },
+        {
+          "name": "Single target vs. multi-objective tuning",
+          "description": "A single target like pure watch time is simple to optimize and denser than surveys, but it over-favors long videos and autoplay loops and ignores explicit dissatisfaction like dislikes. Combining watch behavior, explicit feedback, and anti-clickbait guardrails captures value better, at the cost of subjective weighting that needs ongoing tuning and is harder to attribute.",
+          "chosen": "The design accepts the tuning burden of a multi-signal objective rather than letting one gameable metric define success."
+        }
       ]
     },
     {
@@ -455,7 +467,14 @@
           "UserFeatures",
           "VideoFeatures"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Signal completeness vs. pipeline cost",
+          "description": "Logging impressions as well as outcomes, and building user, video, creator, language, and context features, gives training the negatives and covariates it needs for honest models — but every extra logged surface and feature family is storage, joins, and pipelines to keep consistent between training and serving. Logging only positive engagements is far cheaper yet biases the model toward what was already shown.",
+          "chosen": "The design logs full impression-and-outcome data with rich feature groups, paying the data-engineering cost to make later training and serving trustworthy."
+        }
+      ]
     },
     {
       "id": "candidate-generation-collaborative-filtering",
@@ -655,6 +674,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Latent taste vs. cold start",
+          "description": "Collaborative filtering surfaces videos liked by similar users and captures cross-topic taste no content feature expresses, cheaply precomputed as nearest-neighbor lookups — but brand-new users and videos have no interaction history and popular items crowd out the long tail. Content-based retrieval reaches new videos on day one, yet over-specializes into a filter bubble of near-identical content.",
+          "chosen": "The design leads with collaborative-filtering retrieval for its serendipitous quality, deferring fresh-content coverage to a dedicated exploration path later."
+        },
+        {
+          "name": "Retrieval quality vs. infrastructure weight",
+          "description": "A two-tower model blends collaborative and content signals into one embedding space and retrieves from 10B videos in milliseconds, mitigating both cold start and filter bubbles — but it means training and serving two towers, maintaining an ANN index, and refreshing embeddings as tastes drift. Simple co-engagement lookups are far lighter to run and easier to debug.",
+          "chosen": "The design starts with the mature, cheap collaborative approach rather than committing to two-tower ANN infrastructure up front."
+        }
       ]
     },
     {
@@ -823,6 +854,18 @@
               "Ranker"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Model capacity vs. interpretability and cost",
+          "description": "A deep neural ranker learns nonlinear interactions over high-cardinality embeddings and can predict watch time, likes, and skips jointly — but it needs accelerator serving, is heavier to retrain and roll out, and a bad ranking is hard to debug. Gradient-boosted trees are cheap on CPU and interpretable via feature importances, yet handle embeddings and multi-task objectives poorly, capping personalization depth.",
+          "chosen": "The design uses a deep neural ranker because embedding-heavy personalization and multi-task prediction are central to the satisfaction objective, accepting the serving and debugging cost."
+        },
+        {
+          "name": "Uniform scoring vs. staged compute",
+          "description": "Scoring every candidate with one model keeps a single training and serving path with no cross-stage skew, but at large candidate counts the per-request compute strains the 200 ms budget. A cheap-then-heavy two-stage cascade fits the budget and spends the rich model where it matters, yet the cheap stage can prune a great candidate before the heavy stage ever sees it and two models must stay consistent.",
+          "chosen": "The design scores candidates with a single deep ranker over a bounded candidate set rather than maintaining a two-stage cascade."
         }
       ]
     },
@@ -1091,6 +1134,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. latency budget",
+          "description": "Computing retrieval and ranking fully online would always use the freshest signals and react to just-now actions, but retrieving from 10B videos and ranking per request blows the 200 ms budget and puts traffic spikes on the most expensive path. Fully precomputed per-user lists trivially meet latency but are stale until the next batch run and ignore live context like device and time of day.",
+          "chosen": "The design precomputes candidates and embeddings offline and ranks online with fresh context, splitting the work so heavy retrieval is off the hot path while ranking still sees live signals."
+        },
+        {
+          "name": "One serving path vs. two systems in sync",
+          "description": "A single fully online path has no batch layer to operate, no caches to invalidate, and no staleness — one pipeline to reason about. The hybrid buys its latency headroom by running a batch precompute system alongside online serving, which means cache warm-up, invalidation, and keeping two systems consistent.",
+          "chosen": "The design accepts operating batch and online systems together as the price of meeting latency with personalized, reasonably fresh results."
+        }
       ]
     },
     {
@@ -1155,7 +1210,14 @@
           "FeatureStore",
           "Cache"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Feature freshness vs. serving cost",
+          "description": "Nearline updates for recent behavior and online caches for hot users make the ranker see near-current signals, but every tier of freshness — batch, nearline, online — is another pipeline and cache to run, and unbounded candidate counts would still blow the budget. Serving purely from offline batch features is cheap and simple yet blind to what the user did minutes ago.",
+          "chosen": "The design tiers features by volatility — batch for stable signals, nearline for recent behavior, caches for hot users — and bounds candidate counts so the request never does expensive computation."
+        }
+      ]
     },
     {
       "id": "cold-start-and-exploration",
@@ -1334,6 +1396,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Safe defaults vs. fast learning",
+          "description": "Bootstrapping new users with regional and trending popular videos is safe, low risk, and reuses existing sources, but the experience is generically bland and gathers no targeted feedback to learn the user quickly. Bandit exploration deliberately spends impressions on uncertain items to learn their value with minimal regret, yet it risks short-term engagement dips and needs guardrails, tuning, and careful attribution.",
+          "chosen": "The design bootstraps from content and popularity, preferring a safe unpersonalized start over the complexity of a bandit while interaction data accumulates."
+        },
+        {
+          "name": "Explicit preferences vs. onboarding friction",
+          "description": "Asking new users to pick topics and creators yields an instant personalization signal from minute one, but it adds friction some users skip, stated interests often differ from actual watch behavior, and it does nothing for new-video cold start. Passive bootstrapping avoids the friction at the cost of a slower path to personalization.",
+          "chosen": "The design leans on trend and locale signals rather than a mandatory survey, keeping onboarding frictionless."
+        }
       ]
     },
     {
@@ -1396,7 +1470,14 @@
           "Experiment",
           "Monitor"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Offline confidence vs. online truth",
+          "description": "Offline metrics and replay evaluation are cheap, fast, and risk-free ways to filter bad models, but they cannot capture how real users respond to a new ranking — only online experiments reveal true engagement, satisfaction, and diversity effects, and those expose live traffic to an unproven model. Skipping straight to A/B tests learns the truth faster but wastes user experience on models offline checks would have rejected.",
+          "chosen": "The design gates launches through offline metrics and replay first, then validates with controlled online experiments and continuous drift monitoring before full rollout."
+        }
+      ]
     }
   ],
   "satisfies": {

@@ -997,99 +997,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Persistent connection (WebSocket)",
-      "what": "Keep a long-lived socket per device so the server can push messages instantly.",
-      "whenToUse": "Real-time delivery where polling latency/overhead is unacceptable.",
-      "steps": [
-        "connections"
-      ],
-      "group": "Persistent Connections via WebSocket Gateways"
-    },
-    {
-      "name": "Connection routing registry",
-      "what": "A fast lookup of device -> gateway so any service can reach an online user's socket.",
-      "whenToUse": "When millions of stateful connections are spread across many gateway nodes.",
-      "steps": [
-        "routing"
-      ],
-      "group": "Route a Message to the Recipient's Connection"
-    },
-    {
-      "name": "Offline message queue",
-      "what": "Persist undelivered messages per recipient and drain on reconnect.",
-      "whenToUse": "Recipients are frequently offline but must not miss messages.",
-      "steps": [
-        "offline"
-      ],
-      "group": "Offline Delivery and History Sync"
-    },
-    {
-      "name": "Idempotent message id",
-      "what": "Client-generated id dedups retries so a flaky network doesn't double-send.",
-      "whenToUse": "At-least-once delivery over unreliable mobile networks.",
-      "steps": [
-        "delivery"
-      ],
-      "group": "Reliable, Ordered, Idempotent Delivery"
-    },
-    {
-      "name": "Fanout-on-write (groups)",
-      "what": "Expand a group message to each member at send time.",
-      "whenToUse": "Group sizes are bounded; per-member delivery state is needed.",
-      "steps": [
-        "groups"
-      ],
-      "group": "Group Messaging and Fanout"
-    },
-    {
-      "name": "Per-conversation ordering",
-      "what": "Assign a monotonic sequence per conversation so messages display in order.",
-      "whenToUse": "Chat where out-of-order display is confusing.",
-      "steps": [
-        "delivery"
-      ],
-      "group": "Reliable, Ordered, Idempotent Delivery"
-    },
-    {
-      "name": "Per-device sync cursor",
-      "what": "Each device records the highest per-conversation seq it has applied and asks only for newer messages on reconnect.",
-      "whenToUse": "Multi-device sync where push, queue drain, and history sync all read one durable log and must not double-deliver.",
-      "steps": [
-        "offline"
-      ],
-      "group": "Offline Delivery and History Sync"
-    },
-    {
-      "name": "Membership-version snapshot",
-      "what": "Pin a group send to the membership version at send time so the recipient set is deterministic.",
-      "whenToUse": "Group fanout where membership can change concurrently with sends.",
-      "steps": [
-        "groups"
-      ],
-      "group": "Group Messaging and Fanout"
-    },
-    {
-      "name": "Session lease (heartbeat TTL)",
-      "what": "Hold the device->gateway mapping under a TTL refreshed by heartbeats, so dead sessions self-expire.",
-      "whenToUse": "Large stateful connection fleets where gateways can crash and presence must stay accurate.",
-      "steps": [
-        "routing",
-        "scale-presence"
-      ],
-      "group": "Route a Message to the Recipient's Connection"
-    },
-    {
-      "name": "Jittered reconnect / admission control",
-      "what": "Spread mass reconnects with randomized backoff and admit connections gradually to avoid thundering herds.",
-      "whenToUse": "When a gateway or region loss drops millions of sockets at once.",
-      "steps": [
-        "scale-presence"
-      ],
-      "group": "Presence, Media, and Gateway Resilience"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1156,7 +1063,14 @@
           "instead": "Hold a persistent connection per device so the server pushes messages the instant they arrive."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. latency and load",
+          "description": "Polling over plain HTTP is correct and trivial to build — a POST to send, a periodic GET to receive — but a message waits unseen until the next poll, and 300M clients polling every 3 seconds means 100M mostly-empty requests per second hitting the database. Shortening the interval improves latency only by multiplying the waste.",
+          "chosen": "The design uses polling only as the baseline that quantifies why the system needs server push: the poll interval bounds latency, and the poll volume dwarfs actual message traffic."
+        }
+      ]
     },
     {
       "id": "connections",
@@ -1316,6 +1230,14 @@
           "whyItMatters": "Enables server push with low latency and no polling overhead.",
           "example": "One gateway holds 1M sockets; the cluster holds hundreds of millions.",
           "group": "Persistent Connections via WebSocket Gateways"
+        },
+        {
+          "term": "Persistent connection (WebSocket)",
+          "description": "Keep a long-lived socket per device so the server can push messages instantly.",
+          "whyItMatters": "Real-time delivery where polling latency/overhead is unacceptable.",
+          "steps": [
+            "connections"
+          ]
         }
       ],
       "probeLinks": [
@@ -1324,9 +1246,6 @@
         "slack-realtime",
         "mqtt-v5",
         "xmpp-stream-management"
-      ],
-      "patterns": [
-        "Persistent connection (WebSocket)"
       ],
       "whyNow": [
         "The connection model is the foundation — everything about routing, presence, and delivery depends on where the live socket lives."
@@ -1341,6 +1260,18 @@
           "trap": "Putting delivery logic in the gateway.",
           "why": "Stateful gateways become hard to scale and deploy; a restart drops connections AND logic.",
           "instead": "Keep gateways thin; route to a stateless chat service for delivery."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Push latency vs. server statefulness",
+          "description": "A long-lived WebSocket lets the server push a message the instant it arrives and carries typing, receipts, and presence bidirectionally over one socket — but each gateway now holds ~1M stateful, sticky connections, complicating load balancing, node loss, and rolling deploys, which must drain rather than drop sockets. Periodic polling keeps the server stateless and any node answerable, at the cost of multi-second latency and enormous wasted load.",
+          "chosen": "The design picks persistent WebSockets and pays the statefulness tax with connection draining, jittered reconnects, and lease-based session tracking."
+        },
+        {
+          "name": "Compatibility vs. efficiency",
+          "description": "HTTP long-polling works everywhere HTTP does — friendly to proxies and old clients, degrading to normal request/response — but every delivered message costs a full request cycle plus a re-poll, and the next push waits for the client to re-establish the poll. One stable socket eliminates that churn but requires WebSocket support end to end.",
+          "chosen": "The design standardizes on WebSockets for efficiency at hundreds of millions of connections rather than optimizing for the shrinking set of clients that cannot hold one."
         }
       ]
     },
@@ -1465,10 +1396,6 @@
         }
       ],
       "decisionPrompt": "A user has three devices on three different gateways. How does a message reach all of them?",
-      "patterns": [
-        "Connection routing registry",
-        "Session lease (heartbeat TTL)"
-      ],
       "probeLinks": [
         "slack-realtime",
         "messenger-storage",
@@ -1493,6 +1420,14 @@
           "whyItMatters": "A crashed gateway's sessions vanish automatically — no separate cleanup, and routing never targets a dead socket for long.",
           "example": "90s lease; missed heartbeats past TTL ⇒ entry expires ⇒ user shown offline.",
           "group": "Route a Message to the Recipient's Connection"
+        },
+        {
+          "term": "Connection routing registry",
+          "description": "A fast lookup of device -> gateway so any service can reach an online user's socket.",
+          "whyItMatters": "When millions of stateful connections are spread across many gateway nodes.",
+          "steps": [
+            "routing"
+          ]
         }
       ],
       "recap": {
@@ -1510,6 +1445,13 @@
           "trap": "Trusting a registry hit and dropping the message if the push misses.",
           "why": "Sessions go stale between disconnect and lease expiry, so a 'present' entry can point at a dead socket.",
           "instead": "On a missed push, mark the session stale and fall back to enqueue + push wake."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Targeted lookup vs. broker fanout",
+          "description": "A session registry lets the chat service push precisely to the gateways holding a user's devices — no wasted fanout — but the registry sits on the hot path, must absorb connect/disconnect churn, and a stale entry causes a delivery miss that must fall back to the offline path. Per-user pub/sub topics remove the lookup and fan out naturally to all devices, but hundreds of millions of topics strain broker subscription state and make the broker a critical high-fanout dependency.",
+          "chosen": "The design routes via a lease-based session registry with TTL-expiring entries, treating stale-entry misses as a handled case that repairs the registry and falls back to the durable inbox."
         }
       ]
     },
@@ -1557,6 +1499,22 @@
           "whyItMatters": "Guarantees consistent ordering across devices regardless of arrival timing.",
           "example": "Devices sort by sequence, not by local receive time.",
           "group": "Reliable, Ordered, Idempotent Delivery"
+        },
+        {
+          "term": "Idempotent message id",
+          "description": "Client-generated id dedups retries so a flaky network doesn't double-send.",
+          "whyItMatters": "At-least-once delivery over unreliable mobile networks.",
+          "steps": [
+            "delivery"
+          ]
+        },
+        {
+          "term": "Per-conversation ordering",
+          "description": "Assign a monotonic sequence per conversation so messages display in order.",
+          "whyItMatters": "Chat where out-of-order display is confusing.",
+          "steps": [
+            "delivery"
+          ]
         }
       ],
       "probeLinks": [
@@ -1567,10 +1525,6 @@
         "cassandra-paper",
         "discord-messages",
         "signal-sesame"
-      ],
-      "patterns": [
-        "Idempotent message id",
-        "Per-conversation ordering"
       ],
       "whyNow": [
         "Reliability, ordering, and dedup are the correctness heart of chat; getting them explicit is the senior signal."
@@ -1759,7 +1713,24 @@
           "instead": "Make recipient apply idempotent: order by (conversationId, seq) and drop anything at or below the device cursor."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-delivery.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-delivery.jpg",
+      "tradeoffs": [
+        {
+          "name": "Ack latency vs. durability",
+          "description": "Acking a send before persisting would be faster, but a crash could then lose a message the sender believes was delivered; persisting to the conversation shard's log before acking puts storage latency on the send path but is exactly what makes 'never lost' true across crashes.",
+          "chosen": "The design persists durably and assigns the conversation sequence number before acking the sender, accepting the write on the hot path as the cost of the durability guarantee."
+        },
+        {
+          "name": "Exactly-once transport vs. idempotent ends",
+          "description": "Chasing exactly-once delivery in the transport itself is impossible over lossy networks with retries; accepting at-least-once transport is simple and robust but means duplicates will occur, so both ends must dedup — the send on the full (conversationId, senderId, senderDeviceId, clientMsgId) scope and the receive on server ids.",
+          "chosen": "The design embraces at-least-once transport and buys effective exactly-once semantics with idempotency at both ends, deduping sends on the full client-message scope."
+        },
+        {
+          "name": "Global ordering vs. per-conversation ordering",
+          "description": "Total order across all messages would require global coordination that cannot scale; ordering only within a conversation lets the owning shard assign a monotonic seq with a single-partition counter, serializing concurrent sends cheaply while promising nothing across conversations — which chat does not need.",
+          "chosen": "The design scopes ordering to the conversation shard's monotonic seq, getting cheap total order exactly where users perceive it."
+        }
+      ]
     },
     {
       "id": "offline",
@@ -1887,10 +1858,6 @@
         }
       ],
       "decisionPrompt": "Recipient is offline for two days, then reconnects on a new phone. What should they see?",
-      "patterns": [
-        "Offline message queue",
-        "Per-device sync cursor"
-      ],
       "probeLinks": [
         "xmpp-message-archive",
         "xmpp-message-carbons",
@@ -2041,6 +2008,22 @@
           "whyItMatters": "Implements 'delete for everyone', retention TTL, and account deletion without leaving seq gaps that would break ordering and cursors.",
           "example": "Delete-for-everyone sets deleted_at; devices syncing past that seq render 'message deleted'.",
           "group": "Offline Delivery and History Sync"
+        },
+        {
+          "term": "Offline message queue",
+          "description": "Persist undelivered messages per recipient and drain on reconnect.",
+          "whyItMatters": "Recipients are frequently offline but must not miss messages.",
+          "steps": [
+            "offline"
+          ]
+        },
+        {
+          "term": "Per-device sync cursor",
+          "description": "Each device records the highest per-conversation seq it has applied and asks only for newer messages on reconnect.",
+          "whyItMatters": "Multi-device sync where push, queue drain, and history sync all read one durable log and must not double-deliver.",
+          "steps": [
+            "offline"
+          ]
         }
       ],
       "traps": [
@@ -2059,7 +2042,19 @@
         "before": "Online-only delivery.",
         "after": "Offline users buffered + woken; history syncs across devices.",
         "newRisk": "Group messages multiply this work per member — need fanout."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Stored state vs. reconnect read cost",
+          "description": "A durable per-user inbox means messages accumulate while a user is offline and drain in order on reconnect, but storing queues for hundreds of millions of users is significant state that must be bounded or archived. Pulling from the message store on reconnect keeps the store as the single source of truth with no queues, but reconnects after outages trigger large catch-up reads and clients must maintain reliable per-chat cursors.",
+          "chosen": "The design pushes to a durable per-user inbox drained on reconnect, keeping the receive path simple and ordered at the cost of per-user queue state."
+        },
+        {
+          "name": "Per-user vs. per-device buffering",
+          "description": "Per-device queues would give each device its own ready-made stream but multiply storage by the device count for no correctness gain, since the log already orders everything. A single per-user inbox of references with per-device applied cursors stores each entry once, at the cost of every device tracking its own cursor.",
+          "chosen": "The design buffers per-user with lightweight references into the durable log and lets each device converge via its own applied cursor."
+        }
+      ]
     },
     {
       "id": "groups",
@@ -2184,10 +2179,6 @@
         }
       ],
       "decisionPrompt": "A 256-member group gets a message; 100 members are offline. What work happens?",
-      "patterns": [
-        "Fanout-on-write (groups)",
-        "Membership-version snapshot"
-      ],
       "probeLinks": [
         "slack-realtime",
         "xmpp-muc",
@@ -2214,6 +2205,22 @@
           "whyItMatters": "Stops spam and harassment without leaking the block to the sender; keeps abuse work off the hot delivery loop.",
           "example": "Fanout skips a member who blocked the sender; a 200th send/min returns 429.",
           "group": "Group Messaging and Fanout"
+        },
+        {
+          "term": "Fanout-on-write (groups)",
+          "description": "Expand a group message to each member at send time.",
+          "whyItMatters": "Group sizes are bounded; per-member delivery state is needed.",
+          "steps": [
+            "groups"
+          ]
+        },
+        {
+          "term": "Membership-version snapshot",
+          "description": "Pin a group send to the membership version at send time so the recipient set is deterministic.",
+          "whyItMatters": "Group fanout where membership can change concurrently with sends.",
+          "steps": [
+            "groups"
+          ]
         }
       ],
       "recap": {
@@ -2313,6 +2320,18 @@
             "GroupDB"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write amplification vs. read amplification",
+          "description": "Fanout-on-write costs one inbox-entry write per member — 256 writes for a 256-member group, expensive and bursty for large groups — but makes every member's read a trivial drain of their own queue. A shared group log appends once regardless of size, but every member must then track a per-group cursor and pull, and a hot group turns the saved writes into read fanout instead.",
+          "chosen": "The design fans out on write to per-member inbox entries, keeping reads trivial for normal-sized groups while storing the message body only once."
+        },
+        {
+          "name": "Snapshot determinism vs. fanout freshness",
+          "description": "Reading live membership during a fanout risks a nondeterministic recipient set when someone is added or removed mid-send; stamping the send with a membership_version and reading exactly that snapshot pins one answer to 'all current members', at the cost of maintaining versioned membership.",
+          "chosen": "The design snapshots membership by version at send time so every fanout has a deterministic recipient set."
+        }
       ]
     },
     {
@@ -2349,10 +2368,6 @@
       "decisionPrompt": "A whole gateway node crashes with 1M connections. What is the user-visible impact?",
       "whyNow": [
         "Closing on presence/media/resilience maps the remaining requirements and shows the design degrades gracefully under failure."
-      ],
-      "patterns": [
-        "Session lease (heartbeat TTL)",
-        "Jittered reconnect / admission control"
       ],
       "probeLinks": [
         "slack-realtime",
@@ -2394,6 +2409,14 @@
           "whyItMatters": "Keeps ordering single-writer (no dual allocation/split-brain) while still surviving a region outage with bounded RPO/RTO.",
           "example": "Region A owns g_55; A fails ⇒ promote B's replica to own the counter, clients re-home.",
           "group": "Presence, Media, and Gateway Resilience"
+        },
+        {
+          "term": "Jittered reconnect / admission control",
+          "description": "Spread mass reconnects with randomized backoff and admit connections gradually to avoid thundering herds.",
+          "whyItMatters": "When a gateway or region loss drops millions of sockets at once.",
+          "steps": [
+            "scale-presence"
+          ]
         }
       ],
       "recap": {
@@ -2586,7 +2609,19 @@
           "instead": "Jittered exponential backoff + admission control + resume-from-cursor so reconnects spread over minutes."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-presence.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-presence.jpg",
+      "tradeoffs": [
+        {
+          "name": "Presence freshness vs. fanout cost",
+          "description": "Emitting a presence update on every connection flap keeps contacts maximally current but multiplies fanout for well-connected users and floods watchers with noise from flaky mobile links; debouncing changes and fanning only to subscribed contacts damps the storm but delays status changes slightly.",
+          "chosen": "The design derives presence for free from session leases and heartbeats, then debounces changes and fans them only to subscribed contacts, never persisting typing hints at all."
+        },
+        {
+          "name": "In-band media vs. separate media plane",
+          "description": "Sending media through the message path would reuse the existing pipeline but drag multi-megabyte blobs through gateways and the durable log built for small frames; a separate plane of signed uploads to object storage keeps messages carrying only a mediaId, at the cost of an extra request flow and CDN authorization for recipients.",
+          "chosen": "The design routes media out of band — client uploads the encrypted blob to object storage and the message carries only the mediaId — keeping the chat path lightweight."
+        }
+      ]
     }
   ],
   "finalDesign": {

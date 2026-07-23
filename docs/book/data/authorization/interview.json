@@ -1613,64 +1613,6 @@
       "makesIrrelevant": "Managed observability removes most collector, dashboard, alert, and trace-storage work, but the authorization-specific semantic metrics still must be designed."
     }
   ],
-  "patterns": [
-    {
-      "name": "Centralized authorization service",
-      "what": "One service answers all permission checks; apps don't embed policy logic.",
-      "whenToUse": "Many services needing consistent, auditable access decisions.",
-      "steps": [
-        "model"
-      ],
-      "group": "Choose the Authorization Model"
-    },
-    {
-      "name": "RBAC",
-      "what": "Grant permissions to roles, assign roles to subjects.",
-      "whenToUse": "Coarse, stable permission structures.",
-      "steps": [
-        "model"
-      ],
-      "group": "Choose the Authorization Model"
-    },
-    {
-      "name": "ReBAC (relationship tuples)",
-      "what": "Model permissions as a graph of (object, relation, subject) tuples; check = graph reachability.",
-      "whenToUse": "Fine-grained, hierarchical sharing (folders, groups, ownership).",
-      "steps": [
-        "model",
-        "check"
-      ],
-      "group": "Choose the Authorization Model"
-    },
-    {
-      "name": "Decision caching with versioning",
-      "what": "Cache check results keyed by a consistency token so revokes invalidate correctly.",
-      "whenToUse": "Sub-10ms checks under heavy read load.",
-      "steps": [
-        "check",
-        "consistency"
-      ],
-      "group": "The Low-Latency Check Path"
-    },
-    {
-      "name": "Consistency tokens (zookies)",
-      "what": "A token from a write lets a caller demand a check at-least-as-fresh-as that write.",
-      "whenToUse": "When a recent grant/revoke must be reflected (no 'new enemy' bug).",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Consistency: Honor Revokes Safely"
-    },
-    {
-      "name": "Materialized reverse index",
-      "what": "Precompute subject->objects so 'list what I can see' is a lookup, not a graph walk per object.",
-      "whenToUse": "List/filter endpoints over large object sets.",
-      "steps": [
-        "listing"
-      ],
-      "group": "Listing Accessible Objects (Reverse Index)"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1716,7 +1658,14 @@
           "instead": "A centralized check API with one policy model (relationship tuples + roles/attributes)."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. consistency of decisions",
+          "description": "Inline role checks in each service are trivial to write and need no infrastructure, but every team reimplements policy slightly differently, so the same 'can S do A on O?' question gets different answers across services and no single place can change, audit, or tenant-scope a policy.",
+          "chosen": "The design treats hardcoded per-service checks as the motivating baseline and moves toward a centralized authorization service that answers policy questions uniformly."
+        }
+      ]
     },
     {
       "id": "model",
@@ -1891,12 +1840,32 @@
           "whyItMatters": "Rewrites make group/folder inheritance composable and are where depth/cycle limits live, keeping reachability bounded.",
           "example": "document#viewer includes group#member; folder#editor implies document#editor for contained docs.",
           "group": "Choose the Authorization Model"
+        },
+        {
+          "term": "Centralized authorization service",
+          "description": "One service answers all permission checks; apps don't embed policy logic.",
+          "whyItMatters": "Many services needing consistent, auditable access decisions.",
+          "steps": [
+            "model"
+          ]
+        },
+        {
+          "term": "RBAC",
+          "description": "Grant permissions to roles, assign roles to subjects.",
+          "whyItMatters": "Coarse, stable permission structures.",
+          "steps": [
+            "model"
+          ]
+        },
+        {
+          "term": "ReBAC (relationship tuples)",
+          "description": "Model permissions as a graph of (object, relation, subject) tuples; check = graph reachability.",
+          "whyItMatters": "Fine-grained, hierarchical sharing (folders, groups, ownership).",
+          "steps": [
+            "model",
+            "check"
+          ]
         }
-      ],
-      "patterns": [
-        "Centralized authorization service",
-        "RBAC",
-        "ReBAC (relationship tuples)"
       ],
       "probeLinks": [
         "nist-rbac",
@@ -1917,7 +1886,19 @@
         "before": "Permission logic scattered in apps.",
         "after": "One model (relationship tuples + roles/attrs), centrally evaluated.",
         "newRisk": "Evaluating a graph walk per request is too slow on the hot path."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Expressiveness vs. check cost",
+          "description": "ReBAC tuples express 'editors of THIS document' and composing group/folder inheritance directly, which RBAC's coarse roles cannot without role explosion; the price is that a check becomes a graph walk that needs caching and an expanded-set index to stay fast, where an RBAC role lookup is trivially cheap.",
+          "chosen": "The design picks Zanzibar-style ReBAC because per-object sharing is the core product requirement and the check-latency cost is paid down in later steps."
+        },
+        {
+          "name": "Stored relationships vs. evaluated attributes",
+          "description": "ABAC evaluates boolean rules over fresh subject/object/context attributes, decoupling policy from data and handling compliance rules well, but listing 'which objects can this user see' means evaluating rules over the whole corpus and every check needs attribute lookups on the hot path; stored ReBAC tuples make both checks and reverse listing indexable.",
+          "chosen": "The design stores permissions as relationship tuples so both checks and listing reduce to indexable graph data rather than open-ended rule evaluation."
+        }
+      ]
     },
     {
       "id": "check",
@@ -2074,10 +2055,16 @@
           "whyItMatters": "Turns a potentially deep graph traversal into a mostly-cached fast lookup.",
           "example": "Cache 'user:42 in group:eng' and the final 'user:42 can edit doc:9'.",
           "group": "The Low-Latency Check Path"
+        },
+        {
+          "term": "Decision caching with versioning",
+          "description": "Cache check results keyed by a consistency token so revokes invalidate correctly.",
+          "whyItMatters": "Sub-10ms checks under heavy read load.",
+          "steps": [
+            "check",
+            "consistency"
+          ]
         }
-      ],
-      "patterns": [
-        "Decision caching with versioning"
       ],
       "probeLinks": [
         "airbnb-himeji",
@@ -2207,6 +2194,18 @@
             "CheckAPI",
             "DecisionCache"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Cache freshness vs. graph-walk latency",
+          "description": "A decision cache in front of the policy engine answers repeated (subject, relation, object) checks in well under 10ms and absorbs hot traffic, but invalidation becomes the hard problem — get it wrong and a revoked grant keeps being served, while a cold cache still pays the full relation-store walk.",
+          "chosen": "The design puts a version-keyed decision cache ahead of the engine, tagging each entry with its change-log version so freshness can be reasoned about explicitly."
+        },
+        {
+          "name": "Precompute vs. compute on demand",
+          "description": "Materializing each subject's reachable objects offline turns a check into one flat-latency index lookup and powers listing for free, but the materializer lags writes so a fresh grant isn't checkable immediately, and expanded sets for users in many large groups cost real storage; walking the graph live is always fresh but blows the 10ms budget on deep hierarchies.",
+          "chosen": "The design caches decisions rather than fully materializing or fully recomputing, keeping the live walk as the miss path and deferring the expanded-set index to the listing problem."
         }
       ]
     },
@@ -2371,6 +2370,14 @@
           "whyItMatters": "Lets callers demand revokes are honored, without forcing strong consistency on every check.",
           "example": "Revoke returns t_78; the next check passes min_token:t_78 to bypass stale cache.",
           "group": "Consistency: Honor Revokes Safely"
+        },
+        {
+          "term": "Consistency tokens (zookies)",
+          "description": "A token from a write lets a caller demand a check at-least-as-fresh-as that write.",
+          "whyItMatters": "When a recent grant/revoke must be reflected (no 'new enemy' bug).",
+          "steps": [
+            "consistency"
+          ]
         }
       ],
       "probeLinks": [
@@ -2379,9 +2386,6 @@
         "openfga-consistency",
         "spicedb-watch",
         "sre-monitoring"
-      ],
-      "patterns": [
-        "Consistency tokens (zookies)"
       ],
       "whyNow": [
         "Revoke correctness is the subtle, must-have property of an authz system; consistency tokens are the standard mechanism and the senior signal."
@@ -2510,6 +2514,18 @@
             "CheckAPI"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Read-after-write vs. hot-path latency",
+          "description": "Consistency tokens give a precise guarantee — a check carrying the revoke's change-log version can never read a pre-revoke cached decision — but callers must thread the token through requests and a high-token check may wait for the cache or materializer to catch up; a plain short TTL is far simpler but always leaves a window where a revoked user is still allowed.",
+          "chosen": "The design issues a change-log version token (zookie) on every write so security-critical revokes get exact read-after-write without forcing every default check to be synchronous."
+        },
+        {
+          "name": "Guaranteed bound vs. best-effort speed",
+          "description": "Event-driven cache eviction off the change log honors most revokes within milliseconds while keeping the hit rate high, but it is asynchronous — a race remains between revoke and eviction, and one group change can trigger a thundering invalidation; only the token gives a hard guarantee for the immediate retry.",
+          "chosen": "The design uses the token as the correctness mechanism and treats proactive invalidation as a latency optimization layered on the same change pipeline."
+        }
       ]
     },
     {
@@ -2623,10 +2639,15 @@
           "whyItMatters": "Turns list/filter authorization into a lookup instead of N checks; the two directions have different fan-out, so they aren't served by one index.",
           "example": "objects: expanded_sets[user:42][view] = {doc:9, doc:13, ...}; subjects: subject_set_chunks[doc:9][view] = [user:7, group:eng#member].",
           "group": "Listing Accessible Objects (Reverse Index)"
+        },
+        {
+          "term": "Materialized reverse index",
+          "description": "Precompute subject->objects so 'list what I can see' is a lookup, not a graph walk per object.",
+          "whyItMatters": "List/filter endpoints over large object sets.",
+          "steps": [
+            "listing"
+          ]
         }
-      ],
-      "patterns": [
-        "Materialized reverse index"
       ],
       "probeLinks": [
         "airbnb-cohosting",
@@ -2640,7 +2661,14 @@
         "before": "List = N per-object checks.",
         "after": "List = a reverse-index lookup.",
         "newRisk": "The reverse index and decision cache must update when relations/policies change."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Index maintenance vs. per-object checks",
+          "description": "A precomputed subject-to-objects reverse index answers 'which of 10M docs can this user see' in one read with server-side pagination, but it must be maintained for every subject (storage and write amplification), lags fresh grants, and a group change can force expensive re-materialization; batched checks over a candidate set need no index but are infeasible beyond small candidate sets and make pagination awkward.",
+          "chosen": "The design precomputes the expanded-set reverse index from the change log because full-corpus listing is a required product query that per-object checks can never serve."
+        }
+      ]
     },
     {
       "id": "propagation",
@@ -2789,10 +2817,6 @@
         }
       ],
       "decisionPrompt": "Removing a user from a group should revoke access to thousands of documents. How does that propagate?",
-      "patterns": [
-        "Materialized reverse index",
-        "Consistency tokens (zookies)"
-      ],
       "probeLinks": [
         "zanzibar-paper",
         "openfga-tuple-changes",
@@ -2882,6 +2906,18 @@
             "Indexer",
             "ChangeLog"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Eager fan-out vs. lazy revalidation",
+          "description": "Eagerly recomputing affected index shards and evicting cached decisions on every change keeps reads cheap and derived state always current, but a widely-shared group change fans out into an invalidation storm that the materializer must partition and parallelize to survive; lazy versioned revalidation makes the write cheap but shifts the cost onto the first read after a change and lets cold entries stay logically stale.",
+          "chosen": "The design fans out eagerly so reads stay correct without per-read work, accepting that the materializer must be partitioned to bound fan-out latency, with consistency tokens covering the catch-up window."
+        },
+        {
+          "name": "Uniform pipeline vs. priority complexity",
+          "description": "A hybrid that eagerly materializes hot or sensitive entries and defers the long tail caps the worst fan-out cost, but it needs hotness signals and two propagation paths, and misclassification can leave an important entry on the slow path; a single eager path is easier to reason about at the price of processing every fan-out blindly.",
+          "chosen": "The design keeps one eager propagation path for a simple freshness model, with the change-log watermark as the single lag SLO to monitor."
         }
       ]
     },
@@ -3180,6 +3216,18 @@
             "CheckAPI",
             "DecisionCache"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Availability vs. safety on outage",
+          "description": "When the authz service is unreachable, failing open keeps every dependent app serving but turns the outage into a security incident where everyone is allowed everything; failing closed with an SDK-side decision cache keeps most cached reads working while denying true misses, at the cost of denying legitimate uncached actions during the blip.",
+          "chosen": "The design fails closed with cached fallback so an outage can degrade availability but never silently grant access."
+        },
+        {
+          "name": "Regional autonomy vs. write ordering",
+          "description": "Running the check path in every region fed by the replicated per-tenant change log keeps default checks in-region and lets a regional outage just reroute, but replication lag means a min_token check in a lagging region must wait or route to the tenant's home region, and pinning writes to a home region blocks new grants for that tenant if it fails.",
+          "chosen": "The design pins each tenant's writes and ordered change log to a home region and replicates outward, trading some write availability for a coherent per-tenant version order that tokens can reference everywhere."
         }
       ]
     }

@@ -1218,82 +1218,11 @@
       "makesIrrelevant": "A managed runtime with autoscaling, health checks, config rollout, and deployment history removes much of the custom orchestrator and release pipeline from the answer."
     }
   ],
-  "patterns": [
-    {
-      "name": "Scope before solve",
-      "what": "Pin down requirements and constraints before drawing anything.",
-      "whenToUse": "Always, at the start — an unscoped problem has no right answer.",
-      "steps": [
-        "clarify"
-      ],
-      "group": "Clarify Requirements"
-    },
-    {
-      "name": "Numbers drive design",
-      "what": "Use back-of-envelope estimates to justify components, not the reverse.",
-      "whenToUse": "Right after scoping; revisit when a choice needs justification.",
-      "steps": [
-        "estimate"
-      ],
-      "group": "Estimate Scale"
-    },
-    {
-      "name": "Contract-first",
-      "what": "Define the API/data contract before internal architecture.",
-      "whenToUse": "Once requirements are clear; it frames what the system must do.",
-      "steps": [
-        "api",
-        "data-model"
-      ],
-      "group": "Define the API"
-    },
-    {
-      "name": "Breadth then depth",
-      "what": "Get a working high-level design end-to-end, then deep-dive the hard parts.",
-      "whenToUse": "After the contract; avoid rat-holing before the whole picture exists.",
-      "steps": [
-        "architecture",
-        "deep-dives"
-      ],
-      "group": "High-Level Architecture"
-    },
-    {
-      "name": "Trade-off framing",
-      "what": "State what each choice optimizes and what it costs.",
-      "whenToUse": "Throughout, especially on bottlenecks and option choices.",
-      "steps": [
-        "bottlenecks",
-        "operations"
-      ],
-      "group": "Bottlenecks & Trade-offs"
-    },
-    {
-      "name": "Think aloud",
-      "what": "Narrate reasoning and assumptions continuously so the interviewer sees the signal.",
-      "whenToUse": "The entire interview — silence reads as not knowing.",
-      "steps": [
-        "communicate"
-      ],
-      "group": "Communicate Under Time Pressure"
-    },
-    {
-      "name": "Drive the interview",
-      "what": "Lead the structure and pace; treat the interviewer as a collaborator, not an examiner.",
-      "whenToUse": "Throughout; especially when stuck or out of time.",
-      "steps": [
-        "communicate"
-      ],
-      "group": "Communicate Under Time Pressure"
-    }
-  ],
   "steps": [
     {
       "id": "clarify",
       "title": "1. Clarify Requirements",
       "description": "Never start designing the prompt you were given — design the one you agree on. Spend the first few minutes turning a vague ask ('design Twitter') into scoped functional and non-functional requirements, explicit constraints, and what's out of scope. This frames everything that follows.",
-      "patterns": [
-        "Scope before solve"
-      ],
       "probeLinks": [
         "system-design-primer",
         "aws-well-architected",
@@ -1321,6 +1250,14 @@
           "definition": "A five-row table you write where both can see it — Functional, Non-functional, Out-of-scope, Assumptions, Open questions — e.g. for a URL shortener: Functional = shorten + redirect; Non-functional = redirect p99 < 50ms, read-heavy; Out-of-scope = analytics, custom domains; Assumptions = 100M new URLs/day; Open = link expiry?",
           "whyItMatters": "It is the contract the whole interview is judged against, and it lets you say 'that's out of scope' later without sounding evasive.",
           "group": "Clarify Requirements"
+        },
+        {
+          "term": "Scope before solve",
+          "description": "Pin down requirements and constraints before drawing anything.",
+          "whyItMatters": "Always, at the start — an unscoped problem has no right answer.",
+          "steps": [
+            "clarify"
+          ]
         }
       ],
       "talkingPoints": [
@@ -1462,15 +1399,19 @@
         "highlight": [
           "P1"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Upfront questioning vs. momentum",
+          "description": "Negotiating scope costs about five minutes and the nerve to push back on the prompt, but every later choice then has a requirement to point back to. Diving straight into boxes feels fast and avoids awkwardness, but you end up designing the wrong system and cannot justify choices when challenged — the most common junior mistake.",
+          "chosen": "The method treats the prompt as an opening offer: restate it, ask the few questions that change the design, and confirm a concrete scope before drawing anything."
+        }
+      ]
     },
     {
       "id": "estimate",
       "title": "2. Estimate Scale",
       "description": "Do back-of-the-envelope math: traffic (reads/writes per second), storage growth, bandwidth, and the read/write ratio. These numbers aren't busywork — they decide whether you need caching, sharding, a CDN, or async processing, and they let you justify each later choice with evidence.",
-      "patterns": [
-        "Numbers drive design"
-      ],
       "probeLinks": [
         "system-design-primer",
         "sre-service-level-objectives",
@@ -1499,6 +1440,14 @@
           "definition": "Two columns — the number and what it forces. E.g. 10k writes/s + 100:1 reads → cache + read replicas; 1 TB/day × 5 yr → ~1.8 PB, so partition + tier old data; 500 MB/s egress → CDN. Template formula: DAU × actions/user/day ÷ 86,400 × peak-factor = peak QPS.",
           "whyItMatters": "The implication column is what turns arithmetic into design justification — it is the whole reason to do the math.",
           "group": "Estimate Scale"
+        },
+        {
+          "term": "Numbers drive design",
+          "description": "Use back-of-envelope estimates to justify components, not the reverse.",
+          "whyItMatters": "Right after scoping; revisit when a choice needs justification.",
+          "steps": [
+            "estimate"
+          ]
         }
       ],
       "talkingPoints": [
@@ -1645,15 +1594,19 @@
         "highlight": [
           "P2"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Arithmetic time vs. evidence-backed design",
+          "description": "Back-of-the-envelope math takes minutes of live arithmetic under pressure, but peak QPS, storage growth, and the read/write ratio are the numbers that decide whether you even need caching, sharding, a CDN, or async processing. Skipping the math saves time only if the interviewer truly ignores scale — otherwise every later 'add a cache here' is hand-waving you cannot defend.",
+          "chosen": "The method computes just the two or three magnitudes that change the architecture and states each implication out loud, so components are justified by numbers, not habit."
+        }
+      ]
     },
     {
       "id": "api",
       "title": "3. Define the API",
       "description": "Specify the contract: the key endpoints (or RPCs/events), their inputs and outputs. This nails down exactly what the system must do before you design how. It also surfaces hidden requirements (auth, pagination, idempotency) and gives you a checklist to satisfy with the architecture.",
-      "patterns": [
-        "Contract-first"
-      ],
       "probeLinks": [
         "google-api-design-guide",
         "microsoft-api-guidelines",
@@ -1682,6 +1635,15 @@
           "definition": "A handful of signatures with the non-obvious semantics marked. E.g. POST /urls {longUrl, Idempotency-Key} → {shortCode} (auth: API key); GET /{shortCode} → 301 (public); GET /urls?cursor= → cursor-paginated list (auth: owner). Note status/async semantics where they matter: 202 + operationId for long writes, cursor not offset for large lists.",
           "whyItMatters": "Writing the signatures forces the hidden requirements — auth boundary, idempotency, pagination style, async vs sync — into the open before the architecture has to satisfy them.",
           "group": "Define the API"
+        },
+        {
+          "term": "Contract-first",
+          "description": "Define the API/data contract before internal architecture.",
+          "whyItMatters": "Once requirements are clear; it frames what the system must do.",
+          "steps": [
+            "api",
+            "data-model"
+          ]
         }
       ],
       "talkingPoints": [
@@ -1828,15 +1790,19 @@
         "highlight": [
           "P3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Contract rigor vs. time budget",
+          "description": "A full REST spec feels thorough, but enumerating every field and error code eats minutes the architecture and deep dives need, with little design signal per field, and locks in detail before estimates and the data model can reshape the contract. A minimal contract risks missing something, but marking the non-obvious semantics — auth boundary, idempotency, pagination, sync vs async — surfaces the hidden requirements that actually shape the design.",
+          "chosen": "The method sketches only the endpoints the agreed features need, marking load-bearing semantics on each and leaving fields and error codes for later."
+        }
+      ]
     },
     {
       "id": "data-model",
       "title": "4. Model the Data",
       "description": "Define the core entities, their relationships, and access patterns. The data model and how it's queried often dictate the storage choice (relational vs key-value vs wide-column) and the sharding key. Designing the schema around access patterns — not the other way around — is the senior move.",
-      "patterns": [
-        "Contract-first"
-      ],
       "probeLinks": [
         "ddia",
         "dynamo-paper",
@@ -2012,15 +1978,19 @@
         "highlight": [
           "P4"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Query-driven modeling vs. familiar defaults",
+          "description": "Naming the database you know first is fast and fine when the data is simple, but you may pick a store that cannot serve the dominant query or shard cleanly and be forced to backtrack — with the shard key, the most constraining choice of all, reduced to an afterthought. Writing the access-pattern table first is slower and demands enumerating real queries, but the store and shard key then fall out defensibly.",
+          "chosen": "The method writes the dominant access patterns as a table first and names the store only after, so the shard key is derived from real queries rather than guessed."
+        }
+      ]
     },
     {
       "id": "architecture",
       "title": "5. High-Level Architecture",
       "description": "Draw the end-to-end design: clients, load balancer, services, datastores, caches, queues — enough to satisfy the API and meet the estimates. Get a complete, working picture first (breadth) before optimizing any one part. Walk the main request flow through it.",
-      "patterns": [
-        "Breadth then depth"
-      ],
       "probeLinks": [
         "system-design-primer",
         "c4-model",
@@ -2050,6 +2020,15 @@
           "definition": "Annotate each box with the one thing that justifies it: 'CDN ← 500 MB/s reads', 'queue ← decouple the write spike', 'read replica ← 100:1 read skew'. Any box without an annotation is a candidate to delete.",
           "whyItMatters": "It is the difference between a justified diagram and a pile of familiar boxes, and it makes the diagram self-defending when the interviewer asks 'why is that there?'",
           "group": "High-Level Architecture"
+        },
+        {
+          "term": "Breadth then depth",
+          "description": "Get a working high-level design end-to-end, then deep-dive the hard parts.",
+          "whyItMatters": "After the contract; avoid rat-holing before the whole picture exists.",
+          "steps": [
+            "architecture",
+            "deep-dives"
+          ]
         }
       ],
       "talkingPoints": [
@@ -2196,15 +2175,19 @@
         "highlight": [
           "P5"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Breadth vs. depth",
+          "description": "Sketching the whole system end-to-end first means the pass is deliberately rough and you must resist polishing, but you always have a complete, working answer if time runs out and can see which component is actually the hard part. Deep-diving the first interesting box shows depth quickly, but risks a beautifully optimized cache and no working system at the buzzer.",
+          "chosen": "The method goes breadth-first — every component placed and connected, a request walked through — before optimizing any single part."
+        }
+      ]
     },
     {
       "id": "deep-dives",
       "title": "6. Deep Dives",
       "description": "Now go deep on the hard parts — the components where the real difficulty lives (the hot path, the contended resource, the consistency-critical write). Follow the interviewer's signals about where to focus. This is where senior candidates separate themselves.",
-      "patterns": [
-        "Breadth then depth"
-      ],
       "probeLinks": [
         "ddia",
         "dynamo-paper",
@@ -2381,15 +2364,19 @@
         "highlight": [
           "P6"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Comfort vs. risk relevance",
+          "description": "Deep-diving the component you know best lets you sound confident and fluent, but signals you cannot identify what actually matters and burns the interview's most valuable minutes on a part that was never the risk. Targeting risk times difficulty — the hot path, the contended resource, the consistency-critical write — may drag you onto less comfortable ground where you must reason from first principles.",
+          "chosen": "The method picks deep-dive targets by risk and difficulty and adjusts to the interviewer's steering, spending the best minutes where the design is actually decided."
+        }
+      ]
     },
     {
       "id": "bottlenecks",
       "title": "7. Bottlenecks & Trade-offs",
       "description": "Proactively name where the design will break first — the single points of failure, the hot shards, the components that won't scale — and the trade-offs behind your choices. Don't wait to be asked; surfacing your own weaknesses (with mitigations) is a strong signal of maturity.",
-      "patterns": [
-        "Trade-off framing"
-      ],
       "probeLinks": [
         "tail-at-scale",
         "sre-overload",
@@ -2418,6 +2405,15 @@
           "definition": "One row per major choice with columns: Choice | Optimizes | Sacrifices | Fails first under | Mitigation | When to revisit. E.g. 'single write leader | strong consistency | write throughput | leader failover | standby + fast failover | when writes exceed one node'.",
           "whyItMatters": "It lets you name your own weaknesses with mitigations in seconds — the strongest maturity signal — instead of being caught by the interviewer's 'but what about…'.",
           "group": "Bottlenecks & Trade-offs"
+        },
+        {
+          "term": "Trade-off framing",
+          "description": "State what each choice optimizes and what it costs.",
+          "whyItMatters": "Throughout, especially on bottlenecks and option choices.",
+          "steps": [
+            "bottlenecks",
+            "operations"
+          ]
         }
       ],
       "talkingPoints": [
@@ -2563,15 +2559,19 @@
         "highlight": [
           "P7"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Projected confidence vs. candor",
+          "description": "Claiming the design just scales horizontally sounds confident for a moment, but every real design breaks somewhere — claiming none reads as inexperience and invites the interviewer to find the bottleneck on their terms. Volunteering the cracks takes nerve, but pairing each weakness with a mitigation and a revisit trigger is the strongest maturity signal in the interview.",
+          "chosen": "The method names the first failure mode proactively — the SPOF, the hot shard, the unbounded queue — framing the bottleneck discussion instead of being cornered by it."
+        }
+      ]
     },
     {
       "id": "operations",
       "title": "8. Reliability, Security, Cost & Operations",
       "description": "Address the cross-cutting concerns that separate a whiteboard sketch from a real system: failure handling and redundancy, data durability, security/auth, observability, and cost. You won't cover all deeply in time — name them and go as deep as the remaining time and the interviewer allow.",
-      "patterns": [
-        "Trade-off framing"
-      ],
       "probeLinks": [
         "aws-well-architected",
         "sre-service-level-objectives",
@@ -2748,16 +2748,19 @@
         "highlight": [
           "P8"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Checklist coverage vs. prioritized depth",
+          "description": "Reciting monitoring, security, backups, and scaling in the abstract proves the categories exist but reads as memorization and spends scarce final minutes on concerns the prompt may not stress. Ranking the risks for this specific system requires an out-loud judgment call about what to skip, but shows you can tell which operational risks dominate — latency for a read path, correctness for a ledger, isolation for multi-tenant.",
+          "chosen": "The method ranks the operational concerns for this prompt and goes deep on the top two or three, pointing back to earlier phases where each was already woven in."
+        }
+      ]
     },
     {
       "id": "communicate",
       "title": "9. Communicate Under Time Pressure",
       "description": "This phase runs through all the others. The interview tests how you think, so make your thinking visible: narrate decisions and assumptions, manage the clock, drive the structure, and collaborate with the interviewer. A solid design communicated poorly loses to a good design communicated clearly.",
-      "patterns": [
-        "Think aloud",
-        "Drive the interview"
-      ],
       "probeLinks": [
         "system-design-primer",
         "c4-model",
@@ -2784,6 +2787,14 @@
           "definition": "A fixed template to deliver in the final minute: 'We built X to meet [scope]. The driving numbers were [QPS/storage]. The core design is [3-box sketch]. The hard part was [deep dive] — I chose [option] over [alternative] because [trade-off]. The first bottleneck is [X], mitigated by [Y]. With more time I'd cover [deferred].'",
           "whyItMatters": "It ties every phase back to the requirements and leaves the interviewer with a crisp, scorable picture instead of a design that just trails off.",
           "group": "Communicate Under Time Pressure"
+        },
+        {
+          "term": "Drive the interview",
+          "description": "Lead the structure and pace; treat the interviewer as a collaborator, not an examiner.",
+          "whyItMatters": "Throughout; especially when stuck or out of time.",
+          "steps": [
+            "communicate"
+          ]
         }
       ],
       "talkingPoints": [
@@ -2929,7 +2940,14 @@
         "highlight": [
           "P9"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Remaining depth vs. complete picture",
+          "description": "Continuing to drill into the current component adds real depth and is right when the interviewer is clearly steering you there, but risks hitting the buzzer with no summary and visible phases untouched — reading as losing track of time. Wrapping early consciously leaves depth on the table, but hands the interviewer a complete, scorable picture.",
+          "chosen": "The method stops adding detail when time runs short and delivers the 60-second summary — first bottleneck, next steps, tie-back to scope — because time awareness is itself a senior signal."
+        }
+      ]
     }
   ],
   "finalDesign": {

@@ -2076,7 +2076,14 @@
           "Playback",
           "Metadata"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Path isolation vs. moving parts",
+          "description": "Running upload and playback as independent services means a transcoding or upload surge can never starve viewers, and each path scales on its own traffic shape — writes versus ~50x heavier reads. The cost is two API surfaces to build and operate, plus a shared metadata store that must stay highly available for both since it is the only place the paths meet.",
+          "chosen": "The design splits the paths from day one, accepting two services because coupling read and write scaling in one monolith risks playback availability."
+        }
+      ]
     },
     {
       "id": "video-upload-and-metadata",
@@ -2302,7 +2309,14 @@
           "UploadAPI",
           "Session"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Early identity vs. orphan cleanup",
+          "description": "Creating the metadata record and upload session before any bytes arrive gives every transfer a durable video_id, so failures are visible, uploads are resumable, and completion is idempotent — but abandoned uploads leave sessions and metadata rows that need TTL expiry and cleanup. Creating identity only after upload avoids orphaned rows, yet a crash mid-transfer leaves bytes with no owning record and no handle for progress.",
+          "chosen": "The design creates identity before bytes, preferring visible, recoverable failures plus a cleanup job over invisible orphaned bytes."
+        }
+      ]
     },
     {
       "id": "direct-object-upload",
@@ -2541,7 +2555,14 @@
           "OriginalStore",
           "EventBus"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "App-tier economy vs. client complexity",
+          "description": "Pre-signed multipart URLs let clients push bytes straight to object storage, keeping app servers cheap, stateless metadata coordinators instead of relays for ~150 TB/day — proxying through the API tier would double the bytes moved and turn stateless servers into expensive media pipes. In exchange, clients must handle signed URLs and multipart logic, and the platform must validate checksums and clean up abandoned multiparts.",
+          "chosen": "The design uploads directly to object storage, pushing complexity to the client SDK because routing video bytes through app servers cannot scale economically."
+        }
+      ]
     },
     {
       "id": "resumable-chunked-upload",
@@ -2798,7 +2819,14 @@
           "Edge",
           "Session"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Upload resilience vs. client sophistication",
+          "description": "Splitting a 1 GB file into GOP-aligned parts uploaded in parallel means a flaky mobile network only retries the failed part, bandwidth is fully used, and the chunks feed transcoding parallelism directly. A single-stream PUT is trivial client logic, but any network drop restarts the entire transfer and yields nothing for chunk-level processing — while chunking requires capable clients and cleanup of abandoned parts.",
+          "chosen": "The design does client-side GOP chunking with parallel parts, keeping a server-side fallback for older clients that cannot split."
+        }
+      ]
     },
     {
       "id": "transcoding-pipeline",
@@ -3075,7 +3103,14 @@
           "TempStore",
           "RenditionStore"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Parallel throughput vs. pipeline machinery",
+          "description": "A DAG of queue-decoupled stages lets encoding, thumbnails, audio, and packaging proceed in parallel at chunk level, with retries and priorities first-class — a monolithic worker is trivial to start but processes large videos slowly, lets one bad video block the line, and offers no clean priority model. The DAG's price is a preprocessor, scheduler, and resource manager to build and operate, plus packaging that must reassemble chunk outputs coherently.",
+          "chosen": "The design accepts the pipeline machinery because chunk-level parallelism and clean retries are what keep processing time reasonable at upload scale."
+        }
+      ]
     },
     {
       "id": "transcode-scheduler-and-resource-manager",
@@ -3339,7 +3374,14 @@
           "RunningQ",
           "TaskSched"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Scheduling control vs. coordination state",
+          "description": "Separate task, worker, and running queues decouple which task to run from which worker takes it, make in-flight work observable and recoverable, and give priority lanes for SLA-bound hot creators. A single FIFO that any free worker drains is far simpler, but it cannot prioritize, cannot balance utilization, and loses track of in-flight tasks when a worker dies — while the three-queue manager itself becomes replicated coordination state that must stay highly available.",
+          "chosen": "The design runs the three-queue resource manager, trading extra coordination state for prioritization, utilization awareness, and recoverable in-flight work over expensive encoders."
+        }
+      ]
     },
     {
       "id": "streaming-and-cdn",
@@ -3584,7 +3626,14 @@
           "CDN",
           "Origin"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Edge locality vs. delivery cost",
+          "description": "Serving segments from CDN edges gives viewers fast startup worldwide and shrinks origin bandwidth to the miss rate, but CDN egress becomes the dominant cost line at roughly $150K/day and cold long-tail content still pays a miss penalty. Serving everything from origin avoids the CDN bill and cache concerns, yet every viewer then hits one global bottleneck with no geographic locality.",
+          "chosen": "The design streams through a CDN with origin fallback, treating egress spend as the unavoidable price of low startup latency at a 50x read-heavy scale."
+        }
+      ]
     },
     {
       "id": "adaptive-quality-and-playback-manifest",
@@ -3753,7 +3802,14 @@
           "R720",
           "R1080"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Client adaptivity vs. server control",
+          "description": "Publishing a rendition ladder and letting the player choose quality per segment means playback adapts instantly to local bandwidth and buffer health without restarting — the server stays a simple manifest provider. The cost is that experienced quality depends on each client's ABR implementation, and a full ladder of renditions must be produced and stored; a server-picked fixed quality simplifies the client but cannot react to mid-stream network shifts.",
+          "chosen": "The design uses client-driven ABR over standard HLS/DASH manifests, putting adaptation where the network conditions are actually observed."
+        }
+      ]
     },
     {
       "id": "security-cost-and-takedown",
@@ -3929,7 +3985,19 @@
           "Lifecycle",
           "Takedown"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Cost efficiency vs. uniform latency",
+          "description": "Caching only what is actually watched exploits the long-tail access pattern to cut CDN storage and fill cost dramatically, and lifecycle policies plus on-demand encoding bound spend on cold content — but the first viewer of a long-tail video pays origin latency or an on-demand encode. Caching everything gives uniformly low latency yet fills edges with never-watched content against the long-tail reality.",
+          "chosen": "The design caches by popularity, accepting first-view penalties on cold videos because paying edge costs for unwatched content is indefensible at this scale."
+        },
+        {
+          "name": "Content protection vs. playback friction",
+          "description": "Signed playback URLs and encryption stop link sharing and protect media across upload, storage, and delivery, and takedown hooks can purge content across CDN and origin — but URL TTLs and purge propagation need careful tuning so legitimate viewers are not cut off mid-session or stale copies linger after a takedown.",
+          "chosen": "The design signs and encrypts playback with tuned TTLs, taking on the tuning burden so protection and takedowns work without blocking valid viewers."
+        }
+      ]
     },
     {
       "id": "failure-handling-and-operations",
@@ -4098,7 +4166,14 @@
           "DLQ",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Bounded retries vs. implementation simplicity",
+          "description": "Bounded backoff retries let transient failures self-heal while a dead-letter queue parks permanently bad videos with a terminal status the user can see — retrying forever is simpler to build but a poison video spins endlessly, wasting encoder capacity and leaving the uploader staring at a never-finishing upload. The DLQ approach adds retry tuning, DLQ inspection, and per-stage metrics as ongoing operational surface.",
+          "chosen": "The design retries with bounded backoff and a DLQ, insisting every failed video reaches a definite terminal state instead of spinning invisibly."
+        }
+      ]
     }
   ],
   "satisfies": {

@@ -2243,89 +2243,11 @@
       "makesIrrelevant": "A unified managed telemetry stack removes several custom dashboards and alert-routing integrations, as long as per-city SLO labels are preserved."
     }
   ],
-  "patterns": [
-    {
-      "name": "Geo-indexing (geohash / S2)",
-      "what": "Encode locations into hierarchical cells so 'nearby' becomes a prefix/cell lookup instead of a full scan.",
-      "whenToUse": "Proximity queries over many points — ride matching, nearby search, maps.",
-      "steps": [
-        "geo-index"
-      ],
-      "group": "Geospatial Index for Nearby Drivers"
-    },
-    {
-      "name": "Write-heavy ingestion pipeline",
-      "what": "Absorb a firehose of updates via a stream and async workers rather than synchronous writes.",
-      "whenToUse": "Millions of high-frequency updates (driver pings) that can't hit the primary directly.",
-      "steps": [
-        "location-ingest"
-      ],
-      "group": "Driver Location Ingestion at Scale"
-    },
-    {
-      "name": "Matching / assignment",
-      "what": "Select the best candidate from a set and assign it atomically so no resource is double-assigned.",
-      "whenToUse": "Two-sided marketplaces pairing requests with limited supply.",
-      "steps": [
-        "matching"
-      ],
-      "group": "Matching & Dispatch"
-    },
-    {
-      "name": "Distributed lock / CAS",
-      "what": "Atomically claim a trip or driver so concurrent offers don't double-book.",
-      "whenToUse": "Multiple offers race for the same driver or trip.",
-      "steps": [
-        "trip-state"
-      ],
-      "group": "Trip State Machine & Atomic Assignment"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "Dedupe retried ride requests and accepts so a rider/driver isn't matched twice.",
-      "whenToUse": "State-changing calls over an unreliable mobile network.",
-      "steps": [
-        "matching",
-        "trip-state"
-      ],
-      "group": "Matching & Dispatch"
-    },
-    {
-      "name": "State machine",
-      "what": "Model the trip as explicit states with allowed transitions.",
-      "whenToUse": "Multi-step lifecycles (matching -> matched -> en route -> completed) needing clear invariants.",
-      "steps": [
-        "trip-state"
-      ],
-      "group": "Trip State Machine & Atomic Assignment"
-    },
-    {
-      "name": "Geo-sharding by region",
-      "what": "Partition the geo index and matching by city/region so a hot city is isolated and queries stay local.",
-      "whenToUse": "Extreme density skew where a few cities dominate load.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling by Region (geo-sharding)"
-    },
-    {
-      "name": "Real-time demand pricing",
-      "what": "Compute a per-cell multiplier from demand/supply to balance the marketplace.",
-      "whenToUse": "When supply can't meet demand and you want to ration/incentivize.",
-      "steps": [
-        "surge"
-      ],
-      "group": "Surge Pricing"
-    }
-  ],
   "steps": [
     {
       "id": "request-ride",
       "title": "1. Request a Ride (the naive baseline)",
       "description": "Start simple: a rider posts a request, and the service scans every available driver to find the nearest one. With a handful of drivers that's fine — the rest of this design exists precisely because there are millions of moving drivers and you can't scan them all on every request.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "uber-matching",
         "postgis-docs",
@@ -2346,6 +2268,9 @@
           "definition": "Finding points within a radius of a location.",
           "whyItMatters": "Doing it by scanning every driver is O(drivers) per request — hopeless at scale.",
           "group": "Request a Ride (the naive baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -2402,15 +2327,19 @@
           "LocStore"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-request-ride.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-request-ride.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. scalability",
+          "description": "A full scan of every available driver is trivially correct and easy to reason about, but its cost grows linearly with the driver population — fine for hundreds of drivers, impossible for 10M moving ones on every request.",
+          "chosen": "The design starts with the naive nearest-driver scan as a deliberate baseline, precisely so the rest of the walkthrough can replace it piece by piece."
+        }
+      ]
     },
     {
       "id": "location-ingest",
       "title": "2. Driver Location Ingestion at Scale",
       "description": "Millions of drivers ping location every few seconds. Don't write each ping to the primary synchronously — accept fire-and-forget, push to a stream, and update a fast location store and the geo index asynchronously. Only the latest location per driver matters.",
-      "patterns": [
-        "Write-heavy ingestion pipeline"
-      ],
       "probeLinks": [
         "uber-realtime-data",
         "kafka-design",
@@ -2433,6 +2362,14 @@
           "definition": "A high-throughput log/queue buffering updates for async processing.",
           "whyItMatters": "Decouples the firehose from the stores so spikes don't overload them.",
           "group": "Driver Location Ingestion at Scale"
+        },
+        {
+          "term": "Write-heavy ingestion pipeline",
+          "description": "Absorb a firehose of updates via a stream and async workers rather than synchronous writes.",
+          "whyItMatters": "Millions of high-frequency updates (driver pings) that can't hit the primary directly.",
+          "steps": [
+            "location-ingest"
+          ]
         }
       ],
       "options": [
@@ -2644,15 +2581,24 @@
             "LocStream"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. throughput",
+          "description": "Writing every ping synchronously to a durable database gives an always-current, simple record but demands ~2.5M durable writes/sec that the DB cannot absorb; accepting pings fire-and-forget onto a stream absorbs the firehose but leaves the location store seconds stale.",
+          "chosen": "The design accepts eventual consistency, pushing pings onto a stream with async workers updating an in-memory latest-location store, because matching only needs a recent-enough position, not a durable one."
+        },
+        {
+          "name": "History vs. cost",
+          "description": "Retaining every ping preserves full driver location history, but almost all of that history is never read, so the storage and write cost is mostly wasted; keeping only the latest location per driver is cheap but discards the trail.",
+          "chosen": "The design keeps only the latest location per driver in a fast KV store, since matching needs where a driver is now, not where they were."
+        }
       ]
     },
     {
       "id": "geo-index",
       "title": "3. Geospatial Index for Nearby Drivers",
       "description": "Replace the scan with a spatial index. Encode each driver's location into a geo cell (geohash or S2); 'nearby drivers' becomes 'drivers in this cell and its neighbors'. The matching service queries the index, not the raw location store.",
-      "patterns": [
-        "Geo-indexing (geohash / S2)"
-      ],
       "probeLinks": [
         "uber-h3",
         "h3-docs",
@@ -2673,6 +2619,14 @@
           "definition": "Querying a cell plus its adjacent cells.",
           "whyItMatters": "A driver just over a cell edge is still nearby; you must include neighbors or miss them.",
           "group": "Geospatial Index for Nearby Drivers"
+        },
+        {
+          "term": "Geo-indexing (geohash / S2)",
+          "description": "Encode locations into hierarchical cells so 'nearby' becomes a prefix/cell lookup instead of a full scan.",
+          "whyItMatters": "Proximity queries over many points — ride matching, nearby search, maps.",
+          "steps": [
+            "geo-index"
+          ]
         }
       ],
       "options": [
@@ -2791,16 +2745,19 @@
         "highlight": [
           "GeoIndex"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. adaptivity",
+          "description": "Fixed geohash buckets make 'nearby' cheap prefix math (same cell plus eight neighbors) and are easy to update as drivers move, but fixed cell sizes don't adapt to density — downtown cells get huge while rural cells sit empty. Hierarchical S2 cells adapt resolution to density with proper spherical neighbor semantics, at the cost of a more complex library and operations.",
+          "chosen": "The design picks geohash buckets in an in-memory store for their simplicity, accepting manual boundary handling and hot-cell mitigation as the price."
+        }
+      ]
     },
     {
       "id": "matching",
       "title": "4. Matching & Dispatch",
       "description": "Given nearby candidates, the matching service ranks them (distance/ETA, rating, acceptance likelihood) and dispatches an offer to the best one. The offer is the unit of dispatch: a short-lived record with its own offer_id, expiry, attempt number, and status, delivered via push. Acceptance names the offer it answers, so a late accept, a duplicate tap, or an accept of an already-expired offer is rejected instead of racing. If declined, unanswered, or expired, dispatch falls through to the next candidate. Idempotency stops duplicate requests creating duplicate matches.",
-      "patterns": [
-        "Matching / assignment",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "uber-matching",
         "lyft-dispatch",
@@ -2830,6 +2787,23 @@
           "definition": "A short-lived offer of one trip to one driver, with offer_id, expiry, attempt number, and status (offered/accepted/declined/expired).",
           "whyItMatters": "Making the offer a first-class entity is what lets accept prove it answers the current valid offer — late, duplicate, and expired accepts become trivial to reject and fall-through is auditable.",
           "group": "Matching & Dispatch"
+        },
+        {
+          "term": "Matching / assignment",
+          "description": "Select the best candidate from a set and assign it atomically so no resource is double-assigned.",
+          "whyItMatters": "Two-sided marketplaces pairing requests with limited supply.",
+          "steps": [
+            "matching"
+          ]
+        },
+        {
+          "term": "Idempotency key",
+          "description": "Dedupe retried ride requests and accepts so a rider/driver isn't matched twice.",
+          "whyItMatters": "State-changing calls over an unreliable mobile network.",
+          "steps": [
+            "matching",
+            "trip-state"
+          ]
         }
       ],
       "options": [
@@ -3050,6 +3024,13 @@
             "Dispatch"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Time-to-match vs. offer exclusivity",
+          "description": "Broadcasting an offer to several drivers at once gets a faster accept in sparse areas, but the same driver can receive multiple trips' offers simultaneously, requiring careful locking to avoid double-assignment and wasting notifications. Sequential best-first offers guarantee a driver only ever sees one offer at a time, but each decline or timeout costs a full offer cycle.",
+          "chosen": "The design dispatches sequential best-first offers, trading some time-to-match for clean exclusivity, simple fairness, and clear accounting per offer."
+        }
       ]
     },
     {
@@ -3179,17 +3160,24 @@
         "before": "Nearby drivers are found.",
         "after": "A density-adaptive matching policy — greedy when sparse, batched when dense.",
         "newRisk": "Batching adds latency and needs the atomic-assignment guarantee to avoid double-dispatch."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Local optimality vs. global optimality",
+          "description": "Greedy nearest-driver matching offers instantly but is locally optimal — it can strand a rider when a slightly-further driver was the better global fit. Batching requests over a 1-2s window and solving the assignment problem produces better total wait/ETA in dense markets, at the cost of the window's delay and solver compute.",
+          "chosen": "The design adapts by market density: greedy where sparse (nothing to batch, no reason to pay the delay) and short-window batched optimization where dense (the global gain covers the 1-2s cost)."
+        },
+        {
+          "name": "One code path vs. two regimes",
+          "description": "A single global policy — always greedy or always batched — is one path to build, test, and operate, but is wrong somewhere: batching is pointless latency in sparse markets and greedy leaves efficiency on the table in dense ones. The adaptive policy fits both regimes but needs a per-cell density signal, a switching threshold, and window tuning.",
+          "chosen": "The design accepts two operational code paths and the tuning burden to avoid teaching a single global default that misfits half its markets."
+        }
+      ]
     },
     {
       "id": "trip-state",
       "title": "5. Trip State Machine & Atomic Assignment",
       "description": "Model the trip as a state machine (matching -> matched -> en route -> in progress -> completed) and make the matching->matched transition an atomic claim so two riders can't grab the same driver. There are really three coupled states: trip state (in the Trips DB), driver availability (available/busy, held as a live lease in the claim store — not the driver profile row), and offer state (offered/accepted/expired) — accept advances all three together under one guarded transition. The live claim lease is driver_id -> trip_id, offer_id, version, expires_at, so exactly one offer can hold a driver and a crash auto-releases the lease via TTL. Acceptance is idempotent and first-writer-wins. Cancellation and expiry are first-class transitions: a rider can cancel while matching, a driver can cancel after accept (releasing the driver and re-matching), an unanswered trip expires, and fare is finalized only after completion.",
-      "patterns": [
-        "State machine",
-        "Distributed lock / CAS",
-        "Idempotency key"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "dynamodb-transactions",
@@ -3210,6 +3198,22 @@
           "definition": "Explicit states with allowed transitions and guards.",
           "whyItMatters": "Makes invariants (one active trip per driver) enforceable and auditable.",
           "group": "Trip State Machine & Atomic Assignment"
+        },
+        {
+          "term": "Distributed lock / CAS",
+          "description": "Atomically claim a trip or driver so concurrent offers don't double-book.",
+          "whyItMatters": "Multiple offers race for the same driver or trip.",
+          "steps": [
+            "trip-state"
+          ]
+        },
+        {
+          "term": "State machine",
+          "description": "Model the trip as explicit states with allowed transitions.",
+          "whyItMatters": "Multi-step lifecycles (matching -> matched -> en route -> completed) needing clear invariants.",
+          "steps": [
+            "trip-state"
+          ]
         }
       ],
       "flows": [
@@ -3469,16 +3473,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/06-trip-state-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "In-store atomicity vs. external coordination",
+          "description": "A distributed lock per driver gives conceptually simple mutual exclusion with TTL auto-release, but adds a lock-store dependency on the hot assignment path, and TTL tuning is treacherous — too short double-assigns, too long blocks re-offers, and stale locks need fencing. An atomic compare-and-set on the driver's claim lease needs no extra locking system, but requires a store with conditional updates and can see contention on hot drivers.",
+          "chosen": "The design makes matching->matched a single guarded CAS that flips offer, availability lease, and trip state together, so first-writer-wins with no separate lock infrastructure."
+        },
+        {
+          "name": "Contention retries vs. serialized ownership",
+          "description": "Serializing all claims for a driver through one owning partition eliminates races by construction — ordering decides the winner with no CAS or lock — but requires consistent driver-to-owner partitioning, clean failover handoff, and makes a hot driver's partition a throughput bottleneck. Optimistic CAS avoids that routing machinery but burns retries under bursts on contested drivers.",
+          "chosen": "The design prefers CAS with fast loser re-offer over single-writer partitioning, keeping the claim path free of partition-ownership and rebalancing machinery."
+        }
       ]
     },
     {
       "id": "surge",
       "title": "6. Surge Pricing",
       "description": "When demand outstrips supply in an area, raise prices to ration demand and pull in more drivers. Compute a per-cell demand/supply ratio over a sliding window, turn it into a surge multiplier, and apply that multiplier at quote time — reusing the same geo cells that matching already maintains.",
-      "patterns": [
-        "Real-time demand pricing",
-        "Geo-indexing (geohash / S2)"
-      ],
       "probeLinks": [
         "uber-surge-pricing",
         "driver-surge-pricing",
@@ -3501,6 +3513,14 @@
           "definition": "Lock the multiplier into the fare estimate shown to the rider.",
           "whyItMatters": "Riders must see a stable price; you can't change it mid-trip.",
           "group": "Surge Pricing"
+        },
+        {
+          "term": "Real-time demand pricing",
+          "description": "Compute a per-cell multiplier from demand/supply to balance the marketplace.",
+          "whyItMatters": "When supply can't meet demand and you want to ration/incentivize.",
+          "steps": [
+            "surge"
+          ]
         }
       ],
       "deepDives": [
@@ -3565,15 +3585,19 @@
           "SurgeStore"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-surge.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-surge.jpg",
+      "tradeoffs": [
+        {
+          "name": "Responsiveness vs. price stability",
+          "description": "Recomputing the demand/supply ratio instant-by-instant reacts fastest to a supply crunch, but makes quoted prices flicker second to second, which feels arbitrary and unfair to riders. Smoothing over a sliding window stabilizes the multiplier but lags real demand shifts.",
+          "chosen": "The design computes per-cell surge over a sliding window and applies it at quote time, deliberately damping flicker while still tracking sustained imbalance."
+        }
+      ]
     },
     {
       "id": "eta",
       "title": "7. ETA & Routing",
       "description": "Both matching and riders need ETAs. A routing service computes travel time over a road graph with live traffic, feeding match ranking (nearest by ETA, not straight-line distance) and rider-facing arrival estimates. ETAs are cached and refreshed rather than recomputed on every poll.",
-      "patterns": [
-        "Read model / cache"
-      ],
       "probeLinks": [
         "uber-deepeta",
         "google-routes",
@@ -3605,6 +3629,9 @@
           "definition": "Reusing recent route/ETA results rather than recomputing per request.",
           "whyItMatters": "Routing is expensive; caching and incremental updates keep it affordable at scale.",
           "group": "ETA & Routing"
+        },
+        {
+          "term": "Read model / cache"
         }
       ],
       "traps": [
@@ -3781,16 +3808,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/08-eta-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Accuracy vs. compute cost",
+          "description": "Straight-line haversine distance is effectively free but ignores roads, rivers, and one-ways — the geometrically nearest driver can be far by car, hurting rider wait and driver efficiency. Routing over a live-traffic road graph ranks by true ETA but is a heavy, specialized subsystem where per-request shortest-path is expensive.",
+          "chosen": "The design runs a live-traffic routing service so 'nearest' means nearest by ETA, absorbing the subsystem cost because match quality and rider-facing estimates both depend on it."
+        },
+        {
+          "name": "Query speed vs. traffic freshness",
+          "description": "Precomputing contraction hierarchies turns each ETA query into a fast lookup with predictable latency — ideal for ranking many candidates — but live traffic changes force periodic expensive re-preprocessing, so the graph lags sudden incidents. On-demand routing stays fresh but pays full path-search cost per query.",
+          "chosen": "The design keeps on-demand routing with live traffic and mitigates cost by caching and refreshing ETAs rather than recomputing on every poll."
+        }
       ]
     },
     {
       "id": "scale",
       "title": "8. Scaling by Region (geo-sharding)",
       "description": "Density is wildly uneven — a few cities dominate. Shard the geo index and matching by region/city so each operates locally and a hot city is isolated. A region router directs requests and pings to the right shard; cross-region trips (airport runs) are handled explicitly. The ingest backbone is one global stream partitioned by geo cell, fanned into per-region geo indexes, so region ownership is a consumer-assignment concern and failover replays from a single log. This step also turns the observability signals into a concrete operating model: per-city SLOs with page/degrade thresholds and recovery conditions.",
-      "patterns": [
-        "Geo-sharding by region",
-        "Write-heavy ingestion pipeline"
-      ],
       "probeLinks": [
         "uber-realtime-data",
         "postgis-docs",
@@ -3815,6 +3850,14 @@
           "definition": "A nearby query rarely crosses a city boundary.",
           "whyItMatters": "Region is a natural shard key — it keeps the working set of a query on one shard.",
           "group": "Scaling by Region (geo-sharding)"
+        },
+        {
+          "term": "Geo-sharding by region",
+          "description": "Partition the geo index and matching by city/region so a hot city is isolated and queries stay local.",
+          "whyItMatters": "Extreme density skew where a few cities dominate load.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -3977,7 +4020,19 @@
           "GeoA",
           "GeoB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Blast-radius isolation vs. boundary complexity",
+          "description": "A single global geo index is the simplest topology — no routing or boundary logic — but one mega-city's New Year's Eve spike degrades query latency for every other city. Region sharding contains a hot city and lets it scale independently, but cross-region trips (airport runs) and boundary rebalancing now need explicit handling and tooling.",
+          "chosen": "The design shards the geo index and matching by region with per-region autoscaling, accepting explicit cross-region trip handling to keep one city's 50x spike from touching the rest."
+        },
+        {
+          "name": "Local ownership vs. failover simplicity",
+          "description": "Fully independent per-region ingest pipelines keep each region self-contained but make region handoff and recovery bespoke; a single global stream partitioned by geo cell centralizes the backbone so failover is just consumer reassignment and replay, at the cost of one shared log everyone depends on.",
+          "chosen": "The design uses one global geo-partitioned stream fanned into per-region indexes, so region ownership is a consumer-assignment concern and failover replays from a single log."
+        }
+      ]
     }
   ],
   "finalDesign": {

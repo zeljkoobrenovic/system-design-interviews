@@ -1407,81 +1407,11 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Idempotency key",
-      "what": "A client-supplied key that lets the server detect and dedupe retries, executing the effect at most once and replaying the original response.",
-      "whenToUse": "Any state-changing API over an unreliable network where the client may retry — especially money movement.",
-      "steps": [
-        "idempotency",
-        "webhooks"
-      ],
-      "group": "Idempotency Keys (safe retries)"
-    },
-    {
-      "name": "Double-entry ledger",
-      "what": "Record every money movement as balanced debit/credit entries that sum to zero, append-only and immutable.",
-      "whenToUse": "Whenever correctness and auditability of balances matter more than write convenience.",
-      "steps": [
-        "ledger"
-      ],
-      "group": "Double-Entry Ledger (the source of truth)"
-    },
-    {
-      "name": "Transactional outbox",
-      "what": "Write domain events to an outbox table in the same DB transaction as the state change, then relay them to a queue, so state and events can't diverge.",
-      "whenToUse": "When you must publish an event exactly-once alongside a database write without distributed transactions.",
-      "steps": [
-        "async-capture",
-        "webhooks"
-      ],
-      "group": "Asynchronous Capture & State Machine"
-    },
-    {
-      "name": "Saga / state machine",
-      "what": "Model a multi-step money flow as explicit states with compensating actions instead of one big distributed transaction.",
-      "whenToUse": "Long-running flows spanning external systems (authorize → capture → settle) that can fail partway.",
-      "steps": [
-        "async-capture"
-      ],
-      "group": "Asynchronous Capture & State Machine"
-    },
-    {
-      "name": "Reconciliation",
-      "what": "Periodically compare your internal records against an authoritative external source and surface any drift for repair.",
-      "whenToUse": "Any integration where a second system also holds the truth (PSPs, banks) and the two can diverge.",
-      "steps": [
-        "reconciliation"
-      ],
-      "group": "Reconciliation Against the PSP"
-    },
-    {
-      "name": "Read model (CQRS)",
-      "what": "Derive a fast, query-optimized view (balances) from the authoritative write store (the ledger) rather than querying it directly.",
-      "whenToUse": "Read-heavy queries over an append-only or normalized write store that's expensive to aggregate on the fly.",
-      "steps": [
-        "payouts"
-      ],
-      "group": "Payouts & Balance Read Model"
-    },
-    {
-      "name": "Sharding by key",
-      "what": "Partition the ledger by account so writes scale horizontally while keeping a transaction's entries co-located.",
-      "whenToUse": "When ledger write volume outgrows a single primary.",
-      "steps": [
-        "scale-ledger"
-      ],
-      "group": "Scaling the Ledger (sharding)"
-    }
-  ],
   "steps": [
     {
       "id": "sync-charge",
       "title": "1. Synchronous Charge (the naive baseline)",
       "description": "Start with the simplest thing that could work: the client calls the payment service, which calls the external PSP and returns the result in one synchronous request. This exposes the core problem before we add machinery.",
-      "patterns": [
-        "Synchronous request/response"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "stripe-payment-intents",
@@ -1505,6 +1435,9 @@
           "definition": "Authorization reserves funds; capture actually moves them.",
           "whyItMatters": "Many flows authorize now and capture later, which forces asynchronous design.",
           "group": "Synchronous Charge (the naive baseline)"
+        },
+        {
+          "term": "Synchronous request/response"
         }
       ],
       "talkingPoints": [
@@ -1567,16 +1500,19 @@
           "DB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-sync-charge.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-sync-charge.jpg",
+      "tradeoffs": [
+        {
+          "name": "One round trip vs. retry safety",
+          "description": "A single synchronous call to the PSP gives the client an immediate answer with no extra machinery, but the first timeout exposes the flaw: the client cannot tell whether the charge happened, and a retry risks charging twice while giving up risks not charging at all.",
+          "chosen": "The design keeps this naive baseline only as the starting point that exposes the retry ambiguity every subsequent step exists to remove."
+        }
+      ]
     },
     {
       "id": "idempotency",
       "title": "2. Idempotency Keys (safe retries)",
       "description": "Add a client-supplied Idempotency-Key. The service claims the key before doing work; if the same key arrives again, it replays the stored response instead of charging twice. This converts an unreliable network into at-most-once effects.",
-      "patterns": [
-        "Idempotency key",
-        "Dedupe store"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "stripe-webhooks",
@@ -1597,6 +1533,18 @@
           "definition": "At-least-once delivery (retries) plus dedupe (idempotency) yields one effect.",
           "whyItMatters": "True exactly-once delivery is impossible; exactly-once effect is achievable and is what we actually need.",
           "group": "Idempotency Keys (safe retries)"
+        },
+        {
+          "term": "Idempotency key",
+          "description": "A client-supplied key that lets the server detect and dedupe retries, executing the effect at most once and replaying the original response.",
+          "whyItMatters": "Any state-changing API over an unreliable network where the client may retry — especially money movement.",
+          "steps": [
+            "idempotency",
+            "webhooks"
+          ]
+        },
+        {
+          "term": "Dedupe store"
         }
       ],
       "options": [
@@ -1760,16 +1708,19 @@
       },
       "whyNow": [
         "Every later component (capture, webhooks) also retries, so idempotency must exist before we add asynchrony."
+      ],
+      "tradeoffs": [
+        {
+          "name": "Co-located claim vs. dedicated key store",
+          "description": "Claiming the Idempotency-Key as a row in the payments database means the claim and the charge result commit in one transaction and can never diverge, but it couples dedup throughput to the primary DB. A dedicated store like Redis claims keys fast and isolates that load, yet a crash between the external claim and the DB commit leaves two stores disagreeing about whether the charge happened.",
+          "chosen": "The design claims the key in the payments DB so the claim and result are atomic, accepting the primary-DB coupling rather than a two-store recovery problem on the money path."
+        }
       ]
     },
     {
       "id": "ledger",
       "title": "3. Double-Entry Ledger (the source of truth)",
       "description": "Replace ad-hoc balance columns with an append-only, immutable double-entry ledger. Every money movement writes balanced entries that sum to zero across accounts. Balances become a function of the ledger, not a mutable field that can drift.",
-      "patterns": [
-        "Double-entry ledger",
-        "Append-only / immutability"
-      ],
       "probeLinks": [
         "square-books",
         "modern-treasury-ledgers",
@@ -1793,6 +1744,17 @@
           "definition": "Entries are never updated or deleted; corrections are new compensating entries.",
           "whyItMatters": "An immutable log is auditable and replayable — essential for money.",
           "group": "Double-Entry Ledger (the source of truth)"
+        },
+        {
+          "term": "Double-entry ledger",
+          "description": "Record every money movement as balanced debit/credit entries that sum to zero, append-only and immutable.",
+          "whyItMatters": "Whenever correctness and auditability of balances matter more than write convenience.",
+          "steps": [
+            "ledger"
+          ]
+        },
+        {
+          "term": "Append-only / immutability"
         }
       ],
       "deepDives": [
@@ -1944,17 +1906,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-ledger-opt2.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Read cost vs. self-checking correctness",
+          "description": "A mutable balance column is a trivially fast single-column read with a simple mental model, but a lost or double-applied update silently corrupts the balance with no history to detect, undo, or reconcile against the PSP. Append-only double-entry rows cost two immutable writes per movement and force balance reads to sum entries, but every write must balance to zero — an invariant that catches bugs by construction.",
+          "chosen": "The design chooses the append-only double-entry ledger, paying storage and read complexity for books that always sum to zero and a full audit trail for finance and disputes."
+        }
       ]
     },
     {
       "id": "async-capture",
       "title": "4. Asynchronous Capture & State Machine",
       "description": "Decouple authorization from capture. The payment becomes an explicit state machine (authorized → capturing → captured / failed, plus capture_unknown for the in-doubt window when a PSP call times out), and a capture worker drives it via a queue. Events are published using a transactional outbox so state and events never diverge.",
-      "patterns": [
-        "Saga / state machine",
-        "Transactional outbox",
-        "Work queue"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "stripe-webhooks",
@@ -1978,6 +1942,17 @@
           "definition": "Events written to an outbox table in the same DB transaction as the state change, then relayed to the queue.",
           "whyItMatters": "Guarantees the event is published if and only if the state change committed.",
           "group": "Asynchronous Capture & State Machine"
+        },
+        {
+          "term": "Saga / state machine",
+          "description": "Model a multi-step money flow as explicit states with compensating actions instead of one big distributed transaction.",
+          "whyItMatters": "Long-running flows spanning external systems (authorize → capture → settle) that can fail partway.",
+          "steps": [
+            "async-capture"
+          ]
+        },
+        {
+          "term": "Work queue"
         }
       ],
       "options": [
@@ -2300,17 +2275,24 @@
           "Queue",
           "Capture"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Atomic outbox vs. dual write",
+          "description": "Publishing the event to the queue and writing the DB as two independent operations is the simplest code, but a crash between them leaves state and events inconsistent — dropped or phantom payment events, unacceptable for money. Writing the event into an outbox table in the same DB transaction guarantees the two agree, at the cost of a relay process and outbox pruning.",
+          "chosen": "The design uses the transactional outbox with an at-least-once relay, trading one extra moving part for events that exist exactly when their state change committed."
+        },
+        {
+          "name": "Synchronous capture vs. state-machine decoupling",
+          "description": "Keeping authorize and capture in one flow is simpler, but capture involves an ambiguous external PSP call; decoupling capture behind a queue-driven worker and an explicit state machine (including a capture_unknown state for the in-doubt window) adds states to define and maintain in exchange for every ambiguous outcome having a named, recoverable place to land.",
+          "chosen": "The design makes the payment an explicit state machine driven by an async capture worker, so a timed-out PSP call parks in capture_unknown instead of guessing."
+        }
+      ]
     },
     {
       "id": "webhooks",
       "title": "5. Webhooks & Exactly-Once Inbound Events",
       "description": "PSPs report settlements, disputes, and late failures asynchronously via webhooks. We verify signatures, deduplicate by event id, and enqueue for processing — applying the same exactly-once-effect discipline to events we receive.",
-      "patterns": [
-        "Idempotency key",
-        "Transactional outbox",
-        "Signature verification"
-      ],
       "probeLinks": [
         "stripe-webhooks",
         "kafka-design",
@@ -2334,6 +2316,9 @@
           "definition": "PSPs retry webhooks until acked, so duplicates are normal.",
           "whyItMatters": "We must dedupe on our side; we can't ask the PSP to deliver exactly once.",
           "group": "Webhooks & Exactly-Once Inbound Events"
+        },
+        {
+          "term": "Signature verification"
         }
       ],
       "flows": [
@@ -2623,16 +2608,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/05-webhooks-opt2.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Dedup at ingress vs. dedup at the ledger",
+          "description": "Deduplicating inbound PSP webhooks by event id at ingress means downstream processing sees each event once and the webhook can be acked fast, but it adds a dedup store on the hot inbound path that must retain ids for the PSP's whole retry window. Relying only on a unique constraint at the ledger keeps correctness at the source of truth with one less component, yet every duplicate travels the full pipeline first and non-ledger side effects like notifications go unguarded.",
+          "chosen": "The design dedups by event id at ingress before enqueueing, so duplicates are collapsed once and every downstream effect — not just the ledger write — happens exactly once."
+        }
       ]
     },
     {
       "id": "reconciliation",
       "title": "6. Reconciliation Against the PSP",
       "description": "The PSP is a second source of truth. A reconciliation service ingests PSP settlement files and compares them against our ledger, surfacing any drift (missing, extra, or mismatched amounts) for automated or manual repair.",
-      "patterns": [
-        "Reconciliation",
-        "Batch processing"
-      ],
       "probeLinks": [
         "square-books",
         "modern-treasury-ledgers",
@@ -2655,6 +2643,9 @@
           "definition": "A line item that doesn't match between the two sources.",
           "whyItMatters": "Breaks are the unit of work for finance ops; the system should minimize and route them.",
           "group": "Reconciliation Against the PSP"
+        },
+        {
+          "term": "Batch processing"
         }
       ],
       "deepDives": [
@@ -2735,17 +2726,19 @@
           "Recon"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-reconciliation.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-reconciliation.jpg",
+      "tradeoffs": [
+        {
+          "name": "Trusting the ledger vs. verifying against the PSP",
+          "description": "A perfectly built ledger is still one party's view; the PSP's settlement file is a second source of truth that can disagree — as when the ledger says $1,000,000 and the file says $999,300. Continuous reconciliation costs an ingestion service and an operating model for working breaks, but it is the only way to detect drift from missed webhooks, bugs, or PSP-side adjustments.",
+          "chosen": "The design runs a reconciliation service that compares PSP settlement files against the ledger line by line, treating breaks as a managed lifecycle rather than assuming internal correctness suffices."
+        }
+      ]
     },
     {
       "id": "payouts",
       "title": "7. Payouts & Balance Read Model",
       "description": "Merchants need their money and fast balance reads. We derive a balance read model from the ledger (CQRS) for 50k rps lookups. A payout service moves available balances to bank rails — but it reserves funds in the authoritative ledger before the bank call, never trusting the lagging read model to authorize money movement.",
-      "patterns": [
-        "Read model (CQRS)",
-        "Idempotency key",
-        "Double-entry ledger"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "square-books",
@@ -2769,6 +2762,14 @@
           "definition": "Pending funds are authorized/settling; available funds can be paid out.",
           "whyItMatters": "Paying out pending money risks clawbacks on disputes or failed settlement.",
           "group": "Payouts & Balance Read Model"
+        },
+        {
+          "term": "Read model (CQRS)",
+          "description": "Derive a fast, query-optimized view (balances) from the authoritative write store (the ledger) rather than querying it directly.",
+          "whyItMatters": "Read-heavy queries over an append-only or normalized write store that's expensive to aggregate on the fly.",
+          "steps": [
+            "payouts"
+          ]
         }
       ],
       "flows": [
@@ -3058,16 +3059,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/07-payouts-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Projection speed vs. authoritative reads",
+          "description": "A projected balance read model serves the ~50k rps of balance lookups as single fast reads, but it is eventually consistent — a just-posted entry may lag — so trusting it to authorize a payout could move money on stale data. Summing the ledger on every read is always exact but O(entries) and cannot hold that read volume.",
+          "chosen": "The design serves display reads from the CQRS projection but reserves payout funds against the strongly consistent ledger before the bank call, never letting the lagging read model authorize money movement."
+        },
+        {
+          "name": "Projection vs. snapshot-plus-delta",
+          "description": "Periodic balance snapshots plus a delta sum keep reads strongly consistent with bounded cost, but snapshotting is another background job that must handle late entries, and hot accounts still pay a growing delta between checkpoints. A maintained projection is a single steady pipeline whose output is a pure fast lookup shaped for payout rules (available vs. pending).",
+          "chosen": "The design maintains a projector-fed read model rather than snapshots, since the eventual consistency it accepts is confined to display reads that do not gate money."
+        }
       ]
     },
     {
       "id": "scale-ledger",
       "title": "8. Scaling the Ledger (sharding)",
       "description": "Ledger write volume outgrows one primary. Partition by account so each transaction's entries stay co-located on one shard, preserving atomic balanced writes while scaling horizontally. Cross-account transfers need explicit handling.",
-      "patterns": [
-        "Sharding by key",
-        "Double-entry ledger"
-      ],
       "probeLinks": [
         "square-books",
         "modern-treasury-ledgers",
@@ -3089,6 +3098,14 @@
           "definition": "Keeping related rows on the same shard so they can be written in one local transaction.",
           "whyItMatters": "Balanced double-entry writes are easiest when both sides live on one shard.",
           "group": "Scaling the Ledger (sharding)"
+        },
+        {
+          "term": "Sharding by key",
+          "description": "Partition the ledger by account so writes scale horizontally while keeping a transaction's entries co-located.",
+          "whyItMatters": "When ledger write volume outgrows a single primary.",
+          "steps": [
+            "scale-ledger"
+          ]
         }
       ],
       "options": [
@@ -3214,17 +3231,20 @@
           "LedgerA",
           "LedgerB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Shard scale-out vs. cross-shard atomicity",
+          "description": "A single vertically scaled primary keeps every balanced double-entry write trivially local and strongly consistent, but its write ceiling eventually returns as the bottleneck. Sharding by account scales writes linearly and keeps most transactions on one shard via a per-shard clearing account, at the cost of cross-shard transfers needing a two-entry saga linked by transaction_id and reconciled for completeness.",
+          "chosen": "The design shards by account with per-shard clearing accounts, keeping the common case atomic on one shard and paying the saga complexity only for genuine cross-account transfers."
+        }
+      ]
     },
     {
       "id": "consistency-choices",
       "title": "8a. Where Money Demands Strong Consistency",
       "parent": "scale-ledger",
       "description": "Be deliberate about consistency. Ledger writes and payout guards need strong consistency; balance reads and analytics can tolerate lag. Spend the consistency budget where wrong answers move money.",
-      "patterns": [
-        "CAP tradeoffs",
-        "Read model (CQRS)"
-      ],
       "probeLinks": [
         "spanner-paper",
         "stripe-webhooks",
@@ -3241,6 +3261,9 @@
           "definition": "Strong: reads see the latest committed write. Eventual: reads may lag but converge.",
           "whyItMatters": "Money correctness needs strong guarantees on the critical path; not everywhere, or you pay needless latency/availability.",
           "group": "Where Money Demands Strong Consistency"
+        },
+        {
+          "term": "CAP tradeoffs"
         }
       ],
       "deepDives": [
@@ -3385,6 +3408,13 @@
             ]
           },
           "aiVisual": "assets/generated/ai-visuals/steps/09-consistency-choices-opt2.jpg"
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Uniform strong consistency vs. a spent consistency budget",
+          "description": "Strong consistency everywhere gives the simplest correctness story — no stale balance is ever shown — but forcing 50k rps of display reads through the ledger shards is expensive, adds coordination latency, and pays a consistency tax on data where staleness is harmless. Splitting regimes keeps money-moving writes strongly consistent while display reads ride cheap eventual projections, at the cost of developers having to classify every operation correctly.",
+          "chosen": "The design spends strong consistency only where wrong answers move money — ledger writes and payout guards — and serves balances and status from eventually consistent projections."
         }
       ]
     }

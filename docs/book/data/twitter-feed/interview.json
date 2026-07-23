@@ -1707,55 +1707,6 @@
       "makesIrrelevant": "Managed metrics, tracing, and log retention remove much of the custom operational datastore needed to diagnose fanout delays and p99 regressions."
     }
   ],
-  "patterns": [
-    {
-      "name": "Fanout-on-write",
-      "what": "Precompute each follower's timeline at post time by pushing the tweet id into their cached list.",
-      "whenToUse": "Read-heavy systems where reads must be cheap and writers have manageable fanout.",
-      "steps": [
-        "fanout-write",
-        "hybrid"
-      ],
-      "group": "Fanout-on-Write: Precompute Timelines"
-    },
-    {
-      "name": "Fanout-on-read",
-      "what": "Assemble the timeline at read time by pulling recent tweets from each followee and merging.",
-      "whenToUse": "When a writer has enormous fanout (celebrities) so push would be wasteful.",
-      "steps": [
-        "fanout-read",
-        "hybrid"
-      ],
-      "group": "The Celebrity Problem: Fanout-on-Read"
-    },
-    {
-      "name": "Hybrid fanout",
-      "what": "Push for normal accounts, pull for celebrities, merge at read time.",
-      "whenToUse": "Real social graphs with a heavy-tailed follower distribution.",
-      "steps": [
-        "hybrid"
-      ],
-      "group": "Hybrid Fanout: Push for the Many, Pull for the Few"
-    },
-    {
-      "name": "Async work queue",
-      "what": "Offload fanout to a queue so posting returns fast and bursts are absorbed.",
-      "whenToUse": "Any expensive side-effect that need not block the user's request.",
-      "steps": [
-        "fanout-write"
-      ],
-      "group": "Fanout-on-Write: Precompute Timelines"
-    },
-    {
-      "name": "Cache-aside hydration",
-      "what": "Store ids in the timeline, hydrate full tweet bodies from a separate hot cache on read.",
-      "whenToUse": "When the same tweet appears in millions of timelines — store it once, reference by id.",
-      "steps": [
-        "read-path"
-      ],
-      "group": "Read Path: Hydrate, Rank, Paginate"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1902,7 +1853,14 @@
           "instead": "Acknowledge it as the baseline and move to precomputation."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Read-time assembly vs. tweet-store load",
+          "description": "Assembling the timeline on every read is trivially consistent and needs no precomputed state — the latest tweets always appear. But at 300K reads/sec, each read fans in across ~200 followees against the tweet store, multiplying read traffic by orders of magnitude on the system's hottest path.",
+          "chosen": "The baseline is kept only to make the bottleneck concrete; the design immediately moves the fan-in cost off the read path."
+        }
+      ]
     },
     {
       "id": "fanout-write",
@@ -2045,6 +2003,14 @@
           "whyItMatters": "Trades cheap reads for expensive writes — the right call when reads dominate.",
           "example": "A 200-follower user posts -> 200 cache list-pushes; reads are then O(1).",
           "group": "Fanout-on-Write: Precompute Timelines"
+        },
+        {
+          "term": "Async work queue",
+          "description": "Offload fanout to a queue so posting returns fast and bursts are absorbed.",
+          "whyItMatters": "Any expensive side-effect that need not block the user's request.",
+          "steps": [
+            "fanout-write"
+          ]
         }
       ],
       "probeLinks": [
@@ -2057,10 +2023,6 @@
         "meta-cache-consistent",
         "tail-at-scale",
         "sre-monitoring"
-      ],
-      "patterns": [
-        "Fanout-on-write",
-        "Async work queue"
       ],
       "whyNow": [
         "This is the canonical answer to a read-heavy timeline and sets up the celebrity problem you'll solve next."
@@ -2177,6 +2139,18 @@
           "expectedBehavior": "Lag and queue-depth alerts fire; workers autoscale and large-fanout jobs are chunked so smaller authors aren't starved.",
           "mitigation": "Partition by author, chunk celebrity-sized jobs, rate-limit per author, and shed/defer low-priority work under backpressure."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Storage amplification vs. read hops",
+          "description": "Fanning out full tweet copies makes each read a single self-contained fetch with no hydration, but a popular tweet gets copied into millions of timelines, and every edit or delete must rewrite every copy. Fanning out only tweet ids keeps timelines tiny and keeps one canonical tweet that edits and deletes touch once, at the cost of a second hydration hop on every read.",
+          "chosen": "The design stores only tweet ids in timelines and hydrates through a shared tweet cache, so a hot tweet is cached once instead of duplicated everywhere."
+        },
+        {
+          "name": "Post latency vs. delivery lag",
+          "description": "Doing the fanout synchronously would make a tweet visible in follower timelines the instant the post returns, but posting would then block on thousands of cache writes and bursts would stall authors. Queueing the fanout lets posting return immediately and lets workers absorb bursts, at the cost of a short lag before followers see the tweet.",
+          "chosen": "The design fans out asynchronously via a queue, accepting seconds of delivery lag so posting stays fast and traffic bursts are absorbed by workers."
+        }
       ]
     },
     {
@@ -2232,9 +2206,6 @@
         "twitter-recommendation-blog",
         "twitter-cache-analysis",
         "tail-at-scale"
-      ],
-      "patterns": [
-        "Fanout-on-read"
       ],
       "whyNow": [
         "Naming the celebrity problem and solving it asymmetrically is exactly what separates a senior answer from 'just use fanout-on-write'."
@@ -2349,7 +2320,14 @@
           "instead": "Pull only for the rare high-fanout accounts; push for the vast majority."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-fanout-read.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-fanout-read.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fanout storms vs. read-time merging",
+          "description": "Pushing a celebrity's post to tens of millions of followers saturates fanout workers and delays everyone's timelines; pulling their tweets at read time avoids the storm but adds a merge to every follower's read. The threshold that classifies an account as a celebrity is the dial between these costs: set too low and many reads pay merge overhead, set too high and fanout storms persist.",
+          "chosen": "The design excludes the few highest-follower accounts from push and pulls them at read time, betting that their constantly-read recent tweets stay hot in cache so the pull is cheap."
+        }
+      ]
     },
     {
       "id": "hybrid",
@@ -2538,10 +2516,6 @@
         }
       ],
       "decisionPrompt": "At read time, how do you merge pushed timeline ids with pulled celebrity tweets without double-counting or missing recent posts?",
-      "patterns": [
-        "Hybrid fanout",
-        "Cache-aside hydration"
-      ],
       "probeLinks": [
         "tao-paper",
         "kafka-design",
@@ -2668,6 +2642,28 @@
           "trap": "Recomputing all timelines when a user crosses the celebrity threshold.",
           "why": "That is itself a massive fanout event for a popular account.",
           "instead": "Stop pushing going forward and rely on the pull path; optionally backfill lazily."
+        }
+      ],
+      "concepts": [
+        {
+          "term": "Hybrid fanout",
+          "description": "Push for normal accounts, pull for celebrities, merge at read time.",
+          "whyItMatters": "Real social graphs with a heavy-tailed follower distribution.",
+          "steps": [
+            "hybrid"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Uniform path vs. cost-optimal split",
+          "description": "Pure push and pure pull each give one simple, uniform read path, but each collapses at one extreme: push melts on celebrity fanout, pull melts on read-heavy fan-in. The hybrid gets the cheap case from both, at the price of the most complex option — two delivery modes, an is_celebrity flag to maintain and re-classify, and a read path that must merge and dedup two sources without double-counting or missing recent posts.",
+          "chosen": "The design goes hybrid — push for the many, pull for the few — accepting merge-and-dedup complexity on the read path because neither pure strategy survives both extremes."
+        },
+        {
+          "name": "Static threshold vs. adaptive classification",
+          "description": "A fixed follower-count threshold (~1M) is a single, easy-to-reason-about knob for who gets pulled, but follower counts drift and a cost-based estimate would track actual fanout expense better. Richer classification adapts to real load, at the cost of more bookkeeping and accounts flapping between push and pull modes.",
+          "chosen": "The design uses a simple follower-count flag as the tuning knob, keeping classification cheap and treating re-classification as occasional bookkeeping."
         }
       ]
     },
@@ -2836,9 +2832,6 @@
         }
       ],
       "decisionPrompt": "A cached tweet id is only a candidate — what must the read path still check before rendering it, and how do you keep the page full after filtering?",
-      "patterns": [
-        "Cache-aside hydration"
-      ],
       "probeLinks": [
         "twitter-algorithm",
         "twitter-recommendation-blog",
@@ -2866,6 +2859,14 @@
           "whyItMatters": "Lets you sort and paginate timelines by id without a separate timestamp index.",
           "example": "nextCursor = the smallest tweet id returned in this page.",
           "group": "Read Path: Hydrate, Rank, Paginate"
+        },
+        {
+          "term": "Cache-aside hydration",
+          "description": "Store ids in the timeline, hydrate full tweet bodies from a separate hot cache on read.",
+          "whyItMatters": "When the same tweet appears in millions of timelines — store it once, reference by id.",
+          "steps": [
+            "read-path"
+          ]
         }
       ],
       "deepDives": [
@@ -3051,6 +3052,23 @@
             "ReadSvc",
             "TweetCache"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Engagement vs. predictability",
+          "description": "Relevance ranking scores the hydrated candidate set so the most engaging tweets surface and engagement typically rises, but ordering becomes less predictable, recent tweets users expect can be buried, and pagination must stay stable as scores change. Reverse-chronological is transparent and trivially paginated by snowflake id, but mixes high- and low-value tweets and lets one chatty account dominate.",
+          "chosen": "The design ranks by relevance over the small hydrated candidate set, taking the engagement lift and solving pagination with an opaque cursor that pins the candidate set."
+        },
+        {
+          "name": "Model lift vs. serving dependency",
+          "description": "A learned ranker captures nonlinear signals a hand-tuned formula cannot, but puts a model-serving dependency on the read path that can breach the read SLO when slow. A lightweight inline heuristic (recency decay times affinity times engagement) has no serving hop and captures much of the lift, but its hand-tuned weights drift and plateau below a trained model.",
+          "chosen": "The design uses the ranking service but wraps it in a hard timeout that degrades to reverse-chronological, so relevance is a bonus that can never break the p99 read SLO."
+        },
+        {
+          "name": "Cached candidates vs. current truth",
+          "description": "Treating cached timeline ids as final makes reads fastest, but the cache cannot know about tombstoned or edited tweets, suspended or protected authors, and unfollows, mutes, or blocks that happened after fanout. Re-checking visibility at render time keeps the feed correct, at the cost of per-read filtering and backfill work to keep the page full after candidates drop out.",
+          "chosen": "The design treats every cached id as a candidate, not a guarantee — filtering against current state and backfilling — because serving a blocked or deleted tweet is worse than a slightly costlier read."
         }
       ]
     },
@@ -3240,7 +3258,14 @@
           "mitigation": "Treat the timeline cache as rebuildable derived state, never the source of truth."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-graph-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-graph-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Write duplication vs. single-shard reads",
+          "description": "Maintaining both followers-of and following-of adjacency indexes means every follow edge is written twice and the two must be kept consistent, but each hot query — fanout needs followers, timeline reads need followees — becomes a single-shard lookup. Deriving one direction from the other at query time stores each edge once but turns one of the two hottest queries into a scatter across every shard.",
+          "chosen": "The design keeps two adjacency indexes sharded by user id, paying double writes on the rare follow event so the frequent fanout and read lookups each hit one shard."
+        }
+      ]
     }
   ],
   "finalDesign": {

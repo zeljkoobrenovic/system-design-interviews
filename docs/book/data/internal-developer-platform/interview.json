@@ -1516,138 +1516,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Workload specification",
-      "group": "Developer abstraction",
-      "what": "Developers declare what a service needs (containers + abstract resources), not how to provision it.",
-      "whenToUse": "Whenever you want to hide cloud/Kubernetes detail behind a stable developer contract.",
-      "steps": [
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Separation of concerns (what vs. how)",
-      "group": "Developer abstraction",
-      "what": "Developers own the 'what' (the spec); platform engineers own the 'how' (resource definitions). The orchestrator computes the rest.",
-      "whenToUse": "To let both sides evolve independently without coordinating on every change.",
-      "steps": [
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Dynamic Configuration Management",
-      "group": "Developer abstraction",
-      "what": "Generate app + infra config fresh per deploy per environment instead of maintaining static templates.",
-      "whenToUse": "When per-environment, copy-pasted config has started to drift.",
-      "steps": [
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Golden paths (paved roads)",
-      "group": "Self-service & paved roads",
-      "what": "The supported, best-practices-baked way to build and ship a service, self-served in seconds.",
-      "whenToUse": "To make the right way the easy way without mandating it.",
-      "steps": [
-        "portal",
-        "ephemeral"
-      ]
-    },
-    {
-      "name": "Platform-as-a-Product",
-      "group": "Self-service & paved roads",
-      "what": "Treat the IDP as a product with internal developers as customers: discovery, roadmap, UX, adoption metrics.",
-      "whenToUse": "Always — a platform nobody adopts is a failed platform.",
-      "steps": [
-        "portal",
-        "observe-secure"
-      ]
-    },
-    {
-      "name": "Thinnest Viable Platform",
-      "group": "Self-service & paved roads",
-      "what": "Build the minimum platform that measurably accelerates teams; never thicker than necessary.",
-      "whenToUse": "At the start, and as a constant check against over-building.",
-      "steps": [
-        "startup",
-        "portal"
-      ]
-    },
-    {
-      "name": "Software catalog",
-      "group": "Self-service & paved roads",
-      "what": "A single inventory of all components with ownership, docs, dependencies, and health.",
-      "whenToUse": "Once you have more services than anyone can hold in their head.",
-      "steps": [
-        "portal"
-      ]
-    },
-    {
-      "name": "GitOps",
-      "group": "Delivery & infrastructure",
-      "what": "Git is the source of truth for desired state; an agent continuously reconciles the cluster to it.",
-      "whenToUse": "For auditable, reversible, declarative delivery.",
-      "steps": [
-        "cicd",
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Control-plane reconciliation vs. apply-time IaC",
-      "group": "Delivery & infrastructure",
-      "what": "Continuously reconciling controllers (Crossplane) auto-correct drift; apply-time CLIs (Terraform) reconcile to a point in time.",
-      "whenToUse": "When choosing the engine under the orchestrator.",
-      "steps": [
-        "iac"
-      ]
-    },
-    {
-      "name": "Durable control plane (work queue + idempotency)",
-      "group": "Delivery & infrastructure",
-      "what": "Persist each deploy/reconcile as an idempotent job off a work queue, commit generated desired state to Git, and degrade instead of failing closed so an orchestrator outage blocks only new provisioning.",
-      "whenToUse": "When a shared control plane sits in every team's delivery path and must survive its own outages.",
-      "steps": [
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Progressive delivery",
-      "group": "Delivery & infrastructure",
-      "what": "Roll out changes in steps (canary/blue-green) gated by health signals, with automatic rollback — distinct from a GitOps revert, which flips all replicas at once.",
-      "whenToUse": "When a safe golden path needs more than reversibility: health-gated promotion and auto-rollback.",
-      "steps": [
-        "orchestrator"
-      ]
-    },
-    {
-      "name": "Environment-as-a-Service",
-      "group": "Delivery & infrastructure",
-      "what": "On-demand, short-lived environments provisioned and torn down automatically.",
-      "whenToUse": "For per-PR previews and isolated testing without manual env management.",
-      "steps": [
-        "ephemeral"
-      ]
-    },
-    {
-      "name": "Policy-as-code (guardrails)",
-      "group": "Operations & guardrails",
-      "what": "Encode org policy as code that redirects toward safe defaults rather than blocking.",
-      "whenToUse": "To enforce standards without becoming a gate.",
-      "steps": [
-        "observe-secure"
-      ]
-    },
-    {
-      "name": "Soft multi-tenancy (namespace + RBAC + quotas)",
-      "group": "Operations & guardrails",
-      "what": "Isolate teams with namespaces, RBAC, NetworkPolicies, and quotas on a shared cluster.",
-      "whenToUse": "For mutually trusting internal teams; escalate to hard isolation for regulated workloads.",
-      "steps": [
-        "resource"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "startup",
@@ -1693,14 +1561,29 @@
           "instead": "As soon as drift bites, encode the runbook as automation (scripts, then golden paths) so the documented way is the executed way."
         }
       ],
-      "patterns": [
-        "Thinnest Viable Platform"
-      ],
       "probeLinks": [
         "tvp",
         "cncf-maturity"
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-startup.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-startup.jpg",
+      "concepts": [
+        {
+          "term": "Thinnest Viable Platform",
+          "description": "Build the minimum platform that measurably accelerates teams; never thicker than necessary.",
+          "whyItMatters": "At the start, and as a constant check against over-building.",
+          "steps": [
+            "startup",
+            "portal"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Speed vs. consistency",
+          "description": "A wiki and runbooks with full self-serve is the fastest possible setup — no ticket queue, no hand-offs, and Team Topologies blesses it as a legitimate Thinnest Viable Platform — but it only works while everyone already knows the system. Runbooks drift the moment infra changes, and two engineers following the same page produce subtly different environments.",
+          "chosen": "The design starts here deliberately, accepting drift and tribal knowledge as the right trade for a handful of developers, and moves on only when growth breaks it."
+        }
+      ]
     },
     {
       "id": "naive",
@@ -1753,7 +1636,14 @@
         "cncf-maturity",
         "adidas-kubernetes"
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Safety vs. velocity",
+          "description": "Routing all changes through an ops gatekeeper restores safety and a thin audit trail after self-serve outages, but every database, deploy, and new service becomes a ticket, and the queue grows linearly with adoption — median ticket age stretches from hours to days while ops toil multiplies per environment. This is the classic ticket-ops bottleneck the rest of the design exists to dissolve.",
+          "chosen": "The design passes through this stage as a diagnosis, not a destination: it keeps the safety goal but rejects the human queue as the mechanism."
+        }
+      ]
     },
     {
       "id": "cicd",
@@ -1931,14 +1821,23 @@
           "instead": "Treat configuration as data generated per deploy, not as static files to maintain."
         }
       ],
-      "patterns": [
-        "GitOps"
-      ],
       "probeLinks": [
         "redhat-gitops",
         "opengitops",
         "argo-flux",
         "argo-rollouts"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Managed convenience vs. operational ownership",
+          "description": "GitHub Actions plus Argo CD gives CI with no control plane to run and a GitOps CD with a UI, SSO, and ApplicationSet for multi-tenant and preview generation — but Argo CD is monolithic and yours to operate, and Actions minutes and self-hosted runners still need cost and security attention. Fully self-hosted Jenkins maximizes control but brings a huge plugin attack surface and a controller that bottlenecks scaling.",
+          "chosen": "The design picks GitHub Actions plus Argo CD, trading some vendor coupling for minimal CI operations and Argo's multi-tenancy and templating features it will lean on later."
+        },
+        {
+          "name": "Reversibility vs. rollout safety",
+          "description": "GitOps gives reversible delivery — roll back by reverting the desired-state commit — which is cheap and auditable, but reverting a manifest is not progressive delivery: canaries, health-gated promotion, and automatic rollback need a separate rollout controller. Copying Helm charts per service ships fast but multiplies drift with every tweak.",
+          "chosen": "The design takes GitOps reversibility now and explicitly defers rollout safety to a later rollout controller, while flagging that more Helm copies are the drift problem, not the answer."
+        }
       ]
     },
     {
@@ -2092,6 +1991,15 @@
           "definition": "Keeping the catalog true: validate ownership, sync from a source of truth, flag orphaned services and stale dependency data, and refresh scorecards.",
           "whyItMatters": "A stale catalog is worse than none — devs stop trusting it and route around it. An entry whose owner left, or whose deps are months out of date, silently misleads.",
           "example": "A scheduled sync reconciles catalog-info.yaml against the org chart and the live dependency graph, marks owner-less components 'orphaned', and re-scores them."
+        },
+        {
+          "term": "Golden paths (paved roads)",
+          "description": "The supported, best-practices-baked way to build and ship a service, self-served in seconds.",
+          "whyItMatters": "To make the right way the easy way without mandating it.",
+          "steps": [
+            "portal",
+            "ephemeral"
+          ]
         }
       ],
       "whyNow": [
@@ -2114,17 +2022,23 @@
           "instead": "Budget 2–5 FTEs, or buy a SaaS/supported distribution instead."
         }
       ],
-      "patterns": [
-        "Software catalog",
-        "Golden paths (paved roads)",
-        "Platform-as-a-Product",
-        "Thinnest Viable Platform"
-      ],
       "probeLinks": [
         "backstage",
         "backstage-templates",
         "spotify-backstage",
         "backstage-not-platform"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Flexibility vs. time-to-value",
+          "description": "Self-hosting Backstage gives maximum flexibility on the de-facto open standard, but it is a framework, not a product — roughly 6 to 12 months to production and 2 to 5 FTEs ongoing, with no upstream enterprise support. A SaaS portal delivers a catalog in weeks with scorecards built in, but you adopt its data model and accept per-seat cost and data-residency questions.",
+          "chosen": "The design self-hosts Backstage as the default for a large org, accepting the build investment to own the catalog, scaffolder, and golden-path templates."
+        },
+        {
+          "name": "Discovery vs. provisioning",
+          "description": "A portal makes services findable and scaffoldable in seconds, which is real value — but it is only a discovery and interaction layer, and treating it as the platform leaves actual provisioning to the same pipeline-and-Helm machinery underneath. The gain is a great front door; the risk is mistaking the front door for the house.",
+          "chosen": "The design adopts the portal for discovery while explicitly deferring provisioning to an orchestration engine beneath it — Backstage is not your platform."
+        }
       ]
     },
     {
@@ -2330,6 +2244,38 @@
           "definition": "Generating app + infra config fresh per deploy per environment rather than maintaining static files.",
           "whyItMatters": "It eliminates config drift at the root: there are no long-lived per-env files to diverge.",
           "example": "The same spec produces docker-compose locally (score-compose) and K8s manifests in prod (score-k8s)."
+        },
+        {
+          "term": "Workload specification",
+          "description": "Developers declare what a service needs (containers + abstract resources), not how to provision it.",
+          "whyItMatters": "Whenever you want to hide cloud/Kubernetes detail behind a stable developer contract.",
+          "steps": [
+            "orchestrator"
+          ]
+        },
+        {
+          "term": "Separation of concerns (what vs. how)",
+          "description": "Developers own the 'what' (the spec); platform engineers own the 'how' (resource definitions). The orchestrator computes the rest.",
+          "whyItMatters": "To let both sides evolve independently without coordinating on every change.",
+          "steps": [
+            "orchestrator"
+          ]
+        },
+        {
+          "term": "Durable control plane (work queue + idempotency)",
+          "description": "Persist each deploy/reconcile as an idempotent job off a work queue, commit generated desired state to Git, and degrade instead of failing closed so an orchestrator outage blocks only new provisioning.",
+          "whyItMatters": "When a shared control plane sits in every team's delivery path and must survive its own outages.",
+          "steps": [
+            "orchestrator"
+          ]
+        },
+        {
+          "term": "Progressive delivery",
+          "description": "Roll out changes in steps (canary/blue-green) gated by health signals, with automatic rollback — distinct from a GitOps revert, which flips all replicas at once.",
+          "whyItMatters": "When a safe golden path needs more than reversibility: health-gated promotion and auto-rollback.",
+          "steps": [
+            "orchestrator"
+          ]
         }
       ],
       "whyNow": [
@@ -2687,19 +2633,24 @@
           "Conflates the portal with the orchestrator, or thinks more Helm/templating solves drift."
         ]
       },
-      "patterns": [
-        "Workload specification",
-        "Separation of concerns (what vs. how)",
-        "Dynamic Configuration Management",
-        "Durable control plane (work queue + idempotency)",
-        "Progressive delivery"
-      ],
       "probeLinks": [
         "score",
         "cncf-orchestrator",
         "humanitec-idp",
         "crossplane-composition",
         "argo-rollouts"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Buy vs. build",
+          "description": "Buying Humanitec puts the durable-job, queue, and state mechanics behind a vendor SLA with graph-based resource matching out of the box, but places a hosted control plane and its cost in your delivery path. Self-operating Kratix or assembling Score plus your own controllers avoids the vendor, but the entire reliability surface — queue, outbox, durable state, backups, drift story — becomes yours to design and run, and under-building it is the main failure mode.",
+          "chosen": "The design buys the orchestrator, judging that the matching engine and its reliability mechanics are undifferentiated heavy lifting best covered by an SLA."
+        },
+        {
+          "name": "Abstraction vs. transparency",
+          "description": "A Score-style spec with an orchestrator that generates config fresh on every deploy removes cloud-specific detail from developers' heads and kills per-service template drift, but developers now depend on matching logic they cannot see — some 'magic' to learn and trust, and a new failure domain when the orchestrator is down.",
+          "chosen": "The design accepts the opaque matching layer as the price of the workload abstraction, and answers the trust gap with deep dives on control-plane reliability and a degraded-mode contract."
+        }
       ]
     },
     {
@@ -2826,6 +2777,14 @@
           "definition": "Crossplane continuously reconciles via controllers; Terraform/Pulumi reconcile to a point in time when you run apply.",
           "whyItMatters": "It decides whether out-of-band drift self-heals or waits for the next apply — the single cleanest IaC tradeoff to teach.",
           "example": "Someone edits a security group by hand: Crossplane reverts it; Terraform shows a diff only on the next plan."
+        },
+        {
+          "term": "Control-plane reconciliation vs. apply-time IaC",
+          "description": "Continuously reconciling controllers (Crossplane) auto-correct drift; apply-time CLIs (Terraform) reconcile to a point in time.",
+          "whyItMatters": "When choosing the engine under the orchestrator.",
+          "steps": [
+            "iac"
+          ]
         }
       ],
       "whyNow": [
@@ -2836,15 +2795,19 @@
         "after": "Drivers provision real cloud resources via a chosen IaC engine.",
         "newRisk": "Apply-time engines leave drift until the next run; control-plane engines add a control plane to operate."
       },
-      "patterns": [
-        "Control-plane reconciliation vs. apply-time IaC"
-      ],
       "probeLinks": [
         "crossplane-pulumi",
         "crossplane-composition",
         "cluster-api",
         "mercedes-cluster-api",
         "terraform-bsl"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Continuous reconciliation vs. apply-time simplicity",
+          "description": "Crossplane's controllers continuously reconcile and auto-correct drift with state in etcd and no state file, but you run and harden the control plane and its providers, and provider coverage trails Terraform. Terraform/OpenTofu brings ubiquitous skills and the largest provider ecosystem, but reconciles only when run — out-of-band drift lingers until the next apply, and state files need management and locking.",
+          "chosen": "The design defaults to Terraform/OpenTofu under the orchestrator's drivers, betting that ecosystem breadth and existing skills outweigh continuous drift correction, with OpenTofu keeping the license open."
+        }
       ]
     },
     {
@@ -2986,6 +2949,14 @@
           "definition": "On-demand, automatically provisioned, short-lived environments.",
           "whyItMatters": "It removes 'works on my machine' and manual environment management.",
           "example": "A full preview environment created per pull request."
+        },
+        {
+          "term": "Soft multi-tenancy (namespace + RBAC + quotas)",
+          "description": "Isolate teams with namespaces, RBAC, NetworkPolicies, and quotas on a shared cluster.",
+          "whyItMatters": "For mutually trusting internal teams; escalate to hard isolation for regulated workloads.",
+          "steps": [
+            "resource"
+          ]
         }
       ],
       "whyNow": [
@@ -2996,16 +2967,19 @@
         "after": "Workloads run on a multi-tenant cluster with data, networking, and messaging bound per workload.",
         "newRisk": "Soft isolation trusts tenants not to misbehave; the wrong isolation choice is either insecure or wildly expensive."
       },
-      "patterns": [
-        "Soft multi-tenancy (namespace + RBAC + quotas)",
-        "Environment-as-a-Service"
-      ],
       "probeLinks": [
         "k8s-multitenancy",
         "k8s-resource-quotas",
         "vcluster-tenancy",
         "cluster-api",
         "mercedes-cluster-api"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Cost vs. isolation",
+          "description": "Namespace-per-team with RBAC, NetworkPolicies, and quotas shares one control plane cheaply and is the neutral Kubernetes guidance for mutually trusting internal teams, but tenants share a kernel, cluster-scoped CRDs cannot be self-served per team, and a misconfigured tenant can affect the cluster. Virtual or dedicated clusters harden the boundary, but vcluster adds moving parts and cluster-per-tenant carries high provisioning overhead and poor cost efficiency.",
+          "chosen": "The design uses soft namespace isolation for trusting internal teams and reserves hard isolation for untrusted tenants or regulated workloads like HIPAA and PCI."
+        }
       ]
     },
     {
@@ -3195,14 +3169,22 @@
           "instead": "Guardrail, not railroad: version paths, make breaking changes opt-in, run versions in parallel."
         }
       ],
-      "patterns": [
-        "Environment-as-a-Service",
-        "Golden paths (paved roads)"
-      ],
       "probeLinks": [
         "argo-pr-preview",
         "opencost",
         "tvp"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Preview convenience vs. cloud spend",
+          "description": "An environment per PR via Argo's ApplicationSet generator reuses existing tooling and auto-cleans on PR close, but abandoned branches leak money — roughly 76 percent of non-prod capacity sits idle — so PR-close cleanup alone is not enough and an external TTL reaper is required. vcluster-per-PR adds full cluster semantics and isolation but more to operate and per-PR provisioning latency.",
+          "chosen": "The design generates previews with the ApplicationSet PR generator on the shared cluster, backed by quotas and a CronJob reaper enforcing TTLs on abandoned environments."
+        },
+        {
+          "name": "Golden-path evolution vs. migration pain",
+          "description": "Evolving golden paths freely keeps the platform current, but forcing every team through a breaking change at once is a big-bang migration that stalls adoption. Semver-versioned paths with opt-in v2 and parallel versions during deprecation protect teams, at the cost of the platform team maintaining multiple live versions.",
+          "chosen": "The design versions golden paths with semver, makes breaking changes opt-in, and runs versions in parallel through deprecation — never a forced big-bang migration."
+        }
       ]
     },
     {
@@ -3442,10 +3424,6 @@
           "Claims platforms always make teams faster, or measures only vanity metrics."
         ]
       },
-      "patterns": [
-        "Policy-as-code (guardrails)",
-        "Platform-as-a-Product"
-      ],
       "probeLinks": [
         "dora-2024",
         "space",
@@ -3454,6 +3432,18 @@
         "opentelemetry",
         "opencost",
         "eso"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Managed services vs. self-hosted control",
+          "description": "Cloud KMS plus External Secrets Operator and managed observability leaves far less to operate — ESO often makes a self-hosted Vault unnecessary — but couples you per-cloud and managed observability bills can surprise you at scale, hence FinOps. Self-hosting Vault/OpenBao, Prometheus, and OPA gives portability and no per-service SaaS fees, but you operate Vault HA, Prometheus retention, and Rego, on top of a license landscape where Vault itself went BSL.",
+          "chosen": "The design defaults to cloud-managed secrets and observability synced via ESO with Kyverno for policy, trading per-cloud coupling for a smaller operational surface."
+        },
+        {
+          "name": "Platform metrics vs. honest outcomes",
+          "description": "Measuring the platform like a product with DORA, SPACE, DevEx, adoption rate, and time-to-first-deploy makes investment defensible, but the numbers cut both ways: DORA 2024 found IDPs raised individual productivity while other outcomes lagged, so cherry-picking flattering metrics hides whether the platform actually helps teams ship.",
+          "chosen": "The design commits to the full metrics mix and reports the uncomfortable results too, treating honest measurement as part of running the platform as a product."
+        }
       ]
     }
   ],

@@ -378,7 +378,14 @@
           "API",
           "Store"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "API simplicity vs. consistency control",
+          "description": "Hiding consistency behind a plain get/put/delete API keeps clients simple, but a Dynamo-style store cannot promise one behavior for every workload. Exposing version context and letting callers tune read and write consistency per request pushes some complexity to clients, but makes conflict handling possible and lets each use case pick its own latency-versus-safety point.",
+          "chosen": "The design keeps values opaque but surfaces enough version context in the API for conflict handling, so consistency becomes a per-request choice rather than a hidden global default."
+        }
+      ]
     },
     {
       "id": "single-node-storage-engine",
@@ -601,6 +608,13 @@
               "BTree"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write throughput vs. read amplification",
+          "description": "An LSM engine appends every write to a commit log and memtable, turning random writes into sequential I/O that suits write-heavy KV traffic, but reads may touch the memtable plus several SSTables and background compaction burns CPU and I/O that must be tuned to avoid stalls. An in-place B-tree gives a single predictable traversal per read with no compaction, but every write becomes a random page update that caps ingest rate.",
+          "chosen": "The design picks the log-structured write path with Bloom filters to keep reads cheap, because sustaining high write ingest matters more to a Dynamo-style store than minimal read amplification."
         }
       ]
     },
@@ -884,6 +898,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Rebalancing cost vs. key ordering",
+          "description": "Consistent hashing with virtual nodes means adding or removing a machine moves only about 1/N of keys and many peers absorb a departed node's ranges, but hashing destroys key order so range scans are off the table. Range partitioning keeps keys sorted for cheap scans, but sequential keys hammer one range owner and rebalancing requires actively splitting and moving ranges through a coordinator.",
+          "chosen": "The design hashes keys onto a virtual-node token ring, sacrificing range scans because incremental, low-disruption scaling is a core requirement and the API only needs point lookups."
+        },
+        {
+          "name": "Placement simplicity vs. elasticity",
+          "description": "Modulo hashing computes an owner with plain arithmetic and needs no ring metadata, but changing the node count remaps almost every key — a cluster-wide data storm that makes incremental scaling effectively impossible. The ring adds eventually consistent metadata that can cost a stale-view extra hop, but keeps membership changes cheap.",
+          "chosen": "The design accepts ring metadata and its occasional stale-view hop as the price of adding and removing nodes without reshuffling the whole keyspace."
+        }
       ]
     },
     {
@@ -1100,7 +1126,14 @@
           "R2",
           "R3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Latency vs. read-after-write consistency",
+          "description": "With N replicas, R=1 and W=1 make the common case as fast and available as possible — any single replica answers — but a read can miss the latest write until asynchronous repair converges. Requiring R=2 and W=2 with N=3 forces read and write sets to overlap, giving stronger read-after-write behavior at the cost of waiting on more replicas per operation.",
+          "chosen": "The design defaults to R=1/W=1 for the fastest common-case operations and repairs inconsistencies asynchronously, reserving overlapping quorums for callers that explicitly need stronger reads."
+        }
+      ]
     },
     {
       "id": "versioning-and-conflict-resolution",
@@ -1346,6 +1379,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Conflict fidelity vs. client simplicity",
+          "description": "Vector clocks distinguish a version that supersedes another from two truly concurrent writes, surfacing both as siblings so no write is silently dropped — but applications must merge siblings, and clocks grow with writers and need pruning. Last-write-wins always returns one value with zero client burden, but clock skew can let a stale write silently destroy a newer one, which is unacceptable when every write matters. Server-side CRDTs merge automatically but only for values that fit a CRDT shape, breaking the opaque-value contract.",
+          "chosen": "The design stores a vector clock per value and returns concurrent siblings to the application, choosing correctness and explicit conflict surfacing over read-side convenience."
+        }
       ]
     },
     {
@@ -1572,6 +1612,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Decentralization vs. membership clarity",
+          "description": "Gossip-based failure detection has no master to fail — fitting the no-single-point-of-failure goal — and hinted handoff keeps writes flowing when a replica is down, but the membership view is only eventually consistent, hints pile up during long outages, and emergent gossip behavior is hard to debug. A ZooKeeper/etcd coordinator gives one authoritative, instantly consistent view, but reintroduces a quasi-master dependency that can bottleneck and, if unreachable, blocks safe topology changes.",
+          "chosen": "The design uses gossip with phi-accrual detection plus hinted handoff, accepting fuzzier membership and hint-replay machinery to stay fully decentralized and write-available through transient failures."
+        }
       ]
     },
     {
@@ -1698,7 +1745,14 @@
           "TreeB",
           "Diff"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Repair bandwidth vs. tree upkeep",
+          "description": "Naively comparing replicas would scan and transfer entire key ranges to find divergence. Merkle trees let replicas compare compact hashes and exchange only the keys in ranges that actually differ, but the trees themselves must be built and kept current as data changes, adding background compute and invalidation work on every node.",
+          "chosen": "The design runs background anti-entropy with Merkle tree comparison, paying ongoing hash maintenance so permanent divergence is repaired with minimal data transfer."
+        }
+      ]
     },
     {
       "id": "multi-datacenter-operations",
@@ -1772,7 +1826,14 @@
           "Monitor",
           "Rebalance"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Disaster resilience vs. operational cost",
+          "description": "Spreading replicas across zones and regions keeps the store serving through a datacenter or regional failure, but cross-region placement adds replication distance, cluster-health machinery, and careful token-ownership moves whenever capacity changes. Staying in one region is simpler and faster to operate but leaves a single regional outage able to take the store down.",
+          "chosen": "The design places replicas across zones and regions and moves token ownership deliberately during resizing, accepting operational complexity so traffic survives regional failures and cluster changes."
+        }
+      ]
     }
   ],
   "satisfies": {

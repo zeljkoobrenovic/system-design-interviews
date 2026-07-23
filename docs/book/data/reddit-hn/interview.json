@@ -1653,63 +1653,6 @@
       "makesIrrelevant": "Managed metrics, logs, and traces remove much of the custom operational datastore needed to diagnose freshness and p99 regressions."
     }
   ],
-  "patterns": [
-    {
-      "name": "Time-decay hot ranking",
-      "what": "Score = f(votes, age) so fresh, upvoted content rises and old content sinks.",
-      "whenToUse": "Listings that should surface what's popular now, not all-time.",
-      "steps": [
-        "ranking"
-      ],
-      "group": "The Hot-Ranking Score"
-    },
-    {
-      "name": "Precomputed ranked listing",
-      "what": "Maintain sorted listing ids in a cache so reads are O(1), not a per-request sort.",
-      "whenToUse": "Read-heavy ranked feeds.",
-      "steps": [
-        "listings"
-      ],
-      "group": "Precomputed Ranked Listings"
-    },
-    {
-      "name": "Idempotent voting",
-      "what": "Store one vote per (user,item); re-votes upsert rather than add.",
-      "whenToUse": "Vote integrity and safe retries.",
-      "steps": [
-        "voting"
-      ],
-      "group": "Idempotent Voting"
-    },
-    {
-      "name": "Async score update",
-      "what": "Record votes fast, recompute scores and listings off the hot path via a queue.",
-      "whenToUse": "Decoupling fast vote writes from heavier ranking recompute.",
-      "steps": [
-        "voting",
-        "ranking"
-      ],
-      "group": "Idempotent Voting"
-    },
-    {
-      "name": "Materialized-path comment tree",
-      "what": "Store each comment's ancestor path so a subtree is a prefix query.",
-      "whenToUse": "Deep nested threads read as subtrees.",
-      "steps": [
-        "comments"
-      ],
-      "group": "Threaded Comments"
-    },
-    {
-      "name": "Abuse / fraud detection",
-      "what": "Detect ballot stuffing, sockpuppets, and brigading; discount illegitimate votes.",
-      "whenToUse": "Open voting systems vulnerable to manipulation.",
-      "steps": [
-        "fraud"
-      ],
-      "group": "Vote-Fraud and Abuse Prevention"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1763,7 +1706,14 @@
           "instead": "Treat it as the baseline; make voting idempotent, score asynchronously, and precompute listings."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Sort-on-read simplicity vs. read-path scale",
+          "description": "Incrementing a vote counter and sorting all posts by score at read time is correct and trivial, but with millions of posts and ~150k listing reads/sec (peak ~300k) a per-request sort cannot meet p99 < 200 ms, and a naked counter double-counts on retries and is wide open to manipulation.",
+          "chosen": "The design keeps this baseline only to expose its two failures — per-read sorting and unsafe counting — which the precomputed listings and idempotent vote pipeline then fix."
+        }
+      ]
     },
     {
       "id": "voting",
@@ -1805,6 +1755,23 @@
           "whyItMatters": "Guarantees vote integrity and retry-safety.",
           "example": "Second upvote is a no-op; switching to downvote flips the row, adjusting the tally by 2.",
           "group": "Idempotent Voting"
+        },
+        {
+          "term": "Idempotent voting",
+          "description": "Store one vote per (user,item); re-votes upsert rather than add.",
+          "whyItMatters": "Vote integrity and safe retries.",
+          "steps": [
+            "voting"
+          ]
+        },
+        {
+          "term": "Async score update",
+          "description": "Record votes fast, recompute scores and listings off the hot path via a queue.",
+          "whyItMatters": "Decoupling fast vote writes from heavier ranking recompute.",
+          "steps": [
+            "voting",
+            "ranking"
+          ]
         }
       ],
       "probeLinks": [
@@ -1813,10 +1780,6 @@
         "kafka-design",
         "kafka-processing-guarantees",
         "reddit-disrupting-communities"
-      ],
-      "patterns": [
-        "Idempotent voting",
-        "Async score update"
       ],
       "whyNow": [
         "Voting is the input to ranking; getting one-vote-per-user and async scoring right is the foundation for everything else."
@@ -1919,7 +1882,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-voting.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-voting.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fast acknowledgment vs. authoritative tally",
+          "description": "Updating the real score synchronously on every vote would keep rankings exactly current but puts ranking math and fraud checks on the latency-critical write path. Recording the vote as an idempotent per-(user, item_type, item) upsert and returning an optimistic score keeps voting fast, at the cost of the authoritative tally lagging behind by an async hop.",
+          "chosen": "The design records votes fast with a versioned upsert and pushes tallying and fraud checks onto a queue, using per-row versions so out-of-order or replayed events resolve to the latest state."
+        }
+      ]
     },
     {
       "id": "ranking",
@@ -2077,6 +2047,14 @@
           "whyItMatters": "Keeps listings fresh; popular old posts don't dominate forever.",
           "example": "hot = log10(ups - downs) - age_hours / gravity.",
           "group": "The Hot-Ranking Score"
+        },
+        {
+          "term": "Time-decay hot ranking",
+          "description": "Score = f(votes, age) so fresh, upvoted content rises and old content sinks.",
+          "whyItMatters": "Listings that should surface what's popular now, not all-time.",
+          "steps": [
+            "ranking"
+          ]
         }
       ],
       "probeLinks": [
@@ -2087,10 +2065,6 @@
         "hn-pg-formula",
         "redis-sorted-sets",
         "twitter-home-mixer"
-      ],
-      "patterns": [
-        "Time-decay hot ranking",
-        "Async score update"
       ],
       "whyNow": [
         "The hot score is the intellectual core of the case; articulating votes+age and async recompute is the senior signal."
@@ -2153,6 +2127,18 @@
           "highlight": [
             "Ranker"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. accumulated merit",
+          "description": "Raw net upvotes is trivial and intuitive, but old viral posts accumulate votes and freeze at the top forever while new good content never catches up. A time-decay hot score lets fresh, well-received posts rise and everything sink over time, but the formula is a tuning knob and decay means scores drift even without new votes, requiring a periodic recompute pass.",
+          "chosen": "The design uses the time-decay hot score with a drift recompute on a cadence, accepting formula tuning and continuous rescoring so the front page stays fresh."
+        },
+        {
+          "name": "Recency vs. statistical confidence",
+          "description": "The hot formula ignores confidence — a post with 5/5 votes can outrank one with 90/100 — while Wilson-bound ranking weighs proportion against sample size but has no time decay, favoring evergreen quality over the freshness a front page needs.",
+          "chosen": "The design picks the hot score for the front page, where freshness dominates, leaving confidence ranking to quality-oriented sorts like best comments."
         }
       ]
     },
@@ -2281,9 +2267,6 @@
         }
       ],
       "decisionPrompt": "How do you serve a hot listing in under 200 ms without sorting the whole community per request?",
-      "patterns": [
-        "Precomputed ranked listing"
-      ],
       "probeLinks": [
         "reddit-architecture",
         "tao-paper",
@@ -2303,6 +2286,14 @@
           "whyItMatters": "Turns ranked reads into O(1) lookups instead of per-request sorts.",
           "example": "Redis ZSET keyed by community; score worker updates member scores.",
           "group": "Precomputed Ranked Listings"
+        },
+        {
+          "term": "Precomputed ranked listing",
+          "description": "Maintain sorted listing ids in a cache so reads are O(1), not a per-request sort.",
+          "whyItMatters": "Read-heavy ranked feeds.",
+          "steps": [
+            "listings"
+          ]
         }
       ],
       "recap": {
@@ -2334,6 +2325,13 @@
           "expectedBehavior": "Reads briefly miss; the listing is rebuilt from posts' precomputed scores (it is derived state, not source of truth) while reads fall back to a read-through recompute of the top-N.",
           "mitigation": "Rebuild on demand with a single-flight guard so one rebuild serves the thundering herd; serve a slightly stale replica copy meanwhile rather than recomputing per request.",
           "lesson": "Framing the listing cache as rebuildable turns a 'cache outage' into a recompute latency blip, not a correctness or data-loss event."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write amplification vs. read cost",
+          "description": "Computing listings on read with a short cache keeps the score worker simple — it just updates scores — but sorting a large community on a cache miss is expensive, spikes under bursts, and invites thundering-herd recomputes when a hot listing expires. Maintaining precomputed sorted sets per (community, sort) makes reads an O(1) top-N fetch, but one score change fans out to several listings and the worker must keep many sets current.",
+          "chosen": "The design precomputes sorted sets pushed on score change, paying write amplification for reads that reliably meet the p99 < 200 ms target — and the cache is derived, so losing it is a recompute, not data loss."
         }
       ]
     },
@@ -2515,6 +2513,14 @@
           "whyItMatters": "Reads a nested thread (or subtree) without recursive joins.",
           "example": "path '12/47/88' -> all replies under 47 = rows with prefix '12/47/'.",
           "group": "Threaded Comments"
+        },
+        {
+          "term": "Materialized-path comment tree",
+          "description": "Store each comment's ancestor path so a subtree is a prefix query.",
+          "whyItMatters": "Deep nested threads read as subtrees.",
+          "steps": [
+            "comments"
+          ]
         }
       ],
       "probeLinks": [
@@ -2523,9 +2529,6 @@
         "facebook-memcache",
         "postgres-ltree",
         "cassandra-query-modeling"
-      ],
-      "patterns": [
-        "Materialized-path comment tree"
       ],
       "whyNow": [
         "Threaded comments are a distinct hard problem from listings; the materialized-path model is the standard efficient answer."
@@ -2541,6 +2544,18 @@
           "expectedBehavior": "The write invalidates or patches just the affected subtree-cache entry; concurrent readers either get the prior cached tree or the rebuilt one — never a half-updated tree. The new comment appears on the next read within the cache's staleness window.",
           "mitigation": "Patch the cached subtree in place when cheap (insert one node, bump parent counts); fall back to invalidate-and-rebuild for the affected post under a single-flight guard so one rebuild serves the herd. Key the cache per post (and optionally per subtree) so a write to one thread never invalidates others.",
           "lesson": "Hot-thread caches need write-time invalidation scoped to the smallest affected unit; coarse whole-post invalidation on every comment turns a popular thread into a rebuild storm."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Read shape vs. write simplicity",
+          "description": "An adjacency list (parent_id only) is the simplest schema with trivial inserts, but reading a 10,000-comment thread requires recursion or N round trips. A materialized path makes any subtree a single prefix query that sorts naturally, at the cost of storing growing paths and rewriting descendants if a subtree ever moves — rare for comments.",
+          "chosen": "The design stores a materialized path and shards by post id, optimizing for the dominant operation — reading and sorting whole threads — since comments are effectively write-once."
+        },
+        {
+          "name": "Path vs. closure table",
+          "description": "A closure table makes descendant queries indexed and subtree moves cheap, but grows with depth times comment count and writes one row per ancestor on every insert. For write-once threads that never move, that extra schema and write cost buys flexibility nobody uses.",
+          "chosen": "The design prefers the materialized path's single prefix query and natural sort order over closure-table machinery whose strength — cheap moves — this workload does not need."
         }
       ]
     },
@@ -2706,9 +2721,6 @@
         }
       ],
       "decisionPrompt": "A post suddenly gets 5,000 upvotes from accounts created today. What should happen to its ranking?",
-      "patterns": [
-        "Abuse / fraud detection"
-      ],
       "probeLinks": [
         "reddit-disrupting-communities",
         "reddit-platform-safety",
@@ -2726,6 +2738,14 @@
           "whyItMatters": "Neutralizes manipulation without tipping off attackers or blocking legit users.",
           "example": "Sockpuppet votes are recorded but contribute 0 to hot_score.",
           "group": "Vote-Fraud and Abuse Prevention"
+        },
+        {
+          "term": "Abuse / fraud detection",
+          "description": "Detect ballot stuffing, sockpuppets, and brigading; discount illegitimate votes.",
+          "whyItMatters": "Open voting systems vulnerable to manipulation.",
+          "steps": [
+            "fraud"
+          ]
         }
       ],
       "recap": {
@@ -2746,6 +2766,18 @@
           "expectedBehavior": "Flipping the verdict re-emits each affected vote with trust_status=counted at a new version; the ranker re-reads the trust-weighted tally and the post's score and listings are recomputed, so the post recovers its rightful rank without manual score editing.",
           "mitigation": "Drive recovery through the same versioned vote-event pipeline as the original discount — never hand-patch scores. Track a false-positive rate metric and route appeals through the moderation audit log.",
           "lesson": "Fraud handling must be a reversible, event-driven verdict layered over authoritative votes, not a destructive edit — recompute from source of truth on reversal."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Immediate enforcement vs. vote-path latency",
+          "description": "A synchronous fraud check rejects suspicious votes before they ever count, closing the window where a manipulated post ranks high — but it slows every vote, produces false positives that frustrate real users, and coordinated brigading is nearly invisible from a single vote in isolation. Async discounting keeps voting fast and sees whole patterns, but a manipulated post can rank high until the discount lands.",
+          "chosen": "The design records votes immediately and lets the fraud service discount at recompute, accepting a brief manipulation window in exchange for a fast vote path and pattern-level detection."
+        },
+        {
+          "name": "Silent handling vs. hard blocks",
+          "description": "Hard-rejecting fraudulent votes tells attackers exactly what got caught, letting them adapt; shadow handling counts the vote to the voter while excluding it from the real score, keeping detection opaque at the cost of scores quietly diverging from what users see. Persisting the trust verdict on the vote row makes flips replayable when a voter is later cleared or condemned.",
+          "chosen": "The design shadow-counts suspicious votes and persists per-vote trust status with its signals, so enforcement stays invisible to attackers and reversible on appeal."
         }
       ]
     },
@@ -2911,7 +2943,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-mod.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-mod.jpg",
+      "tradeoffs": [
+        {
+          "name": "Vote durability vs. ranking freshness",
+          "description": "Recomputing rankings per vote would keep listings perfectly current but cannot survive a viral post's write burst. Queue-buffered batched recompute means a spike degrades to a few seconds of ranking lag while every vote is still durably recorded — backpressure trades freshness for never dropping votes or stalling writes.",
+          "chosen": "The design absorbs vote bursts in the queue and lets the score worker batch, choosing graceful freshness degradation over lost votes or a stalled write path."
+        },
+        {
+          "name": "Cache invalidation vs. authoritative removal",
+          "description": "Treating moderation as a cache eviction is fast but leaves the removed post to resurface from any rebuild or stale replica. Writing authoritative status and a tombstone to the store, then emitting invalidation events, is more work per action but makes removal durable everywhere derived state is rebuilt.",
+          "chosen": "The design makes moderation a workflow: authoritative tombstoned status first, then event-driven eviction from listings and caches, so a removed front-page post disappears quickly and stays gone."
+        }
+      ]
     }
   ],
   "finalDesign": {

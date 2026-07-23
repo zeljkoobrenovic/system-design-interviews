@@ -1776,83 +1776,6 @@
       "makesIrrelevant": "A managed metrics, tracing, and log stack removes most bespoke projector-lag dashboards and alert plumbing, but not the need to emit calendar-specific correctness signals."
     }
   ],
-  "patterns": [
-    {
-      "name": "Store rule, expand on read",
-      "what": "Persist recurring events as a rule; materialize concrete instances only for the queried window.",
-      "whenToUse": "Recurring events that could be infinite — never store all instances.",
-      "steps": [
-        "recurrence"
-      ],
-      "group": "Recurring Events: Store the Rule, Expand on Read"
-    },
-    {
-      "name": "UTC storage + tz at edges",
-      "what": "Store times in UTC with the original timezone; convert for display and recurrence.",
-      "whenToUse": "Any system spanning timezones / DST.",
-      "steps": [
-        "timezone"
-      ],
-      "group": "Timezones and DST Correctness"
-    },
-    {
-      "name": "Busy-interval index",
-      "what": "Maintain per-calendar busy intervals so free/busy is a fast range query.",
-      "whenToUse": "Frequent availability lookups across calendars.",
-      "steps": [
-        "freebusy"
-      ],
-      "group": "Free/Busy Availability"
-    },
-    {
-      "name": "Override + exception model",
-      "what": "Represent single-instance edits/cancellations as overrides on the series.",
-      "whenToUse": "'This event' vs 'this and following' vs 'all events' edits.",
-      "steps": [
-        "recurrence"
-      ],
-      "group": "Recurring Events: Store the Rule, Expand on Read"
-    },
-    {
-      "name": "Invite fanout + RSVP",
-      "what": "Propagate an event to attendees' calendars and reconcile their responses.",
-      "whenToUse": "Multi-attendee events.",
-      "steps": [
-        "invites"
-      ],
-      "group": "Invites and RSVPs"
-    },
-    {
-      "name": "Time-ordered reminders + delta sync",
-      "what": "Schedule reminders by fire time; sync changes to devices via a cursor.",
-      "whenToUse": "Timely reminders and multi-device consistency.",
-      "steps": [
-        "reminders"
-      ],
-      "group": "Reminders and Device Sync"
-    },
-    {
-      "name": "Durable change log + idempotent projectors",
-      "what": "Commit each event write with an outbox row into a per-calendar change log; idempotent projectors replay it to update busy index, reminders, invite fanout, sync cursors, and cache.",
-      "whenToUse": "Whenever derived state (indexes, queues, caches, device sync) must not lose a mutation.",
-      "steps": [
-        "freebusy",
-        "reminders",
-        "scale"
-      ],
-      "group": "Scaling and Consistency"
-    },
-    {
-      "name": "Idempotency + optimistic concurrency",
-      "what": "Idempotency keys dedup retried create/update/RSVP/send; event versions guard against lost updates and let RSVPs merge with organizer edits.",
-      "whenToUse": "Mutations that retry or race (creates, edits, RSVPs, reminder sends).",
-      "steps": [
-        "invites",
-        "reminders"
-      ],
-      "group": "Invites and RSVPs"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1903,7 +1826,14 @@
           "instead": "Store recurring events as a rule expanded on read, and store UTC plus the original timezone (expanding in local wall-clock)."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Intuitive rows vs. unbounded series",
+          "description": "One row per occurrence with plain local time strings is the most intuitive storage, but an open-ended recurring event has infinite instances so it cannot be pre-created at all, series edits become bulk rewrites of thousands of rows, and zone-less local strings cannot be compared across timezones and silently corrupt under DST.",
+          "chosen": "The design uses this baseline to motivate storing recurrence as a rule and times as wall-clock plus timezone, the subjects of the next two steps."
+        }
+      ]
     },
     {
       "id": "recurrence",
@@ -2064,6 +1994,22 @@
           "whyItMatters": "Avoids storing infinite instances and makes 'edit this vs series' tractable.",
           "example": "RRULE=FREQ=WEEKLY; EXDATE drops one week; an override moves another.",
           "group": "Recurring Events: Store the Rule, Expand on Read"
+        },
+        {
+          "term": "Store rule, expand on read",
+          "description": "Persist recurring events as a rule; materialize concrete instances only for the queried window.",
+          "whyItMatters": "Recurring events that could be infinite — never store all instances.",
+          "steps": [
+            "recurrence"
+          ]
+        },
+        {
+          "term": "Override + exception model",
+          "description": "Represent single-instance edits/cancellations as overrides on the series.",
+          "whyItMatters": "'This event' vs 'this and following' vs 'all events' edits.",
+          "steps": [
+            "recurrence"
+          ]
         }
       ],
       "probeLinks": [
@@ -2072,10 +2018,6 @@
         "google-calendar-recurring",
         "dateutil-rrule",
         "jscalendar-rfc"
-      ],
-      "patterns": [
-        "Store rule, expand on read",
-        "Override + exception model"
       ],
       "whyNow": [
         "Recurrence is the defining calendar complexity; rule-storage + on-read expansion + overrides is the foundational model."
@@ -2095,6 +2037,18 @@
           "trap": "Keying overrides by occurrence date alone.",
           "why": "A bare date is ambiguous for events that recur multiple times a day, and it becomes wrong after a 'this and following' split moves the occurrence into a new series.",
           "instead": "Key overrides by a stable recurrence id (original local timestamp + TZID), and model 'this and following' as a real series split (UNTIL on the old rule, a new rule from the boundary)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Storage compactness vs. read cost",
+          "description": "Storing the RRULE and expanding occurrences only for the queried window makes a 'daily forever' series O(1) storage and a series edit a single rule update, but every read of a date window pays expander CPU and free/busy still needs materialized intervals somewhere; materializing every occurrence gives trivial range-scan reads but explodes storage and turns rule edits into thousand-row rewrites.",
+          "chosen": "The design stores the rule and expands on read, keeping one compact source of truth with overrides and EXDATEs for exceptions."
+        },
+        {
+          "name": "One representation vs. cached window",
+          "description": "Adding a bounded materialized occurrence cache in front of the rule speeds hot reads and lets free/busy skip request-path expansion, but it creates two representations that a rule edit must invalidate and rebuild, plus a background materializer and an arbitrary window-size knob to operate.",
+          "chosen": "The design keeps the rule-plus-expander as the default and treats the materialized window as an optimization rather than a second source of truth."
         }
       ]
     },
@@ -2196,6 +2150,14 @@
           "whyItMatters": "Keeps 'every day at 9am local' correct across DST instead of drifting.",
           "example": "9am NY recurs in America/New_York; each instance -> UTC (offset changes at DST).",
           "group": "Timezones and DST Correctness"
+        },
+        {
+          "term": "UTC storage + tz at edges",
+          "description": "Store times in UTC with the original timezone; convert for display and recurrence.",
+          "whyItMatters": "Any system spanning timezones / DST.",
+          "steps": [
+            "timezone"
+          ]
         }
       ],
       "probeLinks": [
@@ -2203,9 +2165,6 @@
         "rrule-tool",
         "dateutil-rrule",
         "temporal-zoneddatetime"
-      ],
-      "patterns": [
-        "UTC storage + tz at edges"
       ],
       "whyNow": [
         "Timezone/DST is the hidden correctness crux; expanding recurrence in local time (not fixed UTC) is exactly the senior insight interviewers probe."
@@ -2225,6 +2184,13 @@
           "trap": "Leaving nonexistent and ambiguous local times undefined.",
           "why": "On spring-forward, 02:30 doesn't exist; on fall-back, 01:30 happens twice. Without a policy the instance is silently dropped or fires twice.",
           "instead": "Pick an explicit policy: shift a nonexistent time forward to the gap's end (02:30 -> 03:00), and resolve a repeated fall-back hour to the first occurrence (earlier offset). Apply it consistently in the expander and document it."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Wall-clock intent vs. instant arithmetic",
+          "description": "Storing local time plus an IANA TZID preserves the user's intent so a '9am daily' meeting stays 9am across DST and survives government rule changes by recomputing UTC from the live tz database, but every comparison and sort must first convert through that database; frozen UTC instants make comparisons trivial yet silently shift recurring local meetings by an hour at DST transitions and cannot be recomputed when tz rules change.",
+          "chosen": "The design stores original wall-clock time plus TZID and converts to UTC at the edges, accepting tz-database work on reads to keep recurring meetings correct."
         }
       ]
     },
@@ -2352,6 +2318,16 @@
           "whyItMatters": "Turns multi-attendee availability into a range merge, not full-calendar expansion.",
           "example": "Merge u1..u8 busy intervals over the week; gaps >= 30min are candidate slots.",
           "group": "Free/Busy Availability"
+        },
+        {
+          "term": "Durable change log + idempotent projectors",
+          "description": "Commit each event write with an outbox row into a per-calendar change log; idempotent projectors replay it to update busy index, reminders, invite fanout, sync cursors, and cache.",
+          "whyItMatters": "Whenever derived state (indexes, queues, caches, device sync) must not lose a mutation.",
+          "steps": [
+            "freebusy",
+            "reminders",
+            "scale"
+          ]
         }
       ],
       "probeLinks": [
@@ -2361,10 +2337,6 @@
         "caldav-scheduling-rfc",
         "sabre-dav-scheduling",
         "nextcloud-caldav-admin"
-      ],
-      "patterns": [
-        "Busy-interval index",
-        "Durable change log + idempotent projectors"
       ],
       "whyNow": [
         "Free/busy is a core, frequent operation; the busy-interval index is the mechanism that makes meeting-finding fast and privacy-preserving."
@@ -2478,6 +2450,13 @@
             "Projector",
             "BusyIndex"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Index maintenance vs. query-time expansion",
+          "description": "A precomputed per-calendar busy-interval index makes an 8-person slot search a merge over eight compact interval lists and exposes only busy/free, but it must be kept in sync with every event create, edit, cancel, and recurrence change and needs a background maintainer; scanning calendars on demand has zero staleness and no extra state but expands and scans full calendars per query, breaking the sub-second target as calendars and attendee counts grow.",
+          "chosen": "The design maintains the busy-interval index incrementally because availability queries are frequent and latency-sensitive while the ACL check keeps the exposure privacy-safe."
         }
       ]
     },
@@ -2608,10 +2587,6 @@
         }
       ],
       "decisionPrompt": "The organizer moves a meeting an hour later. What happens on all 10 attendees' calendars?",
-      "patterns": [
-        "Invite fanout + RSVP",
-        "Idempotency + optimistic concurrency"
-      ],
       "probeLinks": [
         "itip-rfc",
         "imip-rfc",
@@ -2636,6 +2611,23 @@
           "whyItMatters": "Lets an attendee's calendar reads, busy index, reminders, and delta sync work locally without scanning organizer-owned events — and connects invites to free/busy and sync.",
           "example": "Organizer event v5 → projector updates u2's ref (blocks_time=true) → u2's busy index and sync cursor advance.",
           "group": "Invites and RSVPs"
+        },
+        {
+          "term": "Invite fanout + RSVP",
+          "description": "Propagate an event to attendees' calendars and reconcile their responses.",
+          "whyItMatters": "Multi-attendee events.",
+          "steps": [
+            "invites"
+          ]
+        },
+        {
+          "term": "Idempotency + optimistic concurrency",
+          "description": "Idempotency keys dedup retried create/update/RSVP/send; event versions guard against lost updates and let RSVPs merge with organizer edits.",
+          "whyItMatters": "Mutations that retry or race (creates, edits, RSVPs, reminder sends).",
+          "steps": [
+            "invites",
+            "reminders"
+          ]
         }
       ],
       "recap": {
@@ -2778,6 +2770,13 @@
           "why": "They race: an organizer time change and an attendee 'accepted' can cross in flight, and the update fanout can overwrite the just-recorded response.",
           "instead": "Keep event details on the organizer's event (versioned) and responses on per-attendee rows; make RSVP writes idempotent and version-stamped, and have update notifications preserve existing responses (re-confirm rather than reset)."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Shared source vs. per-attendee copies",
+          "description": "One organizer-owned event that attendees reference makes moving a meeting a single update with no fan-out write storm and keeps RSVP state consistent in one place, but attendee reads must join to events owned by others and per-attendee customization needs an override layer; independent copies per attendee give trivial local edits and single-owner reads at the cost of update fan-out to every copy, drift from missed updates, and RSVP aggregation across N copies.",
+          "chosen": "The design keeps a single canonical organizer-owned event with a lightweight per-attendee reference projection maintained off the change log, getting local reads without duplicating the event."
+        }
       ]
     },
     {
@@ -2907,11 +2906,6 @@
         "slack-cron-scale",
         "sre-monitoring"
       ],
-      "patterns": [
-        "Time-ordered reminders + delta sync",
-        "Durable change log + idempotent projectors",
-        "Idempotency + optimistic concurrency"
-      ],
       "whyNow": [
         "Reminders + sync complete the user experience; reusing the scheduler due-index and delta-sync patterns ties it to known mechanisms."
       ],
@@ -3034,6 +3028,18 @@
           "trap": "Syncing without tombstones, or expiring cursors silently.",
           "why": "An offline device that only receives upserts never learns about deletions, and a cursor past the retention window returns nothing or errors — the device silently diverges.",
           "instead": "Emit tombstones for deletes and force a full resync when a cursor is older than the retained change-log window."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Dedicated scheduler vs. database polling",
+          "description": "A time-ordered due-index with worker leasing and dedup keys finds what is due in O(1), fires once even through worker crashes, and absorbs top-of-hour bursts by widening the lease window, but it requires a durable job table, a leasing protocol, and job invalidation when events are edited or cancelled; polling the event table on an interval is trivial but bounds precision to the poll interval and turns the 9am burst into one giant query with bolted-on double-send protection.",
+          "chosen": "The design materializes reminder jobs into a time-ordered scheduler with leases and idempotent sends because on-time, exactly-once-visible reminders at burst scale are the core requirement."
+        },
+        {
+          "name": "Fire-once execution vs. at-least-once delivery",
+          "description": "The scheduler can guarantee fire-once execution via leases and dedup keys, but external push and email providers are only at-least-once, so retries can duplicate at the provider boundary; pushing for true end-to-end exactly-once is impossible, while naive retries would show users double reminders.",
+          "chosen": "The design commits to at-least-once send with an idempotent user-visible dedup key, so providers may retry but the user never sees two reminders."
         }
       ]
     },
@@ -3192,9 +3198,6 @@
         }
       ],
       "decisionPrompt": "Everyone has a 9am meeting reminder. What happens at 8:50am across millions of users — and how should you shard so the busy index, sync cursor, and reminders stay local?",
-      "patterns": [
-        "Durable change log + idempotent projectors"
-      ],
       "whyNow": [
         "Closing on sharding + reminder bursts + derived-state consistency shows the design scales and stays correct at billions of events."
       ],
@@ -3247,6 +3250,18 @@
           "scenario": "The event write commits but the outbox enqueue is lost.",
           "expectedBehavior": "Outbox row is written in the same transaction as the event, so it cannot be lost independently; a relay publishes pending rows.",
           "mitigation": "Transactional outbox — never enqueue outside the write transaction."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Calendar locality vs. cross-shard fan-out",
+          "description": "Sharding by calendar co-locates a calendar's events, ordered change log, sync cursor, and busy index so the common day/week view is one shard-local read, but a 20-attendee free/busy fans out across up to 20 shards and 'all my calendars' becomes scatter-gather; sharding by user makes a user's whole view local but leaves shared and resource calendars with no natural owner.",
+          "chosen": "The design shards by calendar because the dominant read path and the change-log-driven projections all stay local, and it caps and parallelizes the multi-attendee fan-out."
+        },
+        {
+          "name": "Uniform routing vs. hotspot isolation",
+          "description": "Treating every calendar identically keeps one simple routing rule, but a popular meeting-room calendar concentrates writes and conflict checks on one shard; pulling hot resource calendars onto dedicated partitions with write-through caches removes the hotspot at the cost of a second routing rule and a real migration to promote a calendar.",
+          "chosen": "The design defaults to uniform calendar sharding and isolates hot resource calendars as a targeted follow-up, since only a small set of calendars ever gets hot."
         }
       ]
     }

@@ -1976,97 +1976,11 @@
       "makesIrrelevant": "Managed runtimes with autoscaling, health checks, metrics, and rollout controls remove much of the custom deployment and capacity-management code around auth services."
     }
   ],
-  "patterns": [
-    {
-      "name": "Slow password hashing (salt + argon2/bcrypt)",
-      "what": "Store a per-user salted hash from a deliberately slow KDF; never the plaintext.",
-      "whenToUse": "Any password storage — always.",
-      "steps": [
-        "login"
-      ],
-      "group": "Naive Baseline: Password Login & Secure Storage"
-    },
-    {
-      "name": "Sessions vs stateless tokens",
-      "what": "Server-side session id (lookup per request) vs self-contained signed token (verify by signature).",
-      "whenToUse": "Choose by revocation needs vs verification scale.",
-      "steps": [
-        "sessions-tokens"
-      ],
-      "group": "Sessions vs Stateless Tokens"
-    },
-    {
-      "name": "OAuth / OIDC federation",
-      "what": "Delegate authentication to an external IdP and map its identity to a local user.",
-      "whenToUse": "Social/enterprise login without handling others' credentials.",
-      "steps": [
-        "oauth"
-      ],
-      "group": "Federated Login (OAuth / OIDC)"
-    },
-    {
-      "name": "Short access + rotating refresh tokens",
-      "what": "Issue short-lived access tokens renewed by a long-lived, rotating refresh token.",
-      "whenToUse": "Balancing stateless verification speed against revocation.",
-      "steps": [
-        "refresh-revoke"
-      ],
-      "group": "Token Refresh & Revocation"
-    },
-    {
-      "name": "Token revocation (denylist / short TTL)",
-      "what": "Make stateless tokens revocable via a denylist and short lifetimes.",
-      "whenToUse": "Whenever you need to invalidate a credential before it expires.",
-      "steps": [
-        "refresh-revoke"
-      ],
-      "group": "Token Refresh & Revocation"
-    },
-    {
-      "name": "RBAC / ABAC authorization",
-      "what": "Decide access from roles and/or attributes, evaluated by a policy service.",
-      "whenToUse": "Any non-trivial permission model.",
-      "steps": [
-        "authorization"
-      ],
-      "group": "Authorization (RBAC / ABAC)"
-    },
-    {
-      "name": "Multi-factor authentication",
-      "what": "Require a second factor (TOTP/push/SMS) beyond the password.",
-      "whenToUse": "Protecting against stolen passwords.",
-      "steps": [
-        "mfa"
-      ],
-      "group": "Multi-Factor Authentication"
-    },
-    {
-      "name": "Rate limiting / abuse detection",
-      "what": "Throttle and lock out brute-force and credential-stuffing attempts.",
-      "whenToUse": "Any public login endpoint.",
-      "steps": [
-        "abuse"
-      ],
-      "group": "Rate Limiting & Abuse Defense"
-    },
-    {
-      "name": "Key rotation (JWKS)",
-      "what": "Rotate signing keys and publish public keys so verifiers fetch the current set.",
-      "whenToUse": "Stateless token signing at scale.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling Verification & Key Rotation"
-    }
-  ],
   "steps": [
     {
       "id": "login",
       "title": "1. Naive Baseline: Password Login & Secure Storage",
       "description": "Start with the simplest thing that works: a user registers a password, you store it, and on login you check the submitted password and hand back a credential so they're 'logged in'. That naive version is correct — and it immediately forces the one decision that, gotten wrong, makes nothing else matter: how the password is stored. So the baseline is really about credential storage. Never store the plaintext (or a fast hash); store only a per-user salted, slow-hashed (argon2/bcrypt) digest, and return generic errors. This naive login motivates everything that follows — it issues a credential but says nothing about how that credential is verified per request, revoked, federated, or protected from abuse.",
-      "patterns": [
-        "Slow password hashing (salt + argon2/bcrypt)"
-      ],
       "probeLinks": [
         "argon2-rfc",
         "owasp-password-storage",
@@ -2088,6 +2002,14 @@
           "definition": "A deliberately expensive hash so guessing is costly.",
           "whyItMatters": "Fast hashes (SHA-256) let attackers try billions/sec.",
           "group": "Naive Baseline: Password Login & Secure Storage"
+        },
+        {
+          "term": "Slow password hashing (salt + argon2/bcrypt)",
+          "description": "Store a per-user salted hash from a deliberately slow KDF; never the plaintext.",
+          "whyItMatters": "Any password storage — always.",
+          "steps": [
+            "login"
+          ]
         }
       ],
       "talkingPoints": [
@@ -2226,15 +2148,19 @@
           "UserDB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-login.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-login.jpg",
+      "tradeoffs": [
+        {
+          "name": "Hashing cost vs. breach damage",
+          "description": "A fast hash (or plaintext) makes login verification cheap, but if the user database is stolen, fast hashes fall to offline brute force at billions of guesses per second. A per-user salted, deliberately slow hash (argon2/bcrypt) burns CPU on every legitimate login, but turns a stolen database from a catastrophe into an expensive, per-password cracking problem.",
+          "chosen": "The design stores only per-user salted, slow-hashed digests and returns generic errors, because how the password is stored is the one decision that, gotten wrong, makes nothing else matter."
+        }
+      ]
     },
     {
       "id": "sessions-tokens",
       "title": "2. Sessions vs Stateless Tokens",
       "description": "After login, issue a credential the client presents on each request. Two models: a server-side session id looked up per request, or a self-contained signed token (JWT) verified by signature. The choice trades easy revocation against verification scale.",
-      "patterns": [
-        "Sessions vs stateless tokens"
-      ],
       "probeLinks": [
         "oauth-rfc",
         "oidc-core",
@@ -2256,6 +2182,14 @@
           "definition": "A signed claims blob verified by signature, no lookup.",
           "whyItMatters": "Verifies fast and scales, but is hard to revoke before expiry.",
           "group": "Sessions vs Stateless Tokens"
+        },
+        {
+          "term": "Sessions vs stateless tokens",
+          "description": "Server-side session id (lookup per request) vs self-contained signed token (verify by signature).",
+          "whyItMatters": "Choose by revocation needs vs verification scale.",
+          "steps": [
+            "sessions-tokens"
+          ]
         }
       ],
       "options": [
@@ -2372,15 +2306,19 @@
           "Token",
           "Session"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Revocability vs. verification scale",
+          "description": "Server-side sessions revoke instantly — delete the row and the credential is dead — and the opaque cookie leaks nothing, but every request pays a lookup against a session store that must be fast, shared, and highly available. Self-contained signed JWTs verify locally by signature anywhere on the platform with no hot-path store, but are hard to revoke before expiry, grow with claims, and put signing-key management on you.",
+          "chosen": "The design issues stateless signed access tokens because signature verification scales to the whole platform without a central store, deferring the revocation gap to short TTLs plus a denylist in a later step."
+        }
+      ]
     },
     {
       "id": "oauth",
       "title": "3. Federated Login (OAuth / OIDC)",
       "description": "Let users log in via an external identity provider (Google, Okta) using OAuth 2.0 / OIDC: redirect to the IdP, exchange an authorization code for an id token, verify it, and map the external identity to a local user. You never see the user's IdP password.",
-      "patterns": [
-        "OAuth / OIDC federation"
-      ],
       "probeLinks": [
         "oauth-rfc",
         "oauth-security-bcp",
@@ -2403,6 +2341,14 @@
           "definition": "A signed token from the IdP asserting the user's identity.",
           "whyItMatters": "Lets you authenticate without ever handling the user's IdP credentials.",
           "group": "Federated Login (OAuth / OIDC)"
+        },
+        {
+          "term": "OAuth / OIDC federation",
+          "description": "Delegate authentication to an external IdP and map its identity to a local user.",
+          "whyItMatters": "Social/enterprise login without handling others' credentials.",
+          "steps": [
+            "oauth"
+          ]
         }
       ],
       "flows": [
@@ -2643,16 +2589,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-oauth-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Redirect complexity vs. token exposure",
+          "description": "The implicit flow and the password grant minimize round trips — the token arrives directly or via a single POST — but the implicit flow lands the access token in the URL fragment (browser history, logs, referrers) and cannot safely deliver a refresh token, while the password grant hands your app the user's IdP password, defeating federation and breaking MFA; both are removed in OAuth 2.1. The authorization-code flow costs extra redirects and a server-side exchange holding a client secret, but the token only ever moves server-to-server.",
+          "chosen": "The design uses the authorization-code flow (with PKCE for public clients), because a short-lived one-time code in the redirect and a back-channel token exchange keep tokens out of the browser entirely."
+        }
       ]
     },
     {
       "id": "refresh-revoke",
       "title": "4. Token Refresh & Revocation",
       "description": "Resolve the stateless-token tension: issue short-lived access tokens plus a long-lived, rotating refresh token. Revocation is handled by short access TTLs and a denylist checked on refresh (and optionally per-request for high-value actions).",
-      "patterns": [
-        "Short access + rotating refresh tokens",
-        "Token revocation (denylist / short TTL)"
-      ],
       "probeLinks": [
         "oauth-revocation",
         "oauth-introspection",
@@ -2674,6 +2623,22 @@
           "definition": "A small store of revoked token/session ids checked on refresh.",
           "whyItMatters": "Makes stateless tokens revocable without per-request lookups everywhere.",
           "group": "Token Refresh & Revocation"
+        },
+        {
+          "term": "Short access + rotating refresh tokens",
+          "description": "Issue short-lived access tokens renewed by a long-lived, rotating refresh token.",
+          "whyItMatters": "Balancing stateless verification speed against revocation.",
+          "steps": [
+            "refresh-revoke"
+          ]
+        },
+        {
+          "term": "Token revocation (denylist / short TTL)",
+          "description": "Make stateless tokens revocable via a denylist and short lifetimes.",
+          "whyItMatters": "Whenever you need to invalidate a credential before it expires.",
+          "steps": [
+            "refresh-revoke"
+          ]
         }
       ],
       "deepDives": [
@@ -2928,15 +2893,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/04-refresh-revoke-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Statelessness vs. instant revocation",
+          "description": "A long-lived JWT with no revocation is the cheapest to operate — pure signature checks, zero state — but 'log out everywhere' and account compromise have no remedy until expiry. Full stateful sessions give instant, total revocation but reintroduce a store lookup on all 100k req/s. The hybrid — short-lived JWTs, a stored rotating refresh token, and a small denylist — keeps most requests stateless while bounding a stolen token's lifetime, at the cost of rotation bookkeeping and denylist checks on sensitive endpoints.",
+          "chosen": "The design issues ~15-minute JWTs minted by revocable rotating refresh tokens with a denylist covering the gap to expiry, because it buys near-stateless verification while capping the damage window of any single stolen token."
+        }
       ]
     },
     {
       "id": "authorization",
       "title": "5. Authorization (RBAC / ABAC)",
       "description": "Authentication says who you are; authorization says what you may do. A policy service decides access from roles (RBAC) and/or attributes (ABAC). The decision needs real context — subject, action, resource, tenant, resource owner, and request attributes — not just a subject and an action string. Decisions are evaluated centrally and cached with a short TTL, stamped with a policy_version so a role or policy change invalidates stale entries. Enforce at the gateway and defense-in-depth at the resource.",
-      "patterns": [
-        "RBAC / ABAC authorization"
-      ],
       "probeLinks": [
         "owasp-authorization",
         "zanzibar-paper",
@@ -2958,6 +2927,14 @@
           "definition": "Decisions from attributes (owner == user, department, time).",
           "whyItMatters": "Expresses fine-grained, contextual rules RBAC can't.",
           "group": "Authorization (RBAC / ABAC)"
+        },
+        {
+          "term": "RBAC / ABAC authorization",
+          "description": "Decide access from roles and/or attributes, evaluated by a policy service.",
+          "whyItMatters": "Any non-trivial permission model.",
+          "steps": [
+            "authorization"
+          ]
         }
       ],
       "options": [
@@ -3089,15 +3066,24 @@
           "AuthZ",
           "Policy"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Central policy vs. token-embedded permissions",
+          "description": "Baking permissions into token claims removes any authz lookup from the request path, but the claims are stale until the token expires — a revoked role keeps working — the token bloats with fine-grained permissions, and ownership- or attribute-level (ABAC) rules that depend on request context cannot be expressed at issuance time. A central policy service adds a hot-path dependency, but evaluates full context and gives one place to define, version, and audit policy.",
+          "chosen": "The design centralizes decisions in a policy service with short-TTL caching keyed by policy_version, because full-context RBAC/ABAC evaluation and prompt invalidation on policy change outweigh the cached-lookup cost."
+        },
+        {
+          "name": "Gateway enforcement vs. defense in depth",
+          "description": "Enforcing only at the gateway is one clean choke point but leaves every internal service trusting that the check happened; re-checking at the resource costs duplicate evaluations yet catches gateway bypasses and service-to-service calls that never crossed the edge.",
+          "chosen": "The design enforces at the gateway and again at the resource as defense in depth, accepting redundant checks because a single missed enforcement point is a full bypass."
+        }
+      ]
     },
     {
       "id": "mfa",
       "title": "6. Multi-Factor Authentication",
       "description": "Add a second factor so a stolen password isn't enough. After password verification, require a TOTP/push/SMS challenge before issuing full tokens. Step-up MFA can also gate high-value actions specifically.",
-      "patterns": [
-        "Multi-factor authentication"
-      ],
       "probeLinks": [
         "nist-identity",
         "webauthn",
@@ -3118,6 +3104,14 @@
           "definition": "Requiring re-auth/MFA for sensitive operations even within a session.",
           "whyItMatters": "Protects high-value actions without forcing MFA on everything.",
           "group": "Multi-Factor Authentication"
+        },
+        {
+          "term": "Multi-factor authentication",
+          "description": "Require a second factor (TOTP/push/SMS) beyond the password.",
+          "whyItMatters": "Protecting against stolen passwords.",
+          "steps": [
+            "mfa"
+          ]
         }
       ],
       "traps": [
@@ -3382,15 +3376,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/06-mfa-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Security strength vs. enrollment friction",
+          "description": "SMS/push works for any user with a phone and needs no app, but SMS falls to SIM-swap and SS7 interception and push invites MFA-bombing through reflexive approvals. WebAuthn/passkeys are origin-bound and phishing-proof with secrets that never leave the device, but demand browser/OS support, registered authenticators, and a harder recovery story. TOTP sits between: offline codes from a shared seed, no per-login cost, standard apps — though the stored seed is a target and live phishing proxies can relay a current code.",
+          "chosen": "The design defaults to TOTP authenticator apps as the cheap, standard, offline second factor, positioning SMS/push as a fallback and WebAuthn as the phishing-resistant upgrade path."
+        }
       ]
     },
     {
       "id": "abuse",
       "title": "7. Rate Limiting & Abuse Defense",
       "description": "Public login endpoints invite brute-force and credential-stuffing. Rate-limit per account and per IP, add exponential lockout/backoff and CAPTCHA on suspicion, and detect distributed attacks — all while not locking out legitimate users.",
-      "patterns": [
-        "Rate limiting / abuse detection"
-      ],
       "probeLinks": [
         "owasp-credential-stuffing",
         "cloudflare-rate-limiting",
@@ -3412,6 +3410,14 @@
           "definition": "Hard account lock vs progressive slowdown.",
           "whyItMatters": "Hard locks enable denial-of-service against victims; prefer throttling + step-up.",
           "group": "Rate Limiting & Abuse Defense"
+        },
+        {
+          "term": "Rate limiting / abuse detection",
+          "description": "Throttle and lock out brute-force and credential-stuffing attempts.",
+          "whyItMatters": "Any public login endpoint.",
+          "steps": [
+            "abuse"
+          ]
         }
       ],
       "deepDives": [
@@ -3605,16 +3611,19 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/07-abuse-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Attack coverage vs. lockout risk",
+          "description": "Per-account lockout is dead simple and stops single-account guessing, but it hands attackers a denial-of-service weapon — fail on purpose to lock any victim out — and does nothing against stuffing spread across millions of accounts. Per-IP limits blunt one noisy host but botnets slip under any per-IP cap while shared NAT throttles innocent users. Multi-dimensional adaptive limiting covers account, IP, and subnet and escalates to CAPTCHA/MFA instead of hard-locking, at the cost of a fast shared counter store and perpetual threshold tuning.",
+          "chosen": "The design uses adaptive multi-dimensional limiting that escalates suspicious traffic to a challenge rather than a lockout, because defending against distributed stuffing must not become a self-inflicted DoS on real users."
+        }
       ]
     },
     {
       "id": "scale",
       "title": "8. Scaling Verification & Key Rotation",
       "description": "Make per-request verification scale platform-wide. Stateless tokens verify by signature using published public keys (JWKS), so any service checks them without a central call. Rotate signing keys regularly and keep the denylist small and replicated.",
-      "patterns": [
-        "Key rotation (JWKS)",
-        "Sessions vs stateless tokens"
-      ],
       "probeLinks": [
         "jwk-rfc",
         "oidc-discovery",
@@ -3644,6 +3653,14 @@
           "definition": "A header on each token naming which signing key signed it, matched against the published JWKS.",
           "whyItMatters": "Lets verifiers pick the right public key during overlapping rotation and refetch JWKS on an unknown kid instead of failing blindly.",
           "group": "Scaling Verification & Key Rotation"
+        },
+        {
+          "term": "Key rotation (JWKS)",
+          "description": "Rotate signing keys and publish public keys so verifiers fetch the current set.",
+          "whyItMatters": "Stateless token signing at scale.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -3763,7 +3780,14 @@
           "Keys",
           "Revoke"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Local verification vs. central control",
+          "description": "Central introspection on every request gives instant revocation and one authoritative place for token state, but makes the auth service a hot dependency and adds a network round trip to all 100k req/s. Local signature verification via published JWKS removes the central call entirely and makes key rotation transparent, but revocation is only as fast as short TTLs plus a replicated denylist, and demands key-management discipline — scheduled rotation, overlap windows, and emergency-revoke runbooks.",
+          "chosen": "The design verifies signatures locally against JWKS with a small replicated denylist consulted only for sensitive operations, because eliminating the per-request central call is what lets verification scale platform-wide."
+        }
+      ]
     }
   ],
   "finalDesign": {

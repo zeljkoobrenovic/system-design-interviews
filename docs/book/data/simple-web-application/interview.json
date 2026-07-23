@@ -1542,80 +1542,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Load balancing",
-      "what": "Put a load balancer in front of a pool of identical servers; it spreads requests and routes around unhealthy instances via health checks.",
-      "whenToUse": "Whenever one server is both a single point of failure and a throughput ceiling, and you want to scale a tier horizontally.",
-      "steps": [
-        "load-balancer"
-      ],
-      "group": "3. Load Balancer + Multiple Web Servers"
-    },
-    {
-      "name": "Replication",
-      "what": "Keep copies of the data on multiple nodes; route writes to a primary and reads to replicas to spread read load and survive a node loss.",
-      "whenToUse": "Read-heavy workloads, or when the data tier is a single point of failure.",
-      "steps": [
-        "replication"
-      ],
-      "group": "4. Database Replication"
-    },
-    {
-      "name": "Cache-aside",
-      "what": "Read from the cache first; on a miss, read the source of truth and backfill the cache so later reads are fast.",
-      "whenToUse": "Read-heavy access with a hot subset of keys, where a slightly stale read is acceptable.",
-      "steps": [
-        "cache"
-      ],
-      "group": "5. Add a Cache Tier"
-    },
-    {
-      "name": "Edge caching (CDN)",
-      "what": "Serve cacheable static responses from points of presence close to users instead of from the origin.",
-      "whenToUse": "Geographically distributed read traffic for cacheable content (static assets, media).",
-      "steps": [
-        "cdn"
-      ],
-      "group": "6. Add a CDN for Static Content"
-    },
-    {
-      "name": "Stateless web tier",
-      "what": "Keep no per-user state in web-server memory; push session state to a shared store (or a signed token) so any server can handle any request.",
-      "whenToUse": "When you need autoscaling, rolling deploys, and failover without losing user context.",
-      "steps": [
-        "stateless"
-      ],
-      "group": "7. Stateless Web Tier"
-    },
-    {
-      "name": "Sticky sessions (session affinity)",
-      "what": "Pin each user to one web server via load-balancer affinity so their in-memory session stays reachable, avoiding a shared session store.",
-      "whenToUse": "A quick way to scale out a session-bearing app, but it breaks autoscaling and graceful deploys; prefer an external session store or stateless tokens.",
-      "steps": [
-        "stateless"
-      ],
-      "group": "7. Stateless Web Tier"
-    },
-    {
-      "name": "Work queue",
-      "what": "Hand slow or bursty work to a queue that worker processes consume asynchronously, decoupling request latency from background processing.",
-      "whenToUse": "Long-running, retryable, or spiky tasks (email, image processing, exports) that needn't block the request.",
-      "steps": [
-        "message-queue"
-      ],
-      "group": "9. Message Queue for Async Work"
-    },
-    {
-      "name": "Horizontal sharding (partitioning)",
-      "what": "Split data across nodes by a partition key so no single node holds the whole dataset or its full write volume.",
-      "whenToUse": "When data size or write throughput exceeds what one (replicated) database node can serve.",
-      "steps": [
-        "sharding"
-      ],
-      "group": "10. Shard the Database (and Add Tooling)"
-    }
-  ],
   "satisfies": {
     "functional": [
       {
@@ -3486,7 +3412,14 @@
           "Server"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-single-server.png"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-single-server.png",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. headroom",
+          "description": "Running web app, database, and cache on one box is the cheapest, simplest deployable slice and serves both browser and mobile traffic from a single IP. In exchange, every component competes for the same CPU, memory, and disk, and the box is a single point of failure with a hard ceiling on capacity.",
+          "chosen": "The design starts on a single server deliberately, treating resource contention and the first bottleneck as the signal for the next split rather than pre-scaling."
+        }
+      ]
     },
     {
       "id": "database",
@@ -3609,7 +3542,14 @@
           "DB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-database.png"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-database.png",
+      "tradeoffs": [
+        {
+          "name": "Independent scaling vs. added hops",
+          "description": "Pulling the database onto its own machine lets the web tier and data tier scale independently and stops them crowding each other for resources. The cost is a network hop between app and database on every query and a second machine to provision, secure, and monitor.",
+          "chosen": "The design separates the database as the first persistence boundary, because independent tier scaling matters more than the extra network round trip."
+        }
+      ]
     },
     {
       "id": "load-balancer",
@@ -3628,6 +3568,14 @@
           "definition": "Any web server can handle any request without relying on local user state.",
           "whyItMatters": "Load balancing and autoscaling work best when requests are interchangeable.",
           "group": "Load Balancer + Multiple Web Servers"
+        },
+        {
+          "term": "Load balancing",
+          "description": "Put a load balancer in front of a pool of identical servers; it spreads requests and routes around unhealthy instances via health checks.",
+          "whyItMatters": "Whenever one server is both a single point of failure and a throughput ceiling, and you want to scale a tier horizontally.",
+          "steps": [
+            "load-balancer"
+          ]
         }
       ],
       "probeLinks": [
@@ -3757,7 +3705,14 @@
           "W2"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-load-balancer.png"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-load-balancer.png",
+      "tradeoffs": [
+        {
+          "name": "Redundancy vs. indirection",
+          "description": "Putting a load balancer in front of multiple web servers removes the single web server as both SPOF and throughput cap: a server can fail without downtime and capacity grows by adding servers. In exchange, all traffic now flows through a new component that must itself be highly available, must health-check servers, and must route correctly as instances come and go.",
+          "chosen": "The design accepts the load balancer as a new critical component because horizontal web scaling and failover are impossible without it."
+        }
+      ]
     },
     {
       "id": "replication",
@@ -3776,6 +3731,14 @@
           "definition": "A user sees their own write on a later read.",
           "whyItMatters": "Replica lag can break this expectation unless recent reads go to the primary or use session routing.",
           "group": "Database Replication"
+        },
+        {
+          "term": "Replication",
+          "description": "Keep copies of the data on multiple nodes; route writes to a primary and reads to replicas to spread read load and survive a node loss.",
+          "whyItMatters": "Read-heavy workloads, or when the data tier is a single point of failure.",
+          "steps": [
+            "replication"
+          ]
         }
       ],
       "probeLinks": [
@@ -4115,6 +4078,18 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/04-replication-opt3.png"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write latency vs. durability",
+          "description": "Async replication keeps writes fast because the master never waits on a replica, but a failover can lose acknowledged writes that had not replicated. Synchronous replication guarantees a promotable replica holds every acknowledged write and serves fresh reads, but every write pays the slowest replica's round trip and a down replica can stall writes entirely.",
+          "chosen": "The design picks single-leader async replication, trading a small failover data-loss window for fast writes in a read-heavy web app."
+        },
+        {
+          "name": "Read scaling vs. read-your-writes",
+          "description": "Sending reads to lagging replicas scales a read-heavy app cheaply, but a user can miss their own just-saved profile edit or comment. Routing recent writers to the master fixes read-your-writes where it matters, at the cost of app-level tracking of who just wrote and extra read load on the master.",
+          "chosen": "The design accepts stale replica reads as the default, leaving leader-routing for recent writers as a targeted fix only for flows where staleness visibly hurts."
+        }
       ]
     },
     {
@@ -4134,6 +4109,14 @@
           "definition": "Many requests miss an expired cache entry at once and all hit the database.",
           "whyItMatters": "Stampedes can turn one cache expiry into a database outage.",
           "group": "Add a Cache Tier"
+        },
+        {
+          "term": "Cache-aside",
+          "description": "Read from the cache first; on a miss, read the source of truth and backfill the cache so later reads are fast.",
+          "whyItMatters": "Read-heavy access with a hot subset of keys, where a slightly stale read is acceptable.",
+          "steps": [
+            "cache"
+          ]
         }
       ],
       "probeLinks": [
@@ -4378,6 +4361,18 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/05-cache-opt2.png"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Lazy vs. eager population",
+          "description": "Cache-aside caches only data that is actually requested and degrades to a slower DB read if the cache fails, but every miss pays a DB read plus a cache write and the first request for any key is always slow, with stampede risk on hot cold keys. Write-through keeps written keys always fresh, but pays a cache write on every write even for data never read again.",
+          "chosen": "The design uses cache-aside, betting that caching only what is read beats paying cache writes for everything written."
+        },
+        {
+          "name": "Invalidation simplicity vs. drift risk",
+          "description": "Deleting the cache key on write is the simplest invalidation rule, but a single missed delete leaves cache and database silently disagreeing. Write-through removes the separate invalidation step to forget, at the price of coupling cache updates into the write path's latency.",
+          "chosen": "The design keeps delete-on-write invalidation and lives with the drift risk, keeping the write path free of a synchronous cache dependency."
+        }
       ]
     },
     {
@@ -4397,6 +4392,14 @@
           "definition": "Remove or bypass a cached object when a newer version should be served.",
           "whyItMatters": "Users should not keep receiving stale JS, CSS, or images after deployment.",
           "group": "Add a CDN for Static Content"
+        },
+        {
+          "term": "Edge caching (CDN)",
+          "description": "Serve cacheable static responses from points of presence close to users instead of from the origin.",
+          "whyItMatters": "Geographically distributed read traffic for cacheable content (static assets, media).",
+          "steps": [
+            "cdn"
+          ]
         }
       ],
       "probeLinks": [
@@ -4554,7 +4557,14 @@
           "Origin"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-cdn.png"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-cdn.png",
+      "tradeoffs": [
+        {
+          "name": "Edge latency vs. freshness control",
+          "description": "Pushing JS, CSS, images, and video to CDN edges means users fetch heavy assets nearby instead of crossing oceans, and the origin only serves dynamic responses. In exchange you take on cache-key and invalidation discipline, CDN cost, and the need to plan for what happens when the CDN itself fails or serves a stale asset.",
+          "chosen": "The design moves all static content to the CDN because these assets are heavy and rarely change, exactly the profile where edge caching wins and staleness barely hurts."
+        }
+      ]
     },
     {
       "id": "stateless",
@@ -4585,6 +4595,22 @@
           "definition": "Automatically add or remove server instances based on load signals.",
           "whyItMatters": "It is only safe when new instances can serve requests without manual warm state.",
           "group": "Stateless Web Tier"
+        },
+        {
+          "term": "Stateless web tier",
+          "description": "Keep no per-user state in web-server memory; push session state to a shared store (or a signed token) so any server can handle any request.",
+          "whyItMatters": "When you need autoscaling, rolling deploys, and failover without losing user context.",
+          "steps": [
+            "stateless"
+          ]
+        },
+        {
+          "term": "Sticky sessions (session affinity)",
+          "description": "Pin each user to one web server via load-balancer affinity so their in-memory session stays reachable, avoiding a shared session store.",
+          "whyItMatters": "A quick way to scale out a session-bearing app, but it breaks autoscaling and graceful deploys; prefer an external session store or stateless tokens.",
+          "steps": [
+            "stateless"
+          ]
         }
       ],
       "probeLinks": [
@@ -4923,6 +4949,18 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/07-stateless-opt3.png"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Elasticity vs. session locality",
+          "description": "Sticky sessions keep session access in-process — the fastest option with minimal change — but pin each user to one server, so a server death or rolling deploy logs users out and defeats autoscaling. An external session store adds a network round trip to most requests, but lets any server handle any request so scaling, deploys, and failover never lose user context.",
+          "chosen": "The design moves sessions to a shared external store, paying one network hop per request to make the web tier genuinely stateless and safely autoscalable."
+        },
+        {
+          "name": "Statelessness vs. revocability",
+          "description": "Signed JWTs carry the session in the client, so any server validates locally with zero shared state and effortless scaling. But revoking a token before expiry requires a blocklist that partly reintroduces the shared state you removed, tokens ride on every request, and key rotation and theft need careful handling. Server-side sessions can be revoked instantly.",
+          "chosen": "The design prefers the server-side session store over stateless tokens, keeping instant revocation at the cost of a shared dependency to run."
+        }
       ]
     },
     {
@@ -5247,6 +5285,13 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/08-multi-dc-opt2.png"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Utilization vs. write conflicts",
+          "description": "Active-active lets both regions serve reads and writes locally — low latency everywhere, doubled capacity, and no idle standby — but concurrent writes in two regions can conflict, requiring conflict resolution or per-key region ownership, with split-brain risk during partitions. Active-passive keeps a single write region and a clean DR story, but wastes standby capacity and makes distant users pay cross-region write latency.",
+          "chosen": "The design picks active-active with async cross-region replication, accepting conflict-handling complexity to get local latency and full capacity utilization in both regions."
+        }
       ]
     },
     {
@@ -5266,6 +5311,14 @@
           "definition": "A worker that can process the same job more than once without corrupting results.",
           "whyItMatters": "Queues retry jobs, so duplicate execution must be safe.",
           "group": "Message Queue for Async Work"
+        },
+        {
+          "term": "Work queue",
+          "description": "Hand slow or bursty work to a queue that worker processes consume asynchronously, decoupling request latency from background processing.",
+          "whyItMatters": "Long-running, retryable, or spiky tasks (email, image processing, exports) that needn't block the request.",
+          "steps": [
+            "message-queue"
+          ]
         }
       ],
       "probeLinks": [
@@ -5435,7 +5488,14 @@
           "Wk3"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/09-message-queue.png"
+      "aiVisual": "assets/generated/ai-visuals/steps/09-message-queue.png",
+      "tradeoffs": [
+        {
+          "name": "Request latency vs. completion certainty",
+          "description": "Publishing slow work (image processing, email, transcoding) to a queue lets web servers return immediately and lets producers and consumers scale separately on queue depth. In exchange, the user gets an answer before the work is done, so the design must define what they see while it is pending, and retries mean workers need idempotency to avoid duplicate effects.",
+          "chosen": "The design moves slow operations behind a message queue, trading synchronous certainty for a fast request path and independently scalable workers."
+        }
+      ]
     },
     {
       "id": "sharding",
@@ -5454,6 +5514,14 @@
           "definition": "Move data between shards when the current partitioning no longer fits load or size.",
           "whyItMatters": "A sharding plan is incomplete if it cannot evolve.",
           "group": "Shard the Database (and Add Tooling)"
+        },
+        {
+          "term": "Horizontal sharding (partitioning)",
+          "description": "Split data across nodes by a partition key so no single node holds the whole dataset or its full write volume.",
+          "whyItMatters": "When data size or write throughput exceeds what one (replicated) database node can serve.",
+          "steps": [
+            "sharding"
+          ]
         }
       ],
       "probeLinks": [
@@ -5877,6 +5945,18 @@
             ]
           },
           "aiVisual": "assets/generated/ai-visuals/steps/10-sharding-opt3.png"
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Even spread vs. range queries",
+          "description": "Hash sharding spreads rows evenly with a cheap stateless routing computation and no hotspots, but range and scan queries must fan out to every shard, and changing the shard count remaps most rows. Range sharding keeps rows ordered so 'recent' queries hit one shard, but sequential keys hotspot the newest range and rebalancing is ongoing work.",
+          "chosen": "The design hash-shards on user_id, optimizing for the dominant single-user queries and accepting fan-out for the rarer cross-shard scans."
+        },
+        {
+          "name": "Stateless routing vs. placement control",
+          "description": "A hash function routes with zero lookup state but gives no control over where a key lives, making targeted rebalancing or tenant co-location impossible. A directory-based lookup table lets you move chosen keys by just updating the directory, but puts an extra lookup on every hot-path request and becomes a bottleneck and consistency burden of its own.",
+          "chosen": "The design keeps routing a stateless hash computation, giving up deliberate placement to avoid a directory that must be cached, kept consistent, and made highly available."
         }
       ]
     }

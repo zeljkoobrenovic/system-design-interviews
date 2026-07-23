@@ -1883,109 +1883,6 @@
       "makesIrrelevant": "A managed observability suite with audit logging and trace retention removes much of the custom log warehouse for operational debugging, but not the money-specific alerts."
     }
   ],
-  "patterns": [
-    {
-      "name": "PCI tokenization boundary",
-      "what": "Collect/store card data only in a small vault; everything else handles tokens.",
-      "whenToUse": "Any system touching card data — shrink PCI scope.",
-      "steps": [
-        "pci"
-      ],
-      "group": "The PCI Boundary: Tokenize Card Data"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "A merchant-supplied key dedups retried charge requests so a card is charged once.",
-      "whenToUse": "Money-moving APIs over unreliable networks.",
-      "steps": [
-        "idempotency"
-      ],
-      "group": "Idempotent Charges"
-    },
-    {
-      "name": "Charge state machine",
-      "what": "Model the charge as explicit states across risk, PSP, and ledger.",
-      "whenToUse": "Multi-step money flows that must be consistent and resumable.",
-      "steps": [
-        "orchestrate"
-      ],
-      "group": "Charge Orchestration: Risk -> Network"
-    },
-    {
-      "name": "Risk scoring gate",
-      "what": "Score the charge for fraud and approve/decline/review before hitting the network.",
-      "whenToUse": "Reducing fraud and chargebacks.",
-      "steps": [
-        "orchestrate"
-      ],
-      "group": "Charge Orchestration: Risk -> Network"
-    },
-    {
-      "name": "Reliable webhooks (outbox + retry)",
-      "what": "Persist events and deliver at-least-once with retries, backoff, and signatures.",
-      "whenToUse": "Notifying merchants of async outcomes durably.",
-      "steps": [
-        "webhooks"
-      ],
-      "group": "Reliable Webhooks"
-    },
-    {
-      "name": "Double-entry ledger + payouts",
-      "what": "Record every money movement in a ledger; aggregate balances and pay merchants.",
-      "whenToUse": "Tracking what's owed and settling it correctly.",
-      "steps": [
-        "ledger"
-      ],
-      "group": "Ledger and Payouts"
-    },
-    {
-      "name": "Transactional outbox",
-      "what": "Write the event in the same DB transaction as the state change, then a relay drains the outbox — so an event exists iff its transition committed.",
-      "whenToUse": "Whenever a state change must reliably emit an event without a lossy dual-write.",
-      "steps": [
-        "webhooks"
-      ],
-      "group": "Reliable Webhooks"
-    },
-    {
-      "name": "PSP reconciliation",
-      "what": "Resolve ambiguous external calls and verify internal state against the PSP's authoritative status and settlement reports; correct drift with compensating entries.",
-      "whenToUse": "Any system whose source of truth is an external provider that can time out or disagree.",
-      "steps": [
-        "orchestrate",
-        "ledger",
-        "psp-resilience"
-      ],
-      "group": "Charge Orchestration: Risk -> Network"
-    },
-    {
-      "name": "Payout state machine",
-      "what": "Model a payout as an idempotent, reconciled state machine (scheduled -> sent -> paid/returned), never a fire-and-forget transfer.",
-      "whenToUse": "Sending money out where the transfer can fail, be unknown, or be returned.",
-      "steps": [
-        "ledger"
-      ],
-      "group": "Ledger and Payouts"
-    },
-    {
-      "name": "Merchant webhook dedup",
-      "what": "Consumers dedup by event id because delivery is at-least-once; the gateway never claims exactly-once delivery.",
-      "whenToUse": "At-least-once event delivery to external consumers.",
-      "steps": [
-        "webhooks"
-      ],
-      "group": "Reliable Webhooks"
-    },
-    {
-      "name": "Circuit breaker + failover",
-      "what": "Trip a breaker around a failing PSP and fail over to another acquirer only when it is safe (before authorize sent, or after a confirmed failure).",
-      "whenToUse": "Hard dependency on a flaky external provider where blind retries are dangerous.",
-      "steps": [
-        "psp-resilience"
-      ],
-      "group": "PSP Resilience & Multi-Acquirer Routing"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -2040,7 +1937,14 @@
           "instead": "Tokenize card data at the client/vault and require an idempotency key so a card is charged at most once."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. safety",
+          "description": "Posting the raw card number straight through the gateway to the acquirer is the simplest possible integration and works for one happy-path charge, but it drags the merchant and the whole API into PCI scope and gives a timeout-and-retry no protection against charging the customer twice.",
+          "chosen": "The design treats this baseline as an intentional strawman: its two failures — raw PANs everywhere and unsafe retries — motivate the tokenization and idempotency steps that follow."
+        }
+      ]
     },
     {
       "id": "pci",
@@ -2199,10 +2103,15 @@
           "whyItMatters": "Tokenization only shrinks scope if the vault itself is hardened, every PAN access is audited, and the rest of the system can't leak PANs.",
           "example": "Only the orchestrator's PSP-call path may detokenize; every detokenize writes a vault_access_log row (actor identity, reason_code, charge_id) and is rate-limited; PANs are scrubbed from logs/traces.",
           "group": "The PCI Boundary: Tokenize Card Data"
+        },
+        {
+          "term": "PCI tokenization boundary",
+          "description": "Collect/store card data only in a small vault; everything else handles tokens.",
+          "whyItMatters": "Any system touching card data — shrink PCI scope.",
+          "steps": [
+            "pci"
+          ]
         }
-      ],
-      "patterns": [
-        "PCI tokenization boundary"
       ],
       "whyNow": [
         "The PCI boundary is the defining architectural constraint of a card gateway; establishing tokenization first shapes everything downstream."
@@ -2225,7 +2134,19 @@
         "before": "Raw card passed to the bank; no PCI isolation.",
         "after": "Card data isolated in a hardened vault; the system runs on tokens.",
         "newRisk": "Charge requests over flaky networks get retried — a card must not be charged twice."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Integration effort vs. PCI scope",
+          "description": "Letting merchants POST card data to your API is the easiest integration but pulls your entire API (and possibly the merchant's servers) into PCI scope, where a breach exposes real card numbers. Hosted fields that post directly to a hardened vault demand an SDK across web and mobile, but shrink the compliance and breach surface to one audited component.",
+          "chosen": "The design accepts the client-SDK integration burden so that raw PANs only ever touch the vault, keeping the rest of the gateway out of PCI scope."
+        },
+        {
+          "name": "Control vs. dependency",
+          "description": "Delegating tokenization to the PSP or card network removes almost all PCI surface and gives tokens that survive card reissuance, but PSP-scoped tokens lock you to one processor and complicate multi-acquirer failover. Owning your own vault keeps the token lifecycle and routing freedom in your hands at the cost of operating a hardened, regulated component.",
+          "chosen": "The design runs its own vault, accepting the operational burden of a critical hardened dependency in exchange for processor-independent tokens and control over the token lifecycle."
+        }
+      ]
     },
     {
       "id": "idempotency",
@@ -2385,9 +2306,6 @@
         "paypal-idempotency",
         "stripe-payment-intents"
       ],
-      "patterns": [
-        "Idempotency key"
-      ],
       "whyNow": [
         "Idempotency is the second payments non-negotiable; doing it transactionally with charge creation is the correctness nuance."
       ],
@@ -2407,7 +2325,19 @@
         "before": "Retries could double-charge.",
         "after": "Each charge request charges at most once.",
         "newRisk": "A charge is multi-step (risk, authorize, capture, ledger) — it must stay consistent across them."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Application contract vs. database constraint",
+          "description": "Writing an explicit key-to-result record in the same transaction as the charge gives a clean, auditable contract that can replay the original response, but merchants must supply stable keys and the store needs retention. Leaning on a unique index is race-safe by construction, yet a constraint violation only says duplicate — you still have to fetch the original result and handle mismatched request bodies.",
+          "chosen": "The design persists the idempotency record atomically with the charge, because replaying the stored result turns at-least-once retries into exactly-once charges with a contract merchants can reason about."
+        },
+        {
+          "name": "In-database dedup vs. external lock",
+          "description": "A distributed lock per key keeps dedup off the primary database's write path and is conceptually simple, but lock expiry racing a slow PSP call can let a second holder double-charge, and a crash mid-lock needs fencing. Transactional dedup in the charge database is heavier on the primary but cannot desynchronize from the charge itself.",
+          "chosen": "The design keeps dedup inside the charge transaction, refusing to let a lock-expiry edge case put a double charge on the table."
+        }
+      ]
     },
     {
       "id": "orchestrate",
@@ -2571,6 +2501,32 @@
           "whyItMatters": "Keeps the charge consistent across a slow external dependency without double-authorizing.",
           "example": "Timeout on authorize -> query PSP status -> resolve to authorized or retry safely.",
           "group": "Charge Orchestration: Risk -> Network"
+        },
+        {
+          "term": "Charge state machine",
+          "description": "Model the charge as explicit states across risk, PSP, and ledger.",
+          "whyItMatters": "Multi-step money flows that must be consistent and resumable.",
+          "steps": [
+            "orchestrate"
+          ]
+        },
+        {
+          "term": "Risk scoring gate",
+          "description": "Score the charge for fraud and approve/decline/review before hitting the network.",
+          "whyItMatters": "Reducing fraud and chargebacks.",
+          "steps": [
+            "orchestrate"
+          ]
+        },
+        {
+          "term": "PSP reconciliation",
+          "description": "Resolve ambiguous external calls and verify internal state against the PSP's authoritative status and settlement reports; correct drift with compensating entries.",
+          "whyItMatters": "Any system whose source of truth is an external provider that can time out or disagree.",
+          "steps": [
+            "orchestrate",
+            "ledger",
+            "psp-resilience"
+          ]
         }
       ],
       "probeLinks": [
@@ -2580,10 +2536,6 @@
         "aws-idempotent-apis",
         "adyen-idempotency",
         "aws-retries-backoff-jitter"
-      ],
-      "patterns": [
-        "Charge state machine",
-        "Risk scoring gate"
       ],
       "whyNow": [
         "Orchestration across risk + external network is the heart of the gateway; ambiguous-PSP-response handling is the senior signal."
@@ -2710,6 +2662,18 @@
             "ChargeSvc",
             "PSP"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Central orchestration vs. choreography",
+          "description": "A persisted state-machine orchestrator makes the whole charge lifecycle visible, auditable, and resumable after a crash, but it is one more service to scale and keep highly available. Event-driven choreography keeps services loosely coupled and independently deployable, yet spreads a money flow that demands strict ordering across services with no single owner to debug.",
+          "chosen": "The design picks the central orchestrator because money movement needs one owner that persists every transition, so a crash resumes the charge rather than re-sending it."
+        },
+        {
+          "name": "Resumability vs. request-path simplicity",
+          "description": "Calling risk, authorize, and capture inline in one synchronous handler is the simplest code and gives the merchant a final answer in one response, but a timeout mid-sequence leaves the charge in an unknown state with no resume point and no safe retry. Explicit sent-but-unknown states (authorize_unknown, capture_unknown) cost upfront modeling but make ambiguity a first-class, recoverable condition.",
+          "chosen": "The design models the ambiguous states explicitly, trading a simple inline handler for a stored psp_request_id that lets a timed-out authorize be reconciled or safely replayed."
         }
       ]
     },
@@ -2862,6 +2826,30 @@
           "whyItMatters": "Merchants must learn async outcomes durably; signatures + event ids give authenticity and dedup.",
           "example": "charge.succeeded retried until 2xx; merchant verifies signature and dedups by event id.",
           "group": "Reliable Webhooks"
+        },
+        {
+          "term": "Reliable webhooks (outbox + retry)",
+          "description": "Persist events and deliver at-least-once with retries, backoff, and signatures.",
+          "whyItMatters": "Notifying merchants of async outcomes durably.",
+          "steps": [
+            "webhooks"
+          ]
+        },
+        {
+          "term": "Transactional outbox",
+          "description": "Write the event in the same DB transaction as the state change, then a relay drains the outbox — so an event exists iff its transition committed.",
+          "whyItMatters": "Whenever a state change must reliably emit an event without a lossy dual-write.",
+          "steps": [
+            "webhooks"
+          ]
+        },
+        {
+          "term": "Merchant webhook dedup",
+          "description": "Consumers dedup by event id because delivery is at-least-once; the gateway never claims exactly-once delivery.",
+          "whyItMatters": "At-least-once event delivery to external consumers.",
+          "steps": [
+            "webhooks"
+          ]
         }
       ],
       "probeLinks": [
@@ -2870,11 +2858,6 @@
         "paypal-webhooks",
         "github-webhook-best-practices",
         "aws-retries-backoff-jitter"
-      ],
-      "patterns": [
-        "Reliable webhooks (outbox + retry)",
-        "Transactional outbox",
-        "Merchant webhook dedup"
       ],
       "whyNow": [
         "Reliable async notification is a core gateway feature and a classic at-least-once + idempotency story on the consumer side."
@@ -2967,6 +2950,18 @@
             "WebhookSvc",
             "WebhookQ"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Delivery latency vs. delivery guarantee",
+          "description": "Firing the webhook inline right after the charge commits is the fastest and simplest path, but a crash between commit and POST loses the event forever, and a merchant endpoint down for an hour simply never hears about the charge. A transactional outbox plus delivery service adds a relay and some latency but guarantees an event exists if and only if its charge transition committed.",
+          "chosen": "The design uses the transactional outbox with retrying delivery, accepting a small latency and an outbox table so no charge.succeeded event can ever be dropped."
+        },
+        {
+          "name": "Push vs. pull notification",
+          "description": "Letting merchants poll a status API needs no delivery infrastructure and is naturally robust to their downtime, but timely updates would require constant polling across every merchant, wasting requests and shifting the reliability burden onto each integration. Push webhooks keep latency low but make you own retries, backoff, signing, and dedup by event id.",
+          "chosen": "The design pushes signed, at-least-once webhooks with the polling API as a merchant-side fallback, keeping outcome latency in the gateway's control rather than every merchant's cron job."
         }
       ]
     },
@@ -3145,6 +3140,22 @@
           "whyItMatters": "Paying out unsettled or reserved funds risks negative balances when refunds/chargebacks land.",
           "example": "A $20 charge credits pending; on settlement it moves to available; the daily payout pays available minus reserve.",
           "group": "Ledger and Payouts"
+        },
+        {
+          "term": "Double-entry ledger + payouts",
+          "description": "Record every money movement in a ledger; aggregate balances and pay merchants.",
+          "whyItMatters": "Tracking what's owed and settling it correctly.",
+          "steps": [
+            "ledger"
+          ]
+        },
+        {
+          "term": "Payout state machine",
+          "description": "Model a payout as an idempotent, reconciled state machine (scheduled -> sent -> paid/returned), never a fire-and-forget transfer.",
+          "whyItMatters": "Sending money out where the transfer can fail, be unknown, or be returned.",
+          "steps": [
+            "ledger"
+          ]
         }
       ],
       "probeLinks": [
@@ -3152,11 +3163,6 @@
         "square-books-ledger",
         "stripe-reports-reconciliation",
         "modern-treasury-reconciliation"
-      ],
-      "patterns": [
-        "Double-entry ledger + payouts",
-        "Payout state machine",
-        "PSP reconciliation"
       ],
       "whyNow": [
         "The ledger + payouts close the money loop; tying it to the double-entry discipline shows the whole financial flow is correct and auditable."
@@ -3354,6 +3360,18 @@
             "Ledger"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Auditability vs. read simplicity",
+          "description": "A single mutable balance column makes reading a merchant's balance a one-column lookup, but there is no history to explain how the balance got there, no per-movement record to reconcile against PSP settlement files, and concurrent updates can silently lose money. A double-entry ledger makes every movement a balanced, immutable record at the cost of more schema, discipline, and summing (or materializing) to read a balance.",
+          "chosen": "The design records every charge, refund, fee, and payout as balanced double-entry rows, because an auditable, reconcilable source of truth matters more than a cheap balance read."
+        },
+        {
+          "name": "Posted entries vs. event sourcing",
+          "description": "An event-sourced log gives complete history and lets new reports be built as fresh projections, but every current-balance question needs maintained read-model machinery and years of events need schema versioning. Posted double-entry rows are a more conventional model whose zero-sum invariant catches accounting bugs at write time.",
+          "chosen": "The design chooses the posted double-entry ledger — its debits-equal-credits invariant is enforceable on every write and reconciles line by line against the PSP without projection machinery."
+        }
       ]
     },
     {
@@ -3513,9 +3531,6 @@
           "group": "Scale the Payment Store"
         }
       ],
-      "patterns": [
-        "PSP reconciliation"
-      ],
       "traps": [
         {
           "trap": "Scaling the ledger with eventual consistency on balances that determine payouts.",
@@ -3541,6 +3556,18 @@
         {
           "issue": "Webhook fan-out to slow merchant endpoints.",
           "mitigation": "Per-endpoint queues, backoff, DLQ; don't let one slow merchant block others."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Horizontal scale vs. query locality",
+          "description": "A single regional primary is the simplest to reason about and makes cross-merchant queries trivial, but it caps out below the ~70k-130k writes/sec the money model fans out to at peak. Sharding by merchant_id buys horizontal write capacity and keeps each merchant's charges, idempotency keys, and ledger entries on one strongly consistent shard, at the price of scatter-gather reporting, hot-merchant skew, and operationally heavy resharding.",
+          "chosen": "The design shards the charge store by merchant_id so dedup and balance reads stay single-shard and strongly consistent while write capacity scales with shards."
+        },
+        {
+          "name": "Durability across regions vs. cost and lag",
+          "description": "A multi-region active/passive standby survives a full regional outage with bounded RPO/RTO, but cross-region replication lag risks losing the most recent writes on failover unless replication is synchronous (which taxes every charge with latency), and untested standbys rot. Staying single-region is cheaper and simpler but a regional outage takes the gateway down.",
+          "chosen": "The design leads with merchant sharding for throughput and treats multi-region active/passive as the later resilience layer, avoiding paying failover complexity before the write ceiling demands it."
         }
       ]
     },
@@ -3744,11 +3771,15 @@
           "whyItMatters": "These are the signals that catch silent money loss, stuck flows, and accounting drift before customers or auditors do.",
           "example": "Charge success rate, PSP timeout/unknown rate, stale authorize_unknown age, webhook backlog age, reconciliation mismatch count, payout failure count, and ledger imbalance alerts (debits != credits).",
           "group": "PSP Resilience & Multi-Acquirer Routing"
+        },
+        {
+          "term": "Circuit breaker + failover",
+          "description": "Trip a breaker around a failing PSP and fail over to another acquirer only when it is safe (before authorize sent, or after a confirmed failure).",
+          "whyItMatters": "Hard dependency on a flaky external provider where blind retries are dangerous.",
+          "steps": [
+            "psp-resilience"
+          ]
         }
-      ],
-      "patterns": [
-        "Circuit breaker + failover",
-        "PSP reconciliation"
       ],
       "traps": [
         {
@@ -3866,6 +3897,18 @@
             "PSPA",
             "PSPB"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Failover speed vs. double-charge safety",
+          "description": "Failing over to a backup acquirer the instant the primary looks unhealthy minimizes stalled charges, but re-sending an authorization whose outcome is unknown can charge the customer twice. Reconciling every ambiguous attempt to a confirmed failure before rerouting adds latency to exactly the unlucky charges caught in the outage window.",
+          "chosen": "The design enforces reconcile-before-failover: an ambiguous authorize_unknown blocks rerouting until resolved, because a slower charge beats a double-authorized customer."
+        },
+        {
+          "name": "Routing sophistication vs. reconciliation complexity",
+          "description": "Rule-based multi-acquirer routing by cost, BIN, geography, and live success rate optimizes fees and authorization rates and spreads load, but multiplies settlement reports, per-acquirer quirks, and the surface where a routing bug can fail over unsafely. Active/passive keeps one settlement path and a clear safety contract but leaves the backup idle in steady state.",
+          "chosen": "The design chooses active/passive failover behind a circuit breaker, taking the simpler safety contract now and leaving success-rate-optimized routing as a later refinement."
         }
       ]
     }

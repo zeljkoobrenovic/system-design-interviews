@@ -752,62 +752,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Async job + status",
-      "what": "Accept the request, return a job id, process on the GPU fleet asynchronously.",
-      "whenToUse": "Expensive work (seconds+) that can't block the request.",
-      "steps": [
-        "intake"
-      ],
-      "group": "Async Intake: Accept, Persist, Enqueue"
-    },
-    {
-      "name": "Pre-inference safety gate",
-      "what": "Screen the prompt before spending any GPU; screen the output before delivery.",
-      "whenToUse": "Generative systems with content-policy requirements.",
-      "steps": [
-        "safety"
-      ],
-      "group": "Safety Gates on Input and Output"
-    },
-    {
-      "name": "Priority / fair scheduling",
-      "what": "Per-tier queues + fair-share so paid/realtime aren't starved by free traffic.",
-      "whenToUse": "Multi-tier demand on a scarce shared resource.",
-      "steps": [
-        "schedule"
-      ],
-      "group": "Priority and Fair Scheduling"
-    },
-    {
-      "name": "Inference batching",
-      "what": "Group compatible jobs into one GPU batch to amortize model/overhead cost.",
-      "whenToUse": "GPU inference where batching raises throughput dramatically.",
-      "steps": [
-        "inference"
-      ],
-      "group": "GPU Inference with Batching"
-    },
-    {
-      "name": "Result store + CDN delivery",
-      "what": "Store generated images in object storage and serve via CDN; notify on completion.",
-      "whenToUse": "Large binary results read after async completion.",
-      "steps": [
-        "deliver"
-      ],
-      "group": "Result Delivery"
-    },
-    {
-      "name": "Idempotent retryable jobs",
-      "what": "Jobs are keyed and re-runnable so a worker crash doesn't lose or duplicate work.",
-      "whenToUse": "Long GPU jobs on a fleet that can fail mid-run.",
-      "steps": [
-        "reliability"
-      ],
-      "group": "Reliability, Utilization, and Cost"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -861,7 +805,14 @@
           "instead": "Accept + persist + enqueue a job, return a job id fast, and process on the GPU fleet asynchronously."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Request simplicity vs. burst survival",
+          "description": "Running the diffusion model inline is the simplest possible flow — request in, image out — and fine for a toy demo, but each request pins an HTTP connection and a GPU for ~10 seconds, so 1,000 prompts against 8 GPUs instantly exhaust the pool while everyone else times out. There is nowhere to absorb the burst and no way to prioritize a paying user over a free one.",
+          "chosen": "The design abandons synchronous generation, because scarce, slow GPUs demand a buffer between bursty demand and fixed capacity."
+        }
+      ]
     },
     {
       "id": "intake",
@@ -902,6 +853,14 @@
           "whyItMatters": "Keeps the request fast and absorbs bursts the GPU fleet can't serve instantly.",
           "example": "POST -> 202 {jobId}; client polls GET until status=done.",
           "group": "Async Intake: Accept, Persist, Enqueue"
+        },
+        {
+          "term": "Async job + status",
+          "description": "Accept the request, return a job id, process on the GPU fleet asynchronously.",
+          "whyItMatters": "Expensive work (seconds+) that can't block the request.",
+          "steps": [
+            "intake"
+          ]
         }
       ],
       "probeLinks": [
@@ -910,9 +869,6 @@
         "ray-serve-stable-diffusion",
         "kueue-clusterqueue",
         "s3-presigned-urls"
-      ],
-      "patterns": [
-        "Async job + status"
       ],
       "whyNow": [
         "The async-job decision shapes the whole system; it's what lets scarce GPUs be a queue-fed resource rather than a request-blocking one."
@@ -1011,7 +967,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-intake.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-intake.jpg",
+      "tradeoffs": [
+        {
+          "name": "Immediate result vs. durable acceptance",
+          "description": "Holding the request open until the image is ready gives the client its answer in one round-trip, but ties connection lifetime to GPU queue depth and loses accepted work on any crash. Returning a job id after persisting and enqueueing means the client must poll or subscribe, but every 202 is backed by exactly one durable JobDB record, the queue is rebuildable, and an Idempotency-Key collapses retries instead of spawning duplicate GPU runs.",
+          "chosen": "The design persists first, enqueues second, and returns a 202 with a job id, trading a synchronous answer for a durability invariant that survives crashes and retries."
+        }
+      ]
     },
     {
       "id": "safety",
@@ -1054,6 +1017,14 @@
           "whyItMatters": "Prompts and outputs fail independently; both gates are needed for policy compliance.",
           "example": "Reject a disallowed prompt; also block an unsafe image from an innocuous prompt.",
           "group": "Safety Gates on Input and Output"
+        },
+        {
+          "term": "Pre-inference safety gate",
+          "description": "Screen the prompt before spending any GPU; screen the output before delivery.",
+          "whyItMatters": "Generative systems with content-policy requirements.",
+          "steps": [
+            "safety"
+          ]
         }
       ],
       "probeLinks": [
@@ -1062,9 +1033,6 @@
         "vertex-imagen-safety",
         "azure-content-safety-image",
         "stable-diffusion-red-team"
-      ],
-      "patterns": [
-        "Pre-inference safety gate"
       ],
       "whyNow": [
         "Safety is a hard requirement unique to generative systems; placing it before compute (cost) and before delivery (policy) is the key design point."
@@ -1093,7 +1061,19 @@
           "mitigation": "Fail closed by policy; retry/queue the safety check; alert on classifier availability and uncertain-rate spikes."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-safety.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-safety.jpg",
+      "tradeoffs": [
+        {
+          "name": "Compute savings vs. output coverage",
+          "description": "Screening only the prompt is cheap and rejects disallowed requests before any GPU spend, but a benign-looking prompt can still produce disallowed content, so input-only screening leaves the actual deliverable unchecked. Screening the generated image too closes that gap, at the cost of a classifier pass on every result before it can be stored and served.",
+          "chosen": "The design bookends the pipeline — cheap synchronous input screening at intake plus output classification after inference — because neither check alone covers what the other does."
+        },
+        {
+          "name": "Terminal blocks vs. auditability burden",
+          "description": "Simply dropping unsafe results is easy, but leaves no way to explain a block, tune policy, or handle appeals. Recording blocked_input vs blocked_output with policy version, classifier version, score, and reason in a safety log makes every decision reconstructable, at the cost of extra state on a path that mostly passes.",
+          "chosen": "The design makes blocked a terminal state with reason codes and a full safety audit record, paying bookkeeping cost for explainable, tunable enforcement."
+        }
+      ]
     },
     {
       "id": "schedule",
@@ -1246,6 +1226,14 @@
           "whyItMatters": "Protects high-value latency while avoiding total starvation of lower tiers.",
           "example": "Realtime jumps the queue; free gets a capped slice of GPU time.",
           "group": "Priority and Fair Scheduling"
+        },
+        {
+          "term": "Priority / fair scheduling",
+          "description": "Per-tier queues + fair-share so paid/realtime aren't starved by free traffic.",
+          "whyItMatters": "Multi-tier demand on a scarce shared resource.",
+          "steps": [
+            "schedule"
+          ]
         }
       ],
       "probeLinks": [
@@ -1255,9 +1243,6 @@
         "sagemaker-async-autoscale",
         "diffserve-paper"
       ],
-      "patterns": [
-        "Priority / fair scheduling"
-      ],
       "whyNow": [
         "Scheduling scarce GPUs across tiers is the core resource-allocation problem; fairness is the requirement candidates most often miss."
       ],
@@ -1265,7 +1250,19 @@
         "before": "FIFO over scarce GPUs.",
         "after": "Tiered, fair scheduling of jobs to workers.",
         "newRisk": "Even well-scheduled, per-job GPU overhead wastes the scarce resource — batch it."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Priority vs. starvation",
+          "description": "Strict realtime-over-paid-over-free ordering keeps high-value, latency-sensitive work first, but a persistent paid surge would starve free users entirely; fair-share floors guarantee free traffic still drains, but blunt pure priority. A single FIFO avoids all the tuning, but then paid latency simply tracks total queue depth whenever free traffic floods, and realtime work cannot jump the line.",
+          "chosen": "The design uses per-tier priority queues with fair-share floors and intake quotas, accepting weight tuning as the price of keeping paid latency low without silencing the free tier."
+        },
+        {
+          "name": "Request fairness vs. work fairness",
+          "description": "Counting requests is simple, but one request is not one unit of work — n images, larger resolutions, and pricier models cost very differently, so per-request quotas let heavy users consume outsized GPU time. Measuring fairness in normalized work units is more accurate but requires estimating expected runtime per job and tracking usage.",
+          "chosen": "The design makes fairness measurable in units of GPU work, not raw request counts, so quotas and shares reflect what a job actually costs the fleet."
+        }
+      ]
     },
     {
       "id": "inference",
@@ -1423,9 +1420,6 @@
         "tridentserve-paper",
         "diffusers-optimization"
       ],
-      "patterns": [
-        "Inference batching"
-      ],
       "whyNow": [
         "Batching is the specific GPU-economics lever; naming the latency-vs-utilization batch window is the staff-level insight."
       ],
@@ -1536,6 +1530,18 @@
             "Workers",
             "SafetyOut"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Batch throughput vs. first-job latency",
+          "description": "A dynamic fill window coalesces compatible jobs into one GPU pass, amortizing model-load overhead and sharply raising images per GPU-hour, but the first job to arrive waits up to the window before running. One prompt per pass starts the instant a GPU frees, but per-call overhead dominates and hitting the same throughput requires far more GPUs.",
+          "chosen": "The design batches with a tunable fill window, trading a bounded latency tax on the first arrival for large fleet-wide utilization gains."
+        },
+        {
+          "name": "Utilization ceiling vs. runtime complexity",
+          "description": "Continuous in-flight batching lets new jobs join a running batch at step boundaries, keeping the GPU saturated under uneven arrivals with shorter effective waits than a fixed window — but it demands a runtime that supports mid-iteration batch changes and a scheduler that tracks per-step progress of every in-flight job. Strict batch compatibility (same model version, size, precision, LoRA settings) already constrains what can share a pass.",
+          "chosen": "The design defaults to windowed dynamic batching and treats continuous batching as an upgrade path, since not all diffusion stacks support mid-iteration joins."
         }
       ]
     },
@@ -1692,9 +1698,6 @@
         }
       ],
       "decisionPrompt": "Thousands of clients fetch their finished images. What keeps that load off the GPU workers?",
-      "patterns": [
-        "Result store + CDN delivery"
-      ],
       "probeLinks": [
         "cloudfront-signed-urls",
         "s3-presigned-urls",
@@ -1711,13 +1714,33 @@
           "whyItMatters": "Decouples large-result reads from the expensive compute tier.",
           "example": "Worker stores image -> job done -> push URL -> client fetches from CDN.",
           "group": "Result Delivery"
+        },
+        {
+          "term": "Result store + CDN delivery",
+          "description": "Store generated images in object storage and serve via CDN; notify on completion.",
+          "whyItMatters": "Large binary results read after async completion.",
+          "steps": [
+            "deliver"
+          ]
         }
       ],
       "recap": {
         "before": "Results stuck on workers.",
         "after": "Results stored, CDN-served, clients notified.",
         "newRisk": "Long jobs on a flaky GPU fleet — failures must not lose work or strand GPUs."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Push immediacy vs. polling simplicity",
+          "description": "SSE/WebSocket push tells the client the instant a job finishes and enables live diffusion previews, but means operating per-client connections and handling reconnects and offline clients. Polling needs no push infrastructure and survives disconnects naturally, but adds poll-interval latency and wasteful status-check load from idle clients.",
+          "chosen": "The design pushes completion over a stream but treats it as a hint — clients replay state from the durable job record on reconnect — so interactivity never depends on a fragile connection."
+        },
+        {
+          "name": "Edge serving vs. origin control",
+          "description": "Serving multi-MB images straight from workers or origin keeps the path short but lets thousands of result fetches land on the machines doing GPU work. Putting results in object storage behind a CDN absorbs the read fanout at the edge, at the cost of an upload hop and cache management for content that is written once and read many times.",
+          "chosen": "The design writes images to object storage and serves them via CDN, keeping every result fetch off the GPU fleet."
+        }
+      ]
     },
     {
       "id": "reliability",
@@ -1751,9 +1774,6 @@
         ]
       },
       "decisionPrompt": "A GPU worker dies mid-generation. What happens to that job and that GPU?",
-      "patterns": [
-        "Idempotent retryable jobs"
-      ],
       "probeLinks": [
         "sagemaker-async-autoscale",
         "dcgm-exporter",
@@ -1787,7 +1807,29 @@
           "mitigation": "Lease epoch / fencing token checked on completion; idempotent result write keyed by attempt."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg",
+      "concepts": [
+        {
+          "term": "Idempotent retryable jobs",
+          "description": "Jobs are keyed and re-runnable so a worker crash doesn't lose or duplicate work.",
+          "whyItMatters": "Long GPU jobs on a fleet that can fail mid-run.",
+          "steps": [
+            "reliability"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Re-run safety vs. double completion",
+          "description": "Letting a lease expire and re-running a dead worker's job guarantees no accepted job is lost, but the dead worker may not be dead — a late completion from a paused worker could double-complete the job or clash with the retry's output. Epoch fencing and per-attempt records close that window, at the cost of attempt bookkeeping on every run.",
+          "chosen": "The design leases each attempt with heartbeats and fences late completions by epoch, so a crashed worker's job re-runs exactly once and its stale output is discarded."
+        },
+        {
+          "name": "Cost vs. capacity headroom",
+          "description": "Keeping a large always-on GPU fleet gives low queue latency at every burst, but idle GPUs on scarce, expensive hardware are pure cost. Autoscaling from queue depth and using cheaper capacity trims spend, but scale-up lag and preemptible instances mean deeper queues during ramps.",
+          "chosen": "The design autoscales workers from queue depth, accepting some burst latency to keep the expensive GPU fleet busy rather than idle."
+        }
+      ]
     }
   ],
   "finalDesign": {

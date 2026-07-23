@@ -1886,62 +1886,6 @@
       "makesIrrelevant": "A managed observability backend with metrics, traces, logs, audit retention, and alerting removes much of the bespoke operations dashboard work for meal-time incidents."
     }
   ],
-  "patterns": [
-    {
-      "name": "Order state machine",
-      "what": "Model the order as explicit states with allowed transitions, persisted durably.",
-      "whenToUse": "Multi-step, multi-party workflows that must stay consistent.",
-      "steps": [
-        "lifecycle"
-      ],
-      "group": "The Order Lifecycle State Machine"
-    },
-    {
-      "name": "Geospatial courier index",
-      "what": "Index live courier locations by geo cell for fast nearby lookup.",
-      "whenToUse": "Matching that needs 'who's near here right now'.",
-      "steps": [
-        "geo"
-      ],
-      "group": "Live Courier Locations (Geo Index)"
-    },
-    {
-      "name": "Dispatch / matching",
-      "what": "Score nearby available couriers (distance, ETA, load) and offer the order.",
-      "whenToUse": "Assigning scarce mobile resources to time-sensitive tasks.",
-      "steps": [
-        "dispatch"
-      ],
-      "group": "Dispatch: Matching Couriers to Orders"
-    },
-    {
-      "name": "Location streaming + last-known",
-      "what": "Ingest frequent GPS updates into a stream + a hot last-known store, not the DB per ping.",
-      "whenToUse": "High-frequency location writes feeding tracking and matching.",
-      "steps": [
-        "tracking"
-      ],
-      "group": "Live Tracking and ETA"
-    },
-    {
-      "name": "Saga / compensation",
-      "what": "Coordinate the multi-service flow with compensating actions on failure (refund, reassign).",
-      "whenToUse": "Distributed workflows that can't be one ACID transaction.",
-      "steps": [
-        "reliability"
-      ],
-      "group": "Consistency Across Failures (Saga)"
-    },
-    {
-      "name": "Event-driven notifications",
-      "what": "Emit state-change events that notify all three parties.",
-      "whenToUse": "Keeping eater/restaurant/courier in sync.",
-      "steps": [
-        "lifecycle"
-      ],
-      "group": "The Order Lifecycle State Machine"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1992,7 +1936,14 @@
           "instead": "Model an explicit order state machine, index live courier locations, and orchestrate the flow as a saga."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Manual simplicity vs. concurrent scale",
+          "description": "One order row and hand-picked couriers works for one order at a time and needs almost no infrastructure. But a double-tap creates two orders and charges twice with no idempotency, dispatch has no notion of who is nearby, the eater has no live view, and a flow spanning payment, restaurant, and courier has no way to recover when one step fails.",
+          "chosen": "The design treats this as the baseline whose four failures — idempotency, dispatch, tracking, and cross-party recovery — define the rest of the walkthrough."
+        }
+      ]
     },
     {
       "id": "lifecycle",
@@ -2037,6 +1988,14 @@
           "whyItMatters": "Prevents inconsistent multi-party states and makes the flow auditable and recoverable.",
           "example": "ready -> assigned only after a courier accepts; transitions emit events.",
           "group": "The Order Lifecycle State Machine"
+        },
+        {
+          "term": "Event-driven notifications",
+          "description": "Emit state-change events that notify all three parties.",
+          "whyItMatters": "Keeping eater/restaurant/courier in sync.",
+          "steps": [
+            "lifecycle"
+          ]
         }
       ],
       "probeLinks": [
@@ -2046,10 +2005,6 @@
         "kafka-design",
         "stripe-idempotency"
       ],
-      "patterns": [
-        "Order state machine",
-        "Event-driven notifications"
-      ],
       "whyNow": [
         "The state machine is the consistency backbone of a multi-party workflow; everything else triggers or reacts to its transitions."
       ],
@@ -2058,7 +2013,14 @@
         "after": "A durable, event-emitting order lifecycle all parties share.",
         "newRisk": "Assigning a courier requires knowing who's nearby — a real-time geo problem."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-lifecycle.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-lifecycle.jpg",
+      "tradeoffs": [
+        {
+          "name": "Explicit state machine vs. modeling overhead",
+          "description": "A free-form status field is easy to start with, but with three parties mutating the same order, ad-hoc updates let contradictory transitions through and give no place to hang compensations like releasing a payment auth on rejection. An explicit transition table with allowed actors and compensations keeps eater, restaurant, and courier agreeing on the truth, at the cost of designing and enforcing every edge up front.",
+          "chosen": "The design persists a full state machine with actor-scoped transitions and per-transition compensations as the durable source of truth for the order."
+        }
+      ]
     },
     {
       "id": "geo",
@@ -2212,6 +2174,14 @@
           "whyItMatters": "Turns 'find nearby couriers' into a cell range query at high update volume.",
           "example": "Courier ping -> update its geohash cell; dispatch reads the restaurant's cell + neighbors.",
           "group": "Live Courier Locations (Geo Index)"
+        },
+        {
+          "term": "Geospatial courier index",
+          "description": "Index live courier locations by geo cell for fast nearby lookup.",
+          "whyItMatters": "Matching that needs 'who's near here right now'.",
+          "steps": [
+            "geo"
+          ]
         }
       ],
       "probeLinks": [
@@ -2221,10 +2191,6 @@
         "postgis-docs",
         "redis-geo"
       ],
-      "patterns": [
-        "Geospatial courier index",
-        "Location streaming + last-known"
-      ],
       "whyNow": [
         "Knowing who's nearby in real time is the precondition for dispatch; the geo index is the mechanism and a write-storm-avoidance decision."
       ],
@@ -2232,7 +2198,19 @@
         "before": "No real-time courier locations.",
         "after": "Live courier positions queryable by area, cheaply.",
         "newRisk": "Knowing who's nearby isn't matching — you must pick the right courier and offer the order."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Derived hot index vs. durable per-ping writes",
+          "description": "Writing every GPS ping to the order database would keep one durable record but creates a ~25K writes/s storm on the transactional store for data that is stale within seconds. Keeping live positions in a derived geo index plus last-known cache absorbs the firehose cheaply and is rebuildable from the stream, but positions are ephemeral and recency must be tracked so matching never offers to a courier who went dark.",
+          "chosen": "The design updates only the hot geo index and cache per ping, keeping the order DB out of the location path and retaining no GPS history beyond the live position."
+        },
+        {
+          "name": "Fixed cells vs. adaptive density",
+          "description": "A geohash/S2 cell index makes 'nearby' a cheap cell-plus-neighbors lookup with simple upserts that shard naturally by region, but fixed cell size returns too few couriers in sparse areas and too many downtown, with boundary effects at cell edges. A quadtree adapts cell size to density for balanced candidate sets, but rebalancing a mutable tree under every-courier-every-4s updates is expensive and hard to shard.",
+          "chosen": "The design picks the flat geohash/S2 KV index for its write-friendliness and natural sharding, compensating for fixed cells by querying neighbor rings."
+        }
+      ]
     },
     {
       "id": "dispatch",
@@ -2394,6 +2372,14 @@
           "whyItMatters": "Respects courier agency and avoids assigning to an unavailable/unwilling courier.",
           "example": "Offer to nearest available; 15s to accept; else next candidate.",
           "group": "Dispatch: Matching Couriers to Orders"
+        },
+        {
+          "term": "Dispatch / matching",
+          "description": "Score nearby available couriers (distance, ETA, load) and offer the order.",
+          "whyItMatters": "Assigning scarce mobile resources to time-sensitive tasks.",
+          "steps": [
+            "dispatch"
+          ]
         }
       ],
       "probeLinks": [
@@ -2403,9 +2389,6 @@
         "ortools-vrp",
         "google-routes",
         "doordash-nextgen-eta"
-      ],
-      "patterns": [
-        "Dispatch / matching"
       ],
       "whyNow": [
         "Dispatch is the logistics heart; the offer/accept protocol and ready-time-aware matching are the senior signals distinct from pure ride-matching."
@@ -2514,6 +2497,18 @@
           "highlight": [
             "Dispatch"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Assignment latency vs. global optimality",
+          "description": "Greedy nearest-courier assignment offers the order within one scored lookup — right for food that is ready now — but grabbing the closest courier for one order can strand a better-fit order and leaves the fleet poorly positioned. Windowed batch matching solves orders and couriers jointly for globally better assignments, but adds seconds of latency and a far more complex optimizer.",
+          "chosen": "The design goes greedy for lowest latency, using time-boxed offer leases with compare-and-set acceptance so contention never double-books a courier."
+        },
+        {
+          "name": "Central assignment vs. courier choice",
+          "description": "Having dispatch pick one best candidate gives control over ETA promises and fleet efficiency, but it must model courier willingness and requeue on timeout. Broadcasting the offer to several couriers and letting the first acceptor win respects courier choice and needs no availability model, but races on acceptance, leaves unattractive orders unclaimed, and surrenders global efficiency.",
+          "chosen": "The design keeps dispatch in charge — one scored offer at a time with expiry and requeue — rather than broadcasting, preserving control over ETAs and fairness."
         }
       ]
     },
@@ -2637,10 +2632,6 @@
         }
       ],
       "decisionPrompt": "Should the eater's app poll the courier's GPS directly, and should each ping hit the database?",
-      "patterns": [
-        "Location streaming + last-known",
-        "Event-driven notifications"
-      ],
       "probeLinks": [
         "doordash-iguazu",
         "kafka-design",
@@ -2660,6 +2651,14 @@
           "whyItMatters": "Smooth real-time tracking without DB write/read storms.",
           "example": "Courier ping -> last-known store -> throttled push to the eater's open connection.",
           "group": "Live Tracking and ETA"
+        },
+        {
+          "term": "Location streaming + last-known",
+          "description": "Ingest frequent GPS updates into a stream + a hot last-known store, not the DB per ping.",
+          "whyItMatters": "High-frequency location writes feeding tracking and matching.",
+          "steps": [
+            "tracking"
+          ]
         }
       ],
       "recap": {
@@ -2741,6 +2740,13 @@
             "Tracking",
             "LastKnown"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Push infrastructure vs. polling simplicity",
+          "description": "Stateless polling of a cached position endpoint is trivial to scale behind a load balancer, but fixed intervals waste requests when the courier is idle, lag when they move, and at millions of eaters the poll volume itself becomes load. Server push over persistent connections delivers movement as it streams with minimal latency, but requires a dedicated realtime-gateway tier holding sockets plus reconnect and backfill logic for flaky mobile networks.",
+          "chosen": "The design pushes over WebSocket/SSE from the location stream, throttled to movement, accepting a connection-gateway tier so maps stay smooth without hammering any store."
         }
       ]
     },
@@ -2902,6 +2908,14 @@
           "whyItMatters": "Achieves cross-service consistency without a distributed ACID transaction.",
           "example": "Authorize -> restaurant rejects -> void authorization + notify eater.",
           "group": "Consistency Across Failures (Saga)"
+        },
+        {
+          "term": "Saga / compensation",
+          "description": "Coordinate the multi-service flow with compensating actions on failure (refund, reassign).",
+          "whyItMatters": "Distributed workflows that can't be one ACID transaction.",
+          "steps": [
+            "reliability"
+          ]
         }
       ],
       "probeLinks": [
@@ -2911,10 +2925,6 @@
         "stripe-idempotency",
         "stripe-capture",
         "kafka-design"
-      ],
-      "patterns": [
-        "Saga / compensation",
-        "Order state machine"
       ],
       "whyNow": [
         "Multi-party consistency under partial failure is the correctness crux; the saga + idempotent transitions over the state machine is the standard answer."
@@ -3145,6 +3155,18 @@
             "OrderEvents"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Orchestration vs. choreography",
+          "description": "A central orchestrator makes the saga's sequence and compensations visible in one place — when the restaurant rejects after auth, one component owns voiding the hold — but it is a complex, critical service that couples the flow to itself. Choreographed events avoid the central component and decouple services, but the end-to-end flow becomes implicit across many handlers, and compensation chains are easy to get wrong with no central view.",
+          "chosen": "The design uses an orchestrated saga so the distributed transaction and its compensations are explicit, auditable, and debuggable in one component."
+        },
+        {
+          "name": "Delayed capture vs. lifecycle complexity",
+          "description": "Charging in full at order time makes money movement simple but forces a real refund whenever the restaurant rejects. Authorizing at order and capturing only on delivery means a pre-confirm rejection just releases the hold and no money moves, at the cost of extra payment states in the lifecycle and holds that can expire if confirmation drags.",
+          "chosen": "The design authorizes at order and captures on delivery, folding auth-then-capture into the orchestrated saga so the common rejection path never needs a refund."
+        }
       ]
     },
     {
@@ -3346,6 +3368,18 @@
         {
           "issue": "No visibility into match quality or staleness during a spike.",
           "mitigation": "Per-region SLOs on dispatch latency, offer-acceptance rate, stale-location %, ETA error, transition-failure rate, saga-compensation rate, outbox lag, and tracking connection count (see the observability deep dive)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Regional partitioning vs. boundary hand-offs",
+          "description": "Sharding the geo index, location stream, and dispatch workers by region/cell spreads a hot city across many partitions and keeps candidate sets local and small. The cost is the edges: orders near a region boundary need cross-region hand-off or shared-edge queries, and partitions must be rebalanced as demand shifts between lunch downtown and dinner in the suburbs.",
+          "chosen": "The design partitions by region with per-region dispatch, accepting boundary-case complexity because meal-time hotspots make a single global matcher untenable."
+        },
+        {
+          "name": "Precision vs. graceful degradation",
+          "description": "At Friday-7pm peak, full-rate GPS ingestion and provider-quality ETAs give the best matching and promises, but the firehose can swamp the stream and a rate-limited routing provider can stall dispatch. Shedding and coalescing pings and falling back to coarse heuristic ETAs keeps orders flowing at the cost of slightly rougher tracking and less accurate promises.",
+          "chosen": "The design degrades deliberately under extreme load — longer ETAs and coarser signals — so orders keep getting accepted and matched instead of failing."
         }
       ]
     }

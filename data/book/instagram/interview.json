@@ -1748,71 +1748,6 @@
       "makesIrrelevant": "Managed metrics, tracing, and dashboards remove most custom log aggregation and queue-lag alerting infrastructure."
     }
   ],
-  "patterns": [
-    {
-      "name": "Async media processing",
-      "what": "Accept the upload fast; resize/transcode into variants via a queue + workers.",
-      "whenToUse": "Heavy media processing that must not block the user.",
-      "steps": [
-        "upload"
-      ],
-      "group": "Async Media Upload and Processing"
-    },
-    {
-      "name": "Multi-variant + CDN delivery",
-      "what": "Generate device-appropriate sizes and serve them from a CDN edge.",
-      "whenToUse": "Image/video apps with global read fanout.",
-      "steps": [
-        "variants"
-      ],
-      "group": "Variants and CDN Delivery"
-    },
-    {
-      "name": "Fanout-on-write feed",
-      "what": "Push a new post id into each follower's precomputed feed at publish.",
-      "whenToUse": "Read-heavy feeds with manageable fanout.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Feed Generation: Hybrid Fanout"
-    },
-    {
-      "name": "Hybrid fanout (celebrity pull)",
-      "what": "Push for normal accounts, pull celebrities at read time, merge.",
-      "whenToUse": "Heavy-tailed follower distributions.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Feed Generation: Hybrid Fanout"
-    },
-    {
-      "name": "Candidate generation + ranking",
-      "what": "Gather candidate posts cheaply, then rank the smaller set by engagement signals.",
-      "whenToUse": "Feeds ordered by relevance, not strict recency.",
-      "steps": [
-        "ranking"
-      ],
-      "group": "Feed Ranking"
-    },
-    {
-      "name": "Reference-by-id feed",
-      "what": "Store post ids in feeds; hydrate post + media URLs on read.",
-      "whenToUse": "A post appears in many feeds — store once, reference by id.",
-      "steps": [
-        "ranking"
-      ],
-      "group": "Feed Ranking"
-    },
-    {
-      "name": "Async engagement counting",
-      "what": "Record interactions as events; aggregate dedup'd events into approximate display/ranking counters instead of incrementing a row synchronously.",
-      "whenToUse": "Viral content where a single counter row would be a write hotspot, and approximate counts are good enough.",
-      "steps": [
-        "interactions"
-      ],
-      "group": "Likes, Comments, and Counters"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1871,7 +1806,14 @@
           "instead": "Treat it as the baseline: process media async into variants, serve via CDN, and precompute feeds with fanout."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Correctness first vs. scale readiness",
+          "description": "Synchronous upload plus assemble-on-read is correct and trivially understandable, but it bakes in three failures at scale: inline resizing blocks the user for seconds and cannot absorb media bursts, serving one original-size blob from origin is slow globally, and querying every followee per feed read collapses when reads dwarf posts. Each fix — async processing, CDN variants, precomputed feeds — is complexity the naive version postpones.",
+          "chosen": "The design treats the naive version as the motivating baseline and restructures around its three failure modes rather than patching them incrementally."
+        }
+      ]
     },
     {
       "id": "upload",
@@ -2066,6 +2008,14 @@
           "whyItMatters": "Keeps posting responsive and absorbs media-processing bursts.",
           "example": "Upload -> store original -> enqueue -> 202; workers create variants seconds later.",
           "group": "Async Media Upload and Processing"
+        },
+        {
+          "term": "Async media processing",
+          "description": "Accept the upload fast; resize/transcode into variants via a queue + workers.",
+          "whyItMatters": "Heavy media processing that must not block the user.",
+          "steps": [
+            "upload"
+          ]
         }
       ],
       "probeLinks": [
@@ -2074,9 +2024,6 @@
         "tus-resumable-upload",
         "instagram-video-compute",
         "kafka-design"
-      ],
-      "patterns": [
-        "Async media processing"
       ],
       "whyNow": [
         "Media processing is the upload-side heart of Instagram; the async pipeline is what makes posting fast and is the precondition for serving and feeds."
@@ -2193,6 +2140,18 @@
             "ProcessQ",
             "Workers"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Instant readiness vs. upload responsiveness",
+          "description": "Processing media inline means the post is fully ready the moment upload returns, but the user waits seconds while images resize and video transcodes, and a burst or one large video starves the request tier. Async queue-plus-workers returns as soon as the original is durably stored and scales processing independently, but introduces a 'processing' window, a state machine, and a backlog that can delay publish.",
+          "chosen": "The design uploads via pre-signed object-store URLs and processes asynchronously through a queue and worker fleet, trading brief eventual readiness for a fast, burst-proof posting path."
+        },
+        {
+          "name": "Standing fleet vs. serverless elasticity",
+          "description": "A dedicated worker fleet gives control over batching, memory, and long video transcodes, but must be sized, autoscaled, and paid for between bursts. Serverless functions per media object scale to zero and fan out massively on spikes, but cold starts and per-invocation limits make long transcodes awkward and sustained high volume can cost more than a busy fleet.",
+          "chosen": "The design runs a standing worker fleet, because predictable high-volume media processing and long video transcodes fit dedicated workers better than function limits."
         }
       ]
     },
@@ -2322,6 +2281,14 @@
           "whyItMatters": "Avoids per-read resizing and keeps the origin/store off the read path.",
           "example": "Grid uses 150px thumb; feed uses 1080px; full on tap — all CDN-cached.",
           "group": "Variants and CDN Delivery"
+        },
+        {
+          "term": "Multi-variant + CDN delivery",
+          "description": "Generate device-appropriate sizes and serve them from a CDN edge.",
+          "whyItMatters": "Image/video apps with global read fanout.",
+          "steps": [
+            "variants"
+          ]
         }
       ],
       "probeLinks": [
@@ -2331,9 +2298,6 @@
         "cloudflare-revalidation",
         "meta-av1-reels"
       ],
-      "patterns": [
-        "Multi-variant + CDN delivery"
-      ],
       "whyNow": [
         "CDN delivery of pre-made variants is how media reads scale; it's the read-path payoff of the upload pipeline."
       ],
@@ -2341,7 +2305,14 @@
         "before": "Variants sit in storage.",
         "after": "Right-sized media served globally from CDN.",
         "newRisk": "Reads also need the feed itself — which posts, in what order, assembled fast."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Storage amplification vs. read-time work",
+          "description": "Pre-generating every size and rendition at upload means reads never pay generation cost and every variant is a static, CDN-cacheable object — a viral post's 50M views never touch the origin — but storage multiplies per post, unpopular posts carry variants nobody requests, and a new size means a backfill over all existing media. On-the-fly resizing stores only the original and needs no backfill, but every cold miss pays resize latency and the resize service must be scaled and abuse-protected.",
+          "chosen": "The design pre-generates variants at upload and serves them from the CDN, spending storage once so the read path — the dominant load — stays pure cache hits."
+        }
+      ]
     },
     {
       "id": "fanout",
@@ -2499,6 +2470,22 @@
           "whyItMatters": "Cheap reads for the common case without celebrity fanout storms.",
           "example": "Push for <1M-follower accounts; pull above the threshold and merge.",
           "group": "Feed Generation: Hybrid Fanout"
+        },
+        {
+          "term": "Fanout-on-write feed",
+          "description": "Push a new post id into each follower's precomputed feed at publish.",
+          "whyItMatters": "Read-heavy feeds with manageable fanout.",
+          "steps": [
+            "fanout"
+          ]
+        },
+        {
+          "term": "Hybrid fanout (celebrity pull)",
+          "description": "Push for normal accounts, pull celebrities at read time, merge.",
+          "whyItMatters": "Heavy-tailed follower distributions.",
+          "steps": [
+            "fanout"
+          ]
         }
       ],
       "probeLinks": [
@@ -2507,11 +2494,6 @@
         "tao-paper",
         "redis-cache",
         "cache-consistency"
-      ],
-      "patterns": [
-        "Fanout-on-write feed",
-        "Hybrid fanout (celebrity pull)",
-        "Reference-by-id feed"
       ],
       "whyNow": [
         "Feed generation is the core scaling problem; the hybrid push/pull design is exactly what an interviewer probes for in any feed case."
@@ -2593,6 +2575,13 @@
             "FanoutSvc",
             "FeedCache"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write amplification vs. read cost",
+          "description": "Pure push makes every feed read one precomputed list lookup, but a celebrity post explodes into 50M feed writes and wastes effort on followers who never open the app. Pure pull makes publishing a single write, but every read then queries and merges all followees — too slow at media-feed scale, and barely cacheable since every user's merge differs. The hybrid pushes normal accounts and pulls the few celebrities at read time, at the cost of a merge-and-dedup read path and threshold edge cases.",
+          "chosen": "The design goes hybrid — push for normal accounts, pull for celebrities — with one threshold knob trading write amplification against read-merge cost."
         }
       ]
     },
@@ -2762,10 +2751,6 @@
         }
       ],
       "decisionPrompt": "You have 500 candidate posts for a feed. How do you order them well without scoring everything expensively?",
-      "patterns": [
-        "Candidate generation + ranking",
-        "Reference-by-id feed"
-      ],
       "probeLinks": [
         "instagram-explore-ranking",
         "instagram-suggests-content",
@@ -2784,6 +2769,14 @@
           "whyItMatters": "Keeps the fanout simple while allowing rich, evolving ranking within budget.",
           "example": "Fanout gives ~hundreds of candidates; the ranker scores and returns the top 20.",
           "group": "Feed Ranking"
+        },
+        {
+          "term": "Reference-by-id feed",
+          "description": "Store post ids in feeds; hydrate post + media URLs on read.",
+          "whyItMatters": "A post appears in many feeds — store once, reference by id.",
+          "steps": [
+            "ranking"
+          ]
         }
       ],
       "deepDives": [
@@ -2898,6 +2891,18 @@
             "FeedSvc",
             "Ranker"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Engagement lift vs. ML complexity",
+          "description": "ML ranking over the candidate set surfaces the posts most likely to engage and adapts as interaction signals feed back, but demands a model, feature pipeline, and training loop, and can feel opaque while burying recent posts. Reverse-chronological or heuristic scoring is transparent and cheap — no model-serving hop — but a chatty account crowds the feed and engagement plateaus below a learned model.",
+          "chosen": "The design ranks with an ML model over the recall set, accepting the ML infrastructure because engagement is the product's core metric."
+        },
+        {
+          "name": "Ranking quality vs. read-path availability",
+          "description": "Making the ranker a read-path dependency buys better ordering but adds a model-serving call and its latency to every feed load, and a ranker outage would otherwise take the feed down with it. A hard timeout with a fallback ordering keeps feeds loading when the model or feature store is slow, at the cost of occasionally serving unranked results.",
+          "chosen": "The design bounds the ranker with a hard timeout and falls back to a cheap ordering, preferring a degraded feed to no feed."
         }
       ]
     },
@@ -3098,9 +3103,6 @@
         }
       ],
       "decisionPrompt": "A post gets 1M likes/minute. Why not increment a counter row per like?",
-      "patterns": [
-        "Async engagement counting"
-      ],
       "probeLinks": [
         "tao-paper",
         "kafka-design",
@@ -3124,7 +3126,14 @@
         "before": "Synchronous counters.",
         "after": "Async engagement counts feeding ranking.",
         "newRisk": "Hot shards for viral content and feed-cache loss need handling."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Exact counts vs. hotspot survival",
+          "description": "A synchronous counter row per like is exact and instantly consistent, but a viral post's 1M likes per minute turn that single row into a lock-contention hotspot that melts the database. Async event aggregation absorbs any rate and scales independently, but displayed counts become eventually consistent and need an event pipeline; sharded counters remove the hotspot while staying near-exact but make reads sum N shards.",
+          "chosen": "The design keeps the per-(user, post) like row exact for 'did I like this?' but aggregates displayed counts asynchronously from events, since feed counters can be approximate."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -3201,7 +3210,19 @@
           "mitigation": "Filter post ids at hydration against current visibility/follow/block state and purge the CDN on media deletion."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Filter at write vs. filter at read",
+          "description": "Purging a deleted or taken-down post id from every feed cache at write time keeps reads simple, but one id can sit in millions of caches, making synchronous purge a fanout storm that still races new copies. Filtering at hydration — checking post state, blocks, and privacy when the feed is read — guarantees no removed or hidden post renders, at the cost of a state check on every read.",
+          "chosen": "The design filters at hydration rather than chasing cached ids, because the read-time check is cheap and correct while write-time purge is neither."
+        },
+        {
+          "name": "Cache durability vs. rebuildability",
+          "description": "Treating the feed cache as precious state would demand replication and careful failover for what is ultimately derived data. Treating it as rebuildable means a lost shard is repaired from the pull path — recent posts from followees — accepting a temporarily slower, pull-assembled feed for affected users during rebuild.",
+          "chosen": "The design treats feed caches as disposable derived state, rebuilding lost shards from the social graph instead of engineering them for durability."
+        }
+      ]
     }
   ],
   "finalDesign": {

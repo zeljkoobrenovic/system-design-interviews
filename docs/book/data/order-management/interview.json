@@ -860,62 +860,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Order state machine",
-      "what": "Model the order as explicit states with allowed transitions, persisted as the truth.",
-      "whenToUse": "Multi-step order workflows that must stay consistent and auditable.",
-      "steps": [
-        "lifecycle"
-      ],
-      "group": "The Order Lifecycle State Machine"
-    },
-    {
-      "name": "Saga with compensation",
-      "what": "Coordinate the cross-service flow with per-step compensating actions on failure.",
-      "whenToUse": "Distributed workflows that can't be one ACID transaction.",
-      "steps": [
-        "saga"
-      ],
-      "group": "Cross-Service Saga with Compensation"
-    },
-    {
-      "name": "Inventory reservation",
-      "what": "Reserve stock at order time (atomic), decrement on ship, release on cancel.",
-      "whenToUse": "Avoiding overselling across a multi-step order.",
-      "steps": [
-        "inventory"
-      ],
-      "group": "Inventory Reservation"
-    },
-    {
-      "name": "Idempotent transitions",
-      "what": "Key each step (order id + transition) so retries don't double-process.",
-      "whenToUse": "Reliable, retryable multi-service operations.",
-      "steps": [
-        "saga"
-      ],
-      "group": "Cross-Service Saga with Compensation"
-    },
-    {
-      "name": "Transactional outbox",
-      "what": "Write events in the same transaction as state changes; deliver reliably to consumers.",
-      "whenToUse": "Reliable status updates / downstream sync without dual-write divergence.",
-      "steps": [
-        "events"
-      ],
-      "group": "Reliable Status Events (Outbox)"
-    },
-    {
-      "name": "Compensation on cancel/return",
-      "what": "Undo completed steps (restock, refund) when an order is cancelled or returned.",
-      "whenToUse": "Reversible order flows.",
-      "steps": [
-        "returns"
-      ],
-      "group": "Cancellations, Returns, and Scale"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -974,7 +918,14 @@
           "instead": "Persist an explicit order state machine and coordinate the steps as a saga with compensating actions."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single-transaction atomicity vs. service boundaries",
+          "description": "Wrapping payment, stock decrement, and shipping in one database transaction is correct and trivial when everything shares one database — but payment, inventory, and fulfillment live in separate services with separate stores, so there is no transaction to wrap them in. A crash after charging the card but before decrementing stock leaves a customer charged for an item that never ships, with no record of where the flow stopped.",
+          "chosen": "The design deliberately rejects the single synchronous transaction, accepting that cross-service coordination must be rebuilt explicitly as a state machine and saga."
+        }
+      ]
     },
     {
       "id": "lifecycle",
@@ -1030,9 +981,6 @@
         "dynamodb-transactions",
         "postgres-isolation"
       ],
-      "patterns": [
-        "Order state machine"
-      ],
       "whyNow": [
         "The state machine is the consistency backbone of a multi-step order; every later mechanism triggers or reacts to its transitions."
       ],
@@ -1053,7 +1001,14 @@
           "instead": "Keep per-line item state and derive the aggregate (partially_shipped, partially_returned) from the lines."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-lifecycle.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-lifecycle.jpg",
+      "tradeoffs": [
+        {
+          "name": "Guarded transitions vs. flexible flow",
+          "description": "An explicit state machine with a guarded allowed-transition matrix (paid requires authorized payment AND reserved inventory; shipped requires packed ack AND successful capture) makes states like 'shipped but unpaid' structurally unreachable and every transition auditable — but every legitimate path, including cancels, returns, and partial flows, must be modeled up front, and ad-hoc shortcuts are forbidden by construction.",
+          "chosen": "The design persists the order as an explicit guarded state machine because in an order system, preventing inconsistent states is worth the rigidity."
+        }
+      ]
     },
     {
       "id": "inventory",
@@ -1219,9 +1174,6 @@
         "dynamodb-transactions",
         "postgres-isolation"
       ],
-      "patterns": [
-        "Inventory reservation"
-      ],
       "whyNow": [
         "Reservation is the first cross-service step; getting atomic reserve + release right is what keeps the order from overselling or leaking stock."
       ],
@@ -1229,7 +1181,19 @@
         "before": "State machine only.",
         "after": "Stock reserved atomically at order time.",
         "newRisk": "Reserve, pay, and fulfill span services — partial failures must not leave money/stock inconsistent."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Row-level atomicity vs. hot-SKU throughput",
+          "description": "A single conditional UPDATE (move qty from available to reserved only while available >= qty) lets the database itself reject oversell with no application lock — the cheapest correct answer when two orders race for the last unit. But every buyer of a genuinely hot SKU+warehouse serializes on that one row, capping throughput, and SELECT FOR UPDATE buys the same guarantee while holding locks even longer.",
+          "chosen": "The design uses the atomic conditional reservation because the DB enforces the invariant for free, and hot-row serialization is a rarer problem than oversell."
+        },
+        {
+          "name": "Holding stock vs. stranding stock",
+          "description": "Reserving rather than decrementing separates 'committed to this order' from 'shipped', keeping availability accurate through the multi-step flow — but a reservation an abandoned checkout never confirms strands stock unless a TTL and expiry worker release it, and the TTL itself is a dial: too short frustrates slow shoppers, too long over-protects inventory.",
+          "chosen": "The design gives every reservation a TTL with an expiry worker so abandoned checkouts self-heal, accepting the tuning burden."
+        }
+      ]
     },
     {
       "id": "saga",
@@ -1404,6 +1368,14 @@
           "whyItMatters": "Makes the saga safe to retry/resume after crashes.",
           "example": "Re-running 'reserve' for the same order doesn't reserve twice.",
           "group": "Cross-Service Saga with Compensation"
+        },
+        {
+          "term": "Idempotent transitions",
+          "description": "Key each step (order id + transition) so retries don't double-process.",
+          "whyItMatters": "Reliable, retryable multi-service operations.",
+          "steps": [
+            "saga"
+          ]
         }
       ],
       "probeLinks": [
@@ -1415,10 +1387,6 @@
         "debezium-outbox",
         "transactional-outbox",
         "stripe-auth-capture"
-      ],
-      "patterns": [
-        "Saga with compensation",
-        "Idempotent transitions"
       ],
       "whyNow": [
         "The saga is the correctness heart of an OMS; orchestration + compensation + idempotency is exactly what an interviewer probes for multi-service consistency."
@@ -1607,6 +1575,18 @@
             "Payment"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Orchestration vs. choreography",
+          "description": "A central order-service orchestrator drives each saga step, persists progress so the flow is resumable, and gives one place to see where any order stands — but it concentrates logic in a coordinator that must itself be reliable and idempotent. Choreographed events keep services loosely coupled and domains thin, but the end-to-end flow becomes implicit across subscribers, easy to break with ordering bugs and hard to trace for support or audit.",
+          "chosen": "The design orchestrates from the order service because an auditable, resumable, single-place view of 'where is this order' outweighs looser coupling."
+        },
+        {
+          "name": "Compensation windows vs. distributed locking",
+          "description": "A saga admits temporary inconsistency — there is a window where money is authorized but stock is released — and repairs failure with explicit compensations, including the ambiguous auth-timeout case resolved via webhook or idempotent polling. Two-phase commit would eliminate those windows on paper, but it holds locks across services through prepare, a coordinator crash blocks participants indefinitely, and payment gateways and external WMSs simply do not speak 2PC.",
+          "chosen": "The design accepts eventually-consistent compensation windows because 2PC is unavailable across third parties and unacceptable for availability."
+        }
       ]
     },
     {
@@ -1746,9 +1726,6 @@
         "stripe-webhooks",
         "stripe-idempotency"
       ],
-      "patterns": [
-        "Saga with compensation"
-      ],
       "whyNow": [
         "Fulfillment is where the order becomes real; the authorize-at-order / capture-before-carrier-handoff nuance and async warehouse events are senior signals."
       ],
@@ -1865,6 +1842,18 @@
             "Warehouse",
             "Payment"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Charge early vs. charge on shipment",
+          "description": "Capturing the full amount at placement is one payment step with the simplest accounting, but if fulfillment fails you owe a refund — slower and costlier than voiding an authorization — and charging before shipment can violate card-network rules for physical goods. Authorize-then-capture verifies funds up front and takes money only when the package is about to ship, but auths expire (~7 days) before slow fulfillments, forcing idempotent re-auth and capture-failure handling.",
+          "chosen": "The design authorizes at placement and captures at ship time, because voiding an auth on cancellation is far cheaper than refunding a captured charge."
+        },
+        {
+          "name": "Capture timing vs. shipping risk",
+          "description": "Capturing after the carrier already has the package would guarantee the goods really left, but a capture failure then means an item is in transit unpaid; capturing on the WMS packed/ready_to_ship event — while the package is still in the warehouse — lets a failed capture park the order before handoff, preserving the 'never ship without payment' invariant.",
+          "chosen": "The design captures on the pre-carrier-handoff packed event, only releasing the package to the carrier once payment has actually been taken."
         }
       ]
     },
@@ -2043,9 +2032,6 @@
         "kafka-design",
         "debezium-outbox"
       ],
-      "patterns": [
-        "Transactional outbox"
-      ],
       "whyNow": [
         "Reliable, consistent status propagation is a core OMS expectation; the outbox is the standard guarantee and reuses the saga's atomicity."
       ],
@@ -2137,6 +2123,18 @@
             "Broker"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Transactional outbox vs. dual-write simplicity",
+          "description": "Committing the state change and publishing the event as two separate steps is the simplest, lowest-latency code, but a crash between them either ships an order no one is told about or announces an event whose transaction rolled back — divergence is inevitable under failure. The outbox writes the event row in the same transaction as the state change so they cannot diverge, at the cost of an outbox table, a relay to operate, and slight publish delay.",
+          "chosen": "The design uses the transactional outbox with at-least-once relay publishing and consumer-side dedup on event id, because state and announcements must never disagree."
+        },
+        {
+          "name": "Domain events vs. CDC coupling",
+          "description": "Tailing the database log with CDC emits an event for every committed change with zero app code on the write path and no outbox table — but it couples the event schema to the physical table layout, makes DB refactors riskier, and yields raw row changes rather than clean domain events like 'OrderShipped', on top of running connector infrastructure.",
+          "chosen": "The design prefers explicit app-authored outbox events with a payload version, keeping the published contract a deliberate domain event rather than a leaked table row."
+        }
       ]
     },
     {
@@ -2185,11 +2183,15 @@
           "whyItMatters": "Not every returned item is resellable; refunding without the right disposition either oversells damaged goods or loses good stock.",
           "example": "Defective return -> refund issued, disposition = discard, inventory NOT incremented.",
           "group": "Cancellations, Returns, and Scale"
+        },
+        {
+          "term": "Compensation on cancel/return",
+          "description": "Undo completed steps (restock, refund) when an order is cancelled or returned.",
+          "whyItMatters": "Reversible order flows.",
+          "steps": [
+            "returns"
+          ]
         }
-      ],
-      "patterns": [
-        "Compensation on cancel/return",
-        "Idempotent transitions"
       ],
       "probeLinks": [
         "shopify-return-object",
@@ -2334,7 +2336,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-returns.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-returns.jpg",
+      "tradeoffs": [
+        {
+          "name": "Line-level granularity vs. summary simplicity",
+          "description": "Tracking cancellation and return state per line lets an order be partially shipped, partially cancelled, and partially returned at once — matching reality — but each line carries its own compensations (release reservation, void or refund, restock decision) and the whole must still roll up to a coherent customer-facing summary state like partially_returned.",
+          "chosen": "The design runs cancellations and returns as line-level compensation flows over the same saga, computing the order's summary state from its lines."
+        },
+        {
+          "name": "Retry safety vs. refund bookkeeping",
+          "description": "Refund steps will be retried — networks fail and webhooks duplicate — so a naive retry can refund the same line twice; making every refund idempotent and recorded as an order transition prevents double payout, but requires per-line refund records keyed so a replayed request is recognized rather than re-executed.",
+          "chosen": "The design makes each refund an idempotent, recorded transition per line, so a retry after a delivered order's return can never pay the customer twice."
+        }
+      ]
     }
   ],
   "finalDesign": {

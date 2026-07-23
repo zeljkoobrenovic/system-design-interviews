@@ -769,72 +769,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Hardware Abstraction Layer",
-      "what": "A portable API that hides vendor-specific register access behind stable function signatures.",
-      "whenToUse": "Any time the same firmware must run on more than one MCU, or you want to test logic off-target.",
-      "steps": [
-        "hal"
-      ]
-    },
-    {
-      "name": "Dependency Injection (ports & adapters)",
-      "what": "Modules depend on abstract interfaces; concrete drivers or mocks are injected.",
-      "whenToUse": "To unit-test application logic without real hardware.",
-      "steps": [
-        "decouple"
-      ]
-    },
-    {
-      "name": "Blackboard",
-      "what": "Controller-coordinated shared memory that decouples producers from consumers.",
-      "whenToUse": "Many modules share sensor/state data but you want to control access and timing.",
-      "steps": [
-        "state"
-      ]
-    },
-    {
-      "name": "Data Ownership",
-      "what": "Exactly one module owns each piece of state; others read/write only through its API.",
-      "whenToUse": "To stop the spaghetti of shared globals and keep changes local.",
-      "steps": [
-        "state"
-      ]
-    },
-    {
-      "name": "A/B (dual-bank) OTA",
-      "what": "Stage a signed image to the inactive slot; boot it once; roll back if it fails to confirm.",
-      "whenToUse": "Field-updatable devices that must never brick.",
-      "steps": [
-        "ota"
-      ]
-    },
-    {
-      "name": "Bounded ISR-to-task handoff",
-      "what": "ISRs latch minimal data and post one event to a fixed-size queue; a task does the heavy work.",
-      "whenToUse": "Any interrupt-driven path with hard real-time deadlines and no room for long ISRs.",
-      "steps": [
-        "kernel"
-      ]
-    },
-    {
-      "name": "Two-bank atomic config commit",
-      "what": "Write config to the inactive bank, verify CRC, then atomically flip the active pointer; fall back on corrupt boot.",
-      "whenToUse": "Persisting config/calibration to flash where a brown-out mid-write must not corrupt the only copy.",
-      "steps": [
-        "state"
-      ]
-    },
-    {
-      "name": "Signed manifest + anti-rollback + staged rollout",
-      "what": "Root of trust verifies a signed manifest and a monotonic rollback counter; a controller stages the image ring-by-ring behind a telemetry health gate.",
-      "whenToUse": "Securely updating a large field fleet without shipping a bad or downgraded image to everyone.",
-      "steps": [
-        "ota"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -881,7 +815,14 @@
           "instead": "Introduce a HAL seam early so logic doesn't depend on the silicon."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Time to first blink vs. portability and testability",
+          "description": "A single main() with a while(1) loop poking registers inline is the fastest way to get a device booting and blinking on the bench. But the application logic is welded to one chip's register map, nothing can be tested without hardware in hand, and one slow inline operation blows the timing budget for everything after it.",
+          "chosen": "The design uses the super-loop-with-inline-registers only as the baseline to tear apart, because a second MCU, a CI test, or real-time multitasking each force a restructure."
+        }
+      ]
     },
     {
       "id": "hal",
@@ -912,9 +853,6 @@
         ]
       },
       "decisionPrompt": "Where exactly do you draw the portability line — what belongs above the HAL and what belongs below?",
-      "patterns": [
-        "Hardware Abstraction Layer"
-      ],
       "concepts": [
         {
           "term": "Hardware Abstraction Layer",
@@ -1016,7 +954,14 @@
         "after": "All register access lives below a portable HAL.",
         "newRisk": "Nothing schedules the work yet — a single blocking call still stalls everything."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-hal.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-hal.jpg",
+      "tradeoffs": [
+        {
+          "name": "Portability vs. abstraction cost",
+          "description": "Letting application code touch registers directly is maximally direct and avoids any wrapper overhead, but it welds the logic to one vendor's silicon. Routing all hardware access through a stable HAL API like hal_i2c_read() confines vendor-specific code to one layer, so an MCU swap means re-implementing the HAL rather than rewriting the application — at the cost of designing and maintaining that API and deciding exactly where the portability line sits.",
+          "chosen": "The design inserts the HAL as the single most important seam, accepting the abstraction layer so only the code below it needs rewriting per chip."
+        }
+      ]
     },
     {
       "id": "kernel",
@@ -1148,6 +1093,14 @@
           "definition": "A low-priority task holding a mutex can block a high-priority one; priority inheritance temporarily raises the holder's priority.",
           "whyItMatters": "Without it, a medium-priority task can indefinitely delay the control loop through the held lock.",
           "example": "Use priority-inheritance mutexes and keep critical sections short and bounded."
+        },
+        {
+          "term": "Bounded ISR-to-task handoff",
+          "description": "ISRs latch minimal data and post one event to a fixed-size queue; a task does the heavy work.",
+          "whyItMatters": "Any interrupt-driven path with hard real-time deadlines and no room for long ISRs.",
+          "steps": [
+            "kernel"
+          ]
         }
       ],
       "traps": [
@@ -1225,7 +1178,24 @@
         "before": "No scheduling; blocking stalled the device.",
         "after": "A scheduler with a WCET budget, rate-monotonic priorities, and a bounded ISR-to-task queue runs tasks.",
         "newRisk": "Application still calls concrete drivers directly, so it can't be unit-tested off-target."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Determinism vs. pre-emption",
+          "description": "A cooperative super-loop is tiny, fully deterministic, and easy to reason about, but one long task delays everything after it and there are no priorities, so deadlines get harder to guarantee as features grow. An RTOS gives pre-emptive tasks, priorities, and blocking primitives so a high-priority control loop can interrupt slower work, but brings priority inversion, race classes, and a scheduler to configure.",
+          "chosen": "The design defaults to the bare-metal super-loop for its determinism and zero scheduler overhead, moving to an RTOS only when a hard deadline demands pre-emption."
+        },
+        {
+          "name": "Footprint vs. concurrency headroom",
+          "description": "The super-loop costs almost no RAM or flash and needs no porting or certification per MCU, but concurrency must be hand-rolled as state machines that get brittle as tasks multiply. An RTOS scales cleanly to many tasks with queues, semaphores, and priority-inheritance mutexes, at the price of scheduler RAM/flash and per-MCU BSP effort.",
+          "chosen": "The design starts with the minimal-footprint super-loop and treats the RTOS as the upgrade path once feature growth outstrips hand-rolled state machines."
+        },
+        {
+          "name": "RTOS features vs. proven timing budget",
+          "description": "Adopting an RTOS makes it tempting to believe deadlines are handled, but pre-emption is only the mechanism — a 1 kHz loop meets its deadline only if priorities are assigned rate-monotonically, worst-case execution times are bounded, and blocking is capped. The guarantee comes from that analysis work, which is owed regardless of scheduler choice.",
+          "chosen": "The design insists any deadline claim be backed by an explicit timing budget, not by the presence of a scheduler."
+        }
+      ]
     },
     {
       "id": "decouple",
@@ -1251,9 +1221,6 @@
         ]
       },
       "decisionPrompt": "How do you run the control logic in CI with no MCU present?",
-      "patterns": [
-        "Dependency Injection (ports & adapters)"
-      ],
       "concepts": [
         {
           "term": "Dependency injection / ports & adapters",
@@ -1329,7 +1296,14 @@
         "after": "App depends on interfaces; drivers/mocks are injected and run in a host CI harness.",
         "newRisk": "Modules still share state through globals — coupling and race conditions creep back in."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/04-decouple.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-decouple.jpg",
+      "tradeoffs": [
+        {
+          "name": "Testability vs. indirection",
+          "description": "Calling concrete drivers directly is simple and has zero call overhead, but then control algorithms can only be exercised with the hardware in hand, so bugs surface on the bench instead of in CI. Depending on abstract module interfaces with injected implementations adds a layer of indirection and interface upkeep, but lets the same logic compile on a host and run against mock sensors.",
+          "chosen": "The design applies dependency inversion — real drivers injected on the device, mocks in CI — because host-testable control logic is worth the extra interfaces."
+        }
+      ]
     },
     {
       "id": "state",
@@ -1358,10 +1332,6 @@
         ]
       },
       "decisionPrompt": "Who owns the calibration offset — and how does every other module read it without a global?",
-      "patterns": [
-        "Blackboard",
-        "Data Ownership"
-      ],
       "concepts": [
         {
           "term": "Data ownership",
@@ -1386,6 +1356,14 @@
           "definition": "The owner writes to an inactive copy and flips a version/pointer so readers never see a half-updated struct.",
           "whyItMatters": "A reader pre-empted mid-write would otherwise mix old and new fields; timestamping lets it drop stale snapshots.",
           "example": "Blackboard exposes {seq, ts, value}; readers re-read if seq changed during the copy."
+        },
+        {
+          "term": "Two-bank atomic config commit",
+          "description": "Write config to the inactive bank, verify CRC, then atomically flip the active pointer; fall back on corrupt boot.",
+          "whyItMatters": "Persisting config/calibration to flash where a brown-out mid-write must not corrupt the only copy.",
+          "steps": [
+            "state"
+          ]
         }
       ],
       "whyNow": [
@@ -1543,7 +1521,14 @@
         "after": "Single-owner state; blackboard for shared snapshots; two-bank atomic config commit with CRC + factory fallback.",
         "newRisk": "A hung task or a bad field update can still brick a deployed device."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-state.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-state.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single ownership vs. global convenience",
+          "description": "Shared globals are the path of least resistance — any module reads or writes the calibration offset directly — but they invite data races and make every change ripple through fifty call sites. Giving each piece of state one owning module with API access, plus a controller-coordinated blackboard for genuinely shared snapshots, keeps changes local and race-free at the cost of more structure and API plumbing.",
+          "chosen": "The design eliminates ad-hoc globals in favor of strict data ownership with a coordinated blackboard for common sensor snapshots."
+        }
+      ]
     },
     {
       "id": "robust",
@@ -1735,7 +1720,19 @@
         "after": "Watchdog recovers hangs; the bootloader verifies images.",
         "newRisk": "Applying a new image safely across a fleet is still unsolved."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-robust.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-robust.jpg",
+      "tradeoffs": [
+        {
+          "name": "Autonomous recovery vs. diagnostic visibility",
+          "description": "In the field there is no debugger, so a hardware watchdog that resets a device whose task stops kicking it is the only way to recover from a deadlock unattended — but a bare reset destroys the evidence of what went wrong. Capturing brown-out, assert, and fault breadcrumbs before or across the reset preserves the story at the cost of extra handler and persistence machinery.",
+          "chosen": "The design pairs the watchdog reset with fault handlers that record a diagnostic breadcrumb, so the device self-recovers without losing the trail."
+        },
+        {
+          "name": "Boot integrity vs. boot simplicity",
+          "description": "Jumping straight into the application image boots fastest and keeps the bootloader trivial, but a corrupted or tampered image runs unchecked. Having the bootloader verify the firmware signature before jumping blocks bad images at the cost of bootloader complexity, key management, and verification time on every boot.",
+          "chosen": "The design verifies the image signature in the bootloader, treating boot integrity as non-negotiable for a connected fleet."
+        }
+      ]
     },
     {
       "id": "ota",
@@ -1768,9 +1765,6 @@
         ]
       },
       "decisionPrompt": "The new image boots but crashes on first run — how does the device get back to a working state unattended, and how does the rollout stop before it reaches the rest of the fleet?",
-      "patterns": [
-        "A/B (dual-bank) OTA"
-      ],
       "concepts": [
         {
           "term": "A/B (dual-bank) OTA",
@@ -1813,6 +1807,14 @@
           "definition": "Events are appended to a bounded local ring; an MQTT task drains it with exponential backoff, and the broker ack advances an acked cursor. On overflow the oldest unacked below a retention floor is dropped or coalesced.",
           "whyItMatters": "Intermittent connectivity is a requirement — without a durable buffer and ack cursor, hours offline either lose all telemetry or grow unbounded, and a rollout health gate that depends on absent telemetry can't decide safely.",
           "example": "Device is offline 6 h; the ring coalesces repeated warnings and keeps the newest errors; on reconnect it drains oldest-first until acked_seq catches head_seq."
+        },
+        {
+          "term": "Signed manifest + anti-rollback + staged rollout",
+          "description": "Root of trust verifies a signed manifest and a monotonic rollback counter; a controller stages the image ring-by-ring behind a telemetry health gate.",
+          "whyItMatters": "Securely updating a large field fleet without shipping a bad or downgraded image to everyone.",
+          "steps": [
+            "ota"
+          ]
         }
       ],
       "whyNow": [
@@ -2064,7 +2066,19 @@
         "after": "Identity + signed manifests + anti-rollback + staged rings + health-gated A/B OTA with resumable download and rollback; provisioned certs with rotation/revocation and a durable telemetry ring with ack cursor.",
         "newRisk": "Ongoing operational scale: cohort strategy, key-custody drills, and telemetry ingest cost across millions of devices."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-ota.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-ota.jpg",
+      "tradeoffs": [
+        {
+          "name": "Rollout speed vs. blast radius",
+          "description": "Pushing a new firmware version to the whole fleet at once ships fixes fastest, but a bad image then bricks or degrades every device before anyone notices. Ring-based rollout gated on telemetry catches a crashing image in a small cohort and halts automatically, at the cost of slower fleet-wide propagation and a rollout controller to operate.",
+          "chosen": "The design assigns each version to cohorts and lets fleet telemetry auto-halt the rollout, accepting slower delivery to contain a bad image."
+        },
+        {
+          "name": "A/B slot safety vs. flash cost",
+          "description": "A single firmware slot uses half the flash, but an update that crashes on first boot leaves the device with nothing good to fall back to. Dual A/B slots with a trial boot and a health-confirmation window let the bootloader roll back to the known-good slot unattended, at the price of doubling image storage and managing slot state plus anti-rollback floors.",
+          "chosen": "The design pays for A/B slots with trial-boot rollback, because an unattended device must always retain a bootable known-good image."
+        }
+      ]
     }
   ],
   "finalDesign": {

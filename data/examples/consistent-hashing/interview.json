@@ -214,7 +214,14 @@
           "Hash",
           "S4"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Formula simplicity vs. remap cost",
+          "description": "hash(key) % N is the simplest possible placement rule — one line, no metadata — but because ownership depends on the total server count, changing N from N to N+1 remaps most keys at once, causing mass cache misses or bulk storage movement on every membership change.",
+          "chosen": "The design rejects modulo hashing as the motivating failure: any placement rule that bakes in the server count pays a near-total reshuffle whenever the cluster resizes."
+        }
+      ]
     },
     {
       "id": "hash-space-and-ring",
@@ -271,7 +278,14 @@
           "S2",
           "S3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Count independence vs. placement balance",
+          "description": "Mapping servers and keys into one circular hash space makes ownership depend only on token positions, not the server count, so membership changes disturb little — but random token placement means the arcs between servers are uneven, so some servers own much larger key ranges than others.",
+          "chosen": "The design puts servers on a hash ring to decouple placement from N, deferring the resulting load imbalance to virtual nodes later in the walkthrough."
+        }
+      ]
     },
     {
       "id": "key-lookup-clockwise",
@@ -386,7 +400,14 @@
           "Tokens",
           "Owner"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Lookup speed vs. metadata maintenance",
+          "description": "Resolving a key by scanning tokens is trivial but linear; keeping the tokens in a sorted structure makes each lookup a binary search, at the cost of maintaining that sorted view consistently on every router as servers join and leave.",
+          "chosen": "The design implements the clockwise-successor rule as a binary search over sorted tokens, accepting the token-list maintenance to make every lookup logarithmic."
+        }
+      ]
     },
     {
       "id": "add-and-remove-server",
@@ -438,7 +459,14 @@
           "Range",
           "Rebalance"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Minimal movement vs. concentrated impact",
+          "description": "Because a join only steals ranges from clockwise successors and a leave hands its ranges to the next clockwise owners, total data movement is minimal — but that same locality concentrates the entire burden of a change on a few neighboring servers, which absorb all the transferred keys and load.",
+          "chosen": "The design accepts neighbor-concentrated transfers as the price of moving only the affected ranges, rather than reshuffling the whole keyspace like modulo hashing."
+        }
+      ]
     },
     {
       "id": "virtual-nodes",
@@ -501,7 +529,14 @@
           "VB1",
           "VB2"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Load balance vs. ring overhead",
+          "description": "Giving each physical server many virtual tokens smooths uneven hash arcs and spreads a change's impact across many machines, and heavier servers can simply own more tokens — but the ring's token count multiplies, growing routing metadata, lookup structures, and the bookkeeping for every membership change.",
+          "chosen": "The design uses virtual nodes, trading a larger token table for even load distribution and capacity-weighted placement."
+        }
+      ]
     },
     {
       "id": "affected-range-rebalancing",
@@ -563,7 +598,14 @@
           "Task",
           "Metadata"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Migration safety vs. transition speed",
+          "description": "Flipping ownership immediately gets rebalancing over with, but reads and writes landing mid-move can miss keys that have not yet arrived. Copying the affected range first, verifying it, then updating routing metadata and cleaning old copies later never drops a read or write, but the transition takes longer and both copies coexist meanwhile.",
+          "chosen": "The design does the careful copy-verify-switch-clean sequence, holding duplicate data temporarily so no read or write is lost during the ownership transition."
+        }
+      ]
     },
     {
       "id": "production-integration",
@@ -633,7 +675,14 @@
           "Replica",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Bare algorithm vs. operational machinery",
+          "description": "The ring alone answers only 'which server owns this key'; used bare, a dead server keeps receiving traffic and routers can disagree about the ring. Production use needs health checks, consistent metadata distribution, observability, and often replication — real machinery that dwarfs the algorithm itself but makes it safe.",
+          "chosen": "The design treats consistent hashing as one placement component inside a larger system, paired with health checking, metadata distribution, and replication rather than deployed alone."
+        }
+      ]
     }
   ],
   "satisfies": {

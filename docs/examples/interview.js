@@ -95,7 +95,7 @@
         capacity: "capacity",
         api: "api",
         dataModel: "data-model",
-        patterns: "patterns",
+        tradeoffs: "tradeoffs",
         concepts: "concepts",
         patternCatalog: "pattern-catalog",
         finalDesign: "final-design",
@@ -159,6 +159,7 @@
     const ICON_FALLBACK = {
         concept: "icons/concept.png",
         pattern: "icons/pattern.png",
+        tradeoff: "icons/trade-off.png",
         trap: "icons/trap.png",
         before: "icons/before.png",
         after: "icons/after.png",
@@ -779,16 +780,19 @@
             .trim() || "Design Step";
     }
 
-    function collectDatasetConcepts(data) {
+    // Dedupe per-step items (concepts, tradeoffs) into one dataset-level list.
+    // Each unique item keeps its first-seen fields, accumulates the ids of the
+    // steps it appears on, and defaults its group to the step's title.
+    function collectStepItems(data, field) {
         const out = new Map();
         for (const step of data && Array.isArray(data.steps) ? data.steps : []) {
-            const concepts = Array.isArray(step.concepts) ? step.concepts : [];
+            const items = Array.isArray(step[field]) ? step[field] : [];
             const stepGroup = cleanStepGroupTitle(step);
-            for (const concept of concepts) {
-                const key = conceptKey(concept);
+            for (const item of items) {
+                const key = conceptKey(item);
                 if (!key) continue;
 
-                const source = typeof concept === "string" ? {term: concept} : Object.assign({}, concept);
+                const source = typeof item === "string" ? {term: item} : Object.assign({}, item);
                 if (!source.group) source.group = stepGroup;
                 if (!out.has(key)) {
                     source.steps = Array.isArray(source.steps) ? source.steps.slice() : [];
@@ -801,6 +805,14 @@
             }
         }
         return Array.from(out.values());
+    }
+
+    function collectDatasetConcepts(data) {
+        return collectStepItems(data, "concepts");
+    }
+
+    function collectDatasetTradeoffs(data) {
+        return collectStepItems(data, "tradeoffs");
     }
 
     function introItemGroupName(item, fallback) {
@@ -841,8 +853,9 @@
         if (Array.isArray(data.dataModel) && data.dataModel.length > 0) {
             entries.push({kind: "intro", id: INTRO_SLUGS.dataModel, title: "Data Model", payload: data.dataModel});
         }
-        if (Array.isArray(data.patterns) && data.patterns.length > 0) {
-            entries.push({kind: "intro", id: INTRO_SLUGS.patterns, title: "Patterns", payload: data.patterns});
+        const tradeoffItems = collectDatasetTradeoffs(data);
+        if (tradeoffItems.length > 0) {
+            entries.push({kind: "intro", id: INTRO_SLUGS.tradeoffs, title: "Trade-offs", payload: tradeoffItems});
         }
         const conceptItems = collectDatasetConcepts(data);
         if (conceptItems.length > 0) {
@@ -2373,74 +2386,50 @@
         return wrap.children.length > 0 ? makeSection("Common traps", wrap, "traps") : null;
     }
 
-    function normalizedPatternKey(value) {
-        return String(value || "")
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, " ")
-            .trim();
+    // Trade-off cards share the concept-card treatment: the tension the design
+    // must resolve, what this design picks, and (on the overview page) the
+    // steps where that tension is discussed.
+    function makeTradeoffCard(item, opts) {
+        opts = opts || {};
+        const inline = item && typeof item === "object" ? item : {name: String(item || "")};
+        const title = inline.name || inline.term || inline.title;
+        if (!title) return null;
+
+        const card = document.createElement("article");
+        card.className = "concept-card tradeoff-card";
+
+        const head = document.createElement("div");
+        head.className = "asset-heading";
+        const icon = makeAssetIcon(inline.icon, `${title} icon`, ICON_FALLBACK.tradeoff);
+        if (icon) head.appendChild(icon);
+        const h = document.createElement("h4");
+        h.textContent = title;
+        head.appendChild(h);
+        card.appendChild(head);
+
+        if (inline.description || inline.tradeoff || inline.what) {
+            const p = document.createElement("p");
+            p.className = "concept-definition";
+            p.textContent = inline.description || inline.tradeoff || inline.what;
+            card.appendChild(p);
+        }
+        appendConceptLine(card, "This design", inline.chosen || inline.decision);
+        if (opts.showSteps && Array.isArray(inline.steps) && inline.steps.length > 0) {
+            card.appendChild(makeStepChips(inline.steps));
+        }
+        return card;
     }
 
-    function datasetPatternIndex() {
-        const index = new Map();
-        const collections = [
-            state.data && state.data.patterns,
-            state.data && state.data.patternCatalog,
-        ];
-        for (const collection of collections) {
-            for (const item of Array.isArray(collection) ? collection : []) {
-                if (!item || typeof item !== "object") continue;
-                for (const key of [item.name, item.id, item.title]) {
-                    const normalized = normalizedPatternKey(key);
-                    if (normalized && !index.has(normalized)) index.set(normalized, item);
-                }
-            }
-        }
-        return index;
-    }
-
-    // Per-step patterns use the same visual treatment as concepts. Step arrays
-    // usually contain names; details/icons resolve from dataset-level patterns.
-    function renderStepPatterns(patterns) {
-        if (!Array.isArray(patterns) || patterns.length === 0) return null;
-        const index = datasetPatternIndex();
-        const cards = [];
-        for (const item of patterns) {
-            const inline = item && typeof item === "object" ? item : null;
-            const name = inline
-                ? (inline.name || inline.title || inline.id || "Pattern")
-                : String(item || "");
-            const meta = Object.assign({}, index.get(normalizedPatternKey(name)) || {}, inline || {});
-            const title = meta.name || meta.title || name;
-            if (!title) continue;
-
-            const card = document.createElement("article");
-            card.className = "concept-card pattern-concept-card";
-
-            const head = document.createElement("div");
-            head.className = "asset-heading";
-            const icon = makeAssetIcon(meta.icon, `${title} icon`, ICON_FALLBACK.pattern);
-            if (icon) head.appendChild(icon);
-            const h = document.createElement("h4");
-            h.textContent = title;
-            head.appendChild(h);
-            card.appendChild(head);
-
-            if (meta.what || meta.description) {
-                const p = document.createElement("p");
-                p.className = "concept-definition";
-                p.textContent = meta.what || meta.description;
-                card.appendChild(p);
-            }
-            appendConceptLine(card, "When to use", meta.whenToUse);
-            appendConceptLine(card, "Trade-off", meta.tradeoffs || meta.tradeoff);
-            cards.push(card);
-        }
+    // Per-step trade-offs: the tensions this step's decision balances.
+    function renderStepTradeoffs(tradeoffs) {
+        if (!Array.isArray(tradeoffs) || tradeoffs.length === 0) return null;
+        const cards = tradeoffs.map((t) => makeTradeoffCard(t)).filter(Boolean);
         if (cards.length === 0) return null;
 
         const wrap = document.createElement("div");
-        wrap.className = "step-concepts step-pattern-cards";
+        wrap.className = "step-concepts step-tradeoff-cards";
         const h = document.createElement("h3");
-        h.textContent = "Used Patterns";
+        h.textContent = "Trade-offs";
         wrap.appendChild(h);
         const grid = document.createElement("div");
         grid.className = "concept-grid";
@@ -2542,8 +2531,8 @@
             }
         }
 
+        appendStepExtra(renderStepTradeoffs(step.tradeoffs));
         appendStepExtra(renderTopConcepts(step.concepts));
-        appendStepExtra(renderStepPatterns(step.patterns));
 
         appendStepExtra(renderRecap(step.recap));
         appendStepExtra(renderFailureDrills(step.failureDrills));
@@ -3532,47 +3521,14 @@
         return outer;
     }
 
-    // Overview > Patterns. Each item: { name, what, whenToUse?, steps? }.
-    // Names the reusable design patterns this case teaches and links them to
-    // the steps where they appear.
-    function renderIntroPatterns(items) {
-        const patterns = Array.isArray(items) ? items : [];
-        function makePatternCard(p) {
-            p = p && typeof p === "object" ? p : {name: String(p || "")};
-            const card = document.createElement("div");
-            card.className = "pattern-card";
-
-            const head = document.createElement("div");
-            head.className = "asset-heading pattern-heading";
-            const icon = makeAssetIcon(p.icon, `${p.name || "Pattern"} icon`, ICON_FALLBACK.pattern);
-            if (icon) head.appendChild(icon);
-            const name = document.createElement("div");
-            name.className = "pattern-name";
-            name.textContent = p.name || "";
-            head.appendChild(name);
-            card.appendChild(head);
-
-            if (p.what) {
-                const what = document.createElement("p");
-                what.className = "pattern-what";
-                what.textContent = p.what;
-                card.appendChild(what);
-            }
-            if (p.whenToUse) {
-                const wt = document.createElement("p");
-                wt.className = "pattern-when muted";
-                wt.textContent = `When to use: ${p.whenToUse}`;
-                card.appendChild(wt);
-            }
-            if (Array.isArray(p.steps) && p.steps.length > 0) {
-                card.appendChild(makeStepChips(p.steps));
-            }
-            return card;
-        }
-
+    // Overview > Trade-offs. Deduped from step.tradeoffs and linked to the
+    // steps where each trade-off is discussed. Grouped like Concepts (by the
+    // originating step's title unless the item sets its own group).
+    function renderIntroTradeoffs(items) {
+        const tradeoffs = Array.isArray(items) ? items : [];
         const outer = document.createElement("div");
-        outer.className = "intro-grouped-list";
-        for (const group of groupedIntroItems(patterns, "Patterns")) {
+        outer.className = "step-concepts overview-concepts overview-tradeoffs";
+        for (const group of groupedIntroItems(tradeoffs, "Trade-offs")) {
             const section = document.createElement("section");
             section.className = "intro-item-group";
             const title = document.createElement("h3");
@@ -3581,12 +3537,16 @@
             section.appendChild(title);
 
             const grid = document.createElement("div");
-            grid.className = "patterns-list";
-            group.items.forEach((p) => grid.appendChild(makePatternCard(p)));
-            section.appendChild(grid);
-            outer.appendChild(section);
+            grid.className = "concept-grid";
+            for (const item of group.items) {
+                const card = makeTradeoffCard(item, {showSteps: true});
+                if (card) grid.appendChild(card);
+            }
+            if (grid.children.length > 0) {
+                section.appendChild(grid);
+                outer.appendChild(section);
+            }
         }
-
         return outer;
     }
 
@@ -3980,8 +3940,8 @@
             case INTRO_SLUGS.apiFlows:
                 node = renderIntroApiFlows(entry.payload);
                 break;
-            case INTRO_SLUGS.patterns:
-                node = renderIntroPatterns(entry.payload);
+            case INTRO_SLUGS.tradeoffs:
+                node = renderIntroTradeoffs(entry.payload);
                 break;
             case INTRO_SLUGS.concepts:
                 node = renderIntroConcepts(entry.payload);
@@ -4330,6 +4290,12 @@
                     validateOptionalString(concept.group, `Step ${i} concept ${j} group`);
                 }
             });
+            (Array.isArray(step.tradeoffs) ? step.tradeoffs : []).forEach((tradeoff, j) => {
+                if (tradeoff && typeof tradeoff === "object") {
+                    validateAssetPath(tradeoff.icon, `Step ${i} tradeoff ${j} icon`);
+                    validateOptionalString(tradeoff.group, `Step ${i} tradeoff ${j} group`);
+                }
+            });
             (step.options || []).forEach((opt, j) => {
                 if (opt.diagram !== undefined) throw new Error(`Step ${i} option ${j} ("${opt.name || ""}") must use "view", not "diagram"`);
             });
@@ -4356,17 +4322,16 @@
         // Book-feature fields are optional, but if present must be arrays so the
         // renderers can iterate them. Contents stay free-form (rendered only if
         // present), matching the rest of the lenient schema.
-        for (const key of ["patterns", "interviewScript", "levelVariants", "patternCatalog"]) {
+        for (const key of ["interviewScript", "levelVariants", "patternCatalog"]) {
             if (d[key] !== undefined && !Array.isArray(d[key])) {
                 throw new Error(`Dataset ${path}: "${key}" must be an array if present`);
             }
         }
-        (d.patterns || []).forEach((pattern, i) => {
-            if (pattern && typeof pattern === "object") {
-                validateAssetPath(pattern.icon, `Dataset ${path}: patterns[${i}].icon`);
-                validateOptionalString(pattern.group, `Dataset ${path}: patterns[${i}].group`);
-            }
-        });
+        // Dataset-level "patterns" was removed: fold pattern content into step
+        // "concepts" and express the decisions as step "tradeoffs" instead.
+        if (d.patterns !== undefined) {
+            throw new Error(`Dataset ${path}: "patterns" is no longer supported — move patterns into step "concepts" / "tradeoffs"`);
+        }
         (d.patternCatalog || []).forEach((pattern, i) => {
             if (pattern && typeof pattern === "object") {
                 validateAssetPath(pattern.icon, `Dataset ${path}: patternCatalog[${i}].icon`);
@@ -4490,7 +4455,11 @@
             (d.finalDesign.flows || []).forEach((flow, j) => validateFlow(flow, `Dataset ${path} finalDesign flow ${j} ("${flow && flow.name || ""}")`));
         }
         (d.steps || []).forEach((step, i) => {
-            for (const key of ["patterns", "traps"]) {
+            // Per-step "patterns" was removed alongside dataset-level patterns.
+            if (step.patterns !== undefined) {
+                throw new Error(`Step ${i} ("${step.title || step.id || ""}"): "patterns" is no longer supported — use "concepts" / "tradeoffs"`);
+            }
+            for (const key of ["tradeoffs", "traps"]) {
                 if (step[key] !== undefined && !Array.isArray(step[key])) {
                     throw new Error(`Step ${i} ("${step.title || step.id || ""}"): "${key}" must be an array if present`);
                 }

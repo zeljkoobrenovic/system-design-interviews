@@ -588,53 +588,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Geospatial indexing",
-      "what": "Map 2D coordinates to a 1D cell key (geohash/S2) or tree so radius queries touch a few cells, not all rows.",
-      "whenToUse": "Any 'find things near a point' query at scale.",
-      "steps": [
-        "geohash"
-      ],
-      "group": "Geospatial Index: Geohash / S2 Cells"
-    },
-    {
-      "name": "Cell neighbor expansion",
-      "what": "Query the covering set of cells for the radius (the target cell plus enough neighbor rings) so results near a cell boundary aren't missed; 'cell + 8 neighbors' is the small-radius special case.",
-      "whenToUse": "Grid/geohash indexes where a radius can straddle cell edges.",
-      "steps": [
-        "boundaries"
-      ],
-      "group": "Handle Cell Boundaries and the Radius"
-    },
-    {
-      "name": "Adaptive cell size",
-      "what": "Use finer cells in dense areas and coarser in sparse ones (tree-based or precision tuning).",
-      "whenToUse": "Highly non-uniform spatial density (cities vs countryside).",
-      "steps": [
-        "density"
-      ],
-      "group": "Adapt to Uneven Density"
-    },
-    {
-      "name": "Candidate generation + ranking",
-      "what": "Cheaply gather candidates from the index, then rank/filter the smaller set.",
-      "whenToUse": "When the exact, ranked result is expensive but a recall-y candidate set is cheap.",
-      "steps": [
-        "ranking"
-      ],
-      "group": "Rank and Filter Candidates"
-    },
-    {
-      "name": "Async index update via change stream",
-      "what": "Persist writes, emit change events, and update the derived index off the write path.",
-      "whenToUse": "Read-heavy systems where the index can lag writes by minutes.",
-      "steps": [
-        "indexing"
-      ],
-      "group": "Keep the Index Fresh (Async Write Path)"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -697,7 +650,14 @@
           "mitigation": "Validate lat/lng bounds and reject 400s at the gateway; cap radius and limit (clamp or 400); rate-limit per client/API key so one caller can't exhaust the read path."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Correctness vs. scan cost",
+          "description": "Computing the distance from the query point to every place is exactly correct, but it is O(all places) per search — hopeless at 100M places and 10K searches/sec. Even a lat/lng bounding-box filter helps only modestly because a B-tree indexes two independent dimensions poorly.",
+          "chosen": "The design abandons the scan and moves to a geospatial index, because radius search must become a cheap lookup rather than a computation over the whole table."
+        }
+      ]
     },
     {
       "id": "geohash",
@@ -868,6 +828,14 @@
           "whyItMatters": "Cheap filters (category/price/open-now) and the first-pass score resolve from index metadata, so only the top-K hydrate full details.",
           "example": "open-now is evaluated from the entry's precomputed open_state + timezone without a detail fetch.",
           "group": "Geospatial Index: Geohash / S2 Cells"
+        },
+        {
+          "term": "Geospatial indexing",
+          "description": "Map 2D coordinates to a 1D cell key (geohash/S2) or tree so radius queries touch a few cells, not all rows.",
+          "whyItMatters": "Any 'find things near a point' query at scale.",
+          "steps": [
+            "geohash"
+          ]
         }
       ],
       "probeLinks": [
@@ -879,9 +847,6 @@
         "redis-geosearch",
         "aws-dynamodb-geohash"
       ],
-      "patterns": [
-        "Geospatial indexing"
-      ],
       "whyNow": [
         "The spatial index is the heart of the problem; choosing and justifying geohash/S2 is the central senior signal.",
         "Commit to one: introduce the geohash prefix index as the simplest baseline, then defend S2/H3 region covering (backed by a KV cell index) as the final choice because its per-query variable-level coverer gives a tighter cover for the 0.5-5 km radius range and adapts to density (Step 4) without prime-meridian/pole seams. The final design uses that S2/H3 choice consistently; geohash stays the simpler fallback."
@@ -890,7 +855,19 @@
         "before": "Full scan.",
         "after": "Radius search reads a few cells' place lists (geohash baseline → S2/H3 region covering as the defended choice).",
         "newRisk": "A circle doesn't align to square cells — boundaries and false positives need handling."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. geometric fidelity",
+          "description": "Geohash prefixes are cheap to compute, store, and prefix-scan on any sorted store, and easy to eyeball while debugging — but rectangular cells distort near seams and poles, and two physically close points can land in non-adjacent prefixes. S2's Hilbert-ordered spherical cells cover a radius tightly with variable levels, at the cost of heavier cell-id math and a less familiar library.",
+          "chosen": "The design picks the geohash prefix index for its operational simplicity, handling the boundary cases explicitly in the next step rather than paying S2's complexity everywhere."
+        },
+        {
+          "name": "Flat index vs. adaptive tree",
+          "description": "A flat cell-to-place-ids map shards and replicates trivially, while a quadtree adapts its resolution to density automatically but is a dynamic structure that is harder to shard, needs rebalancing on writes, and costs more pointer hops per query.",
+          "chosen": "The design keeps a flat prefix-keyed index for easy scaling and re-introduces density adaptation later through variable precision instead of a tree."
+        }
+      ]
     },
     {
       "id": "boundaries",
@@ -934,6 +911,14 @@
           "whyItMatters": "Without it, results near a cell edge are silently dropped — but one ring only suffices when the radius fits in a cell.",
           "example": "Query target cell + its 8 neighbors when the radius is small, then exact-distance filter.",
           "group": "Handle Cell Boundaries and the Radius"
+        },
+        {
+          "term": "Cell neighbor expansion",
+          "description": "Query the covering set of cells for the radius (the target cell plus enough neighbor rings) so results near a cell boundary aren't missed; 'cell + 8 neighbors' is the small-radius special case.",
+          "whyItMatters": "Grid/geohash indexes where a radius can straddle cell edges.",
+          "steps": [
+            "boundaries"
+          ]
         }
       ],
       "probeLinks": [
@@ -943,9 +928,6 @@
         "elastic-geo",
         "mongo-geospatial",
         "redis-geosearch"
-      ],
-      "patterns": [
-        "Cell neighbor expansion"
       ],
       "whyNow": [
         "The boundary problem is the classic follow-up; addressing it proves you understand the index isn't a magic 'within radius' oracle."
@@ -1030,7 +1012,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-boundaries.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-boundaries.jpg",
+      "tradeoffs": [
+        {
+          "name": "Recall vs. over-fetch",
+          "description": "Covering the query circle with enough cells and neighbor rings guarantees a cafe 50m away in the next cell is found, but square cells over-cover a round query, so a wider covering set pulls in candidates outside the radius that must be distance-filtered away. The one-ring '8 neighbors' shortcut is cheap but only correct while the radius fits inside a cell — larger radii need a covering set computed from radius and cell size.",
+          "chosen": "The design computes the full covering set from the radius and precision and post-filters by exact distance, paying some over-fetch to never miss a nearby place."
+        }
+      ]
     },
     {
       "id": "density",
@@ -1159,6 +1148,14 @@
           "whyItMatters": "Keeps candidate counts bounded in cities while still returning results in sparse areas.",
           "example": "Quadtree subdivides a busy block into many cells; leaves a rural region as one.",
           "group": "Adapt to Uneven Density"
+        },
+        {
+          "term": "Adaptive cell size",
+          "description": "Use finer cells in dense areas and coarser in sparse ones (tree-based or precision tuning).",
+          "whyItMatters": "Highly non-uniform spatial density (cities vs countryside).",
+          "steps": [
+            "density"
+          ]
         }
       ],
       "probeLinks": [
@@ -1169,9 +1166,6 @@
         "yelp-core-search",
         "yelp-coordinator",
         "owasp-api4"
-      ],
-      "patterns": [
-        "Adaptive cell size"
       ],
       "whyNow": [
         "Real geography is non-uniform; handling density is what makes the index perform consistently, not just on average."
@@ -1186,6 +1180,18 @@
           "trap": "Querying parent and child cells together without deduping.",
           "why": "With mixed precision a place can be reachable via both a coarse parent and a finer child cell, so the candidate union double-counts it.",
           "instead": "Pick one consistent level per region for the cover, or dedupe place ids across levels before filtering."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Adaptive precision vs. uniform simplicity",
+          "description": "Variable-precision cells keep a Manhattan query's candidate list small and still let a rural Montana query find something, but mixed cell sizes complicate the cell-plus-neighbors query logic and demand density statistics and ongoing per-region tuning. A single fixed size is trivial to index and shard but fails at both extremes — thousands of candidates downtown, empty cells in the countryside.",
+          "chosen": "The design uses variable-precision cells so index granularity matches real place distribution, accepting explicit query rules for mixed levels."
+        },
+        {
+          "name": "Index-time tuning vs. query-time expansion",
+          "description": "Expanding-ring search keeps the index uniform and pushes adaptation to read time — dense areas stop after one ring, sparse areas keep widening — but sparse queries pay multiple sequential lookups and the 'enough results' stopping condition needs tuning, with a bad worst case in empty regions.",
+          "chosen": "The design prefers baking density into the index precision rather than paying repeated lookups per query, keeping read latency predictable."
         }
       ]
     },
@@ -1341,9 +1347,6 @@
         }
       ],
       "decisionPrompt": "Should you rank by raw distance, or something else? What signals matter?",
-      "patterns": [
-        "Candidate generation + ranking"
-      ],
       "probeLinks": [
         "yelp-core-search",
         "yelp-maptype",
@@ -1499,6 +1502,18 @@
             "PlaceCache"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Relevance vs. explainability",
+          "description": "A blended distance/rating/popularity score matches what users actually want — a great cafe 400m away beats a mediocre one next door — but the hand-tuned weights are subjective, drift over time, and popularity bias can bury good new places. Raw distance sort is deterministic, fully explainable, and needs no quality data, but happily ranks a closed, poorly-rated place first.",
+          "chosen": "The design ranks by a blended score with cheap filters applied first, because pure proximity is not what a user choosing a restaurant is optimizing."
+        },
+        {
+          "name": "Heuristic blend vs. learned ranking",
+          "description": "A learned model captures interactions hand-tuned weights miss (time of day, query intent) and improves with data, but it adds a feature pipeline, training, and a model-serving hop with real inference latency to every query, plus feedback-loop risk. The weighted blend is a simple in-process sort.",
+          "chosen": "The design stays with the hand-tuned blend and staged filtering so ranking cost stays bounded on the hot path, leaving ML re-ranking as a later evolution."
+        }
       ]
     },
     {
@@ -1642,10 +1657,15 @@
           "whyItMatters": "Lets you recover from drift or schema changes without serving a half-built index.",
           "example": "Reindex all of PlaceDB into geo_v2, verify, then point reads at geo_v2.",
           "group": "Keep the Index Fresh (Async Write Path)"
+        },
+        {
+          "term": "Async index update via change stream",
+          "description": "Persist writes, emit change events, and update the derived index off the write path.",
+          "whyItMatters": "Read-heavy systems where the index can lag writes by minutes.",
+          "steps": [
+            "indexing"
+          ]
         }
-      ],
-      "patterns": [
-        "Async index update via change stream"
       ],
       "probeLinks": [
         "yelp-fast-order-search",
@@ -1786,6 +1806,18 @@
             "Indexer",
             "GeoIndex"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write-path latency vs. index freshness",
+          "description": "Updating the geo index asynchronously through a change queue keeps place writes fast and lets the read-heavy index scale and reshard independently, but a just-added place may not be searchable for minutes and you now operate a queue plus an indexer with lag monitoring. A synchronous dual write makes places searchable immediately, but couples the write path to the index and can silently diverge if the second write fails mid-request.",
+          "chosen": "The design updates the index asynchronously because the requirements tolerate minutes of lag, and decoupling beats a non-atomic dual write."
+        },
+        {
+          "name": "Best-effort publish vs. transactional outbox",
+          "description": "Publishing the change event from the app after commit is simpler but can lose the event if the process dies between commit and publish, leaving the index permanently stale for that place; a transactional outbox (or CDC) guarantees the event exists if and only if the write committed, at the cost of an outbox table and relay.",
+          "chosen": "The design writes the place row and outbox row in one transaction with a relay draining to the queue, so index updates can never be silently dropped."
         }
       ]
     }

@@ -431,7 +431,14 @@
           "Gateway",
           "Chat"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Push latency vs. client compatibility",
+          "description": "A persistent WebSocket gives both sides a long-lived bidirectional channel so messages push instantly, but some proxies and older clients block or mishandle WebSockets; long polling works through almost anything HTTP does, at the cost of per-message request overhead and reconnect churn.",
+          "chosen": "The design defaults to persistent WebSocket connections for active chat sessions and keeps long polling as the fallback where WebSockets are blocked."
+        }
+      ]
     },
     {
       "id": "stateless-apis-and-service-discovery",
@@ -497,7 +504,14 @@
           "Group",
           "Discovery"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Uniform stack vs. split planes",
+          "description": "Running everything inside the connection-holding chat servers keeps one deployable, but ties auth, profiles, and group management to the hardest tier to scale and restart. Splitting them into stateless control-plane services lets each scale and deploy independently — and lets discovery pick a chat server by geography, load, and capacity — at the cost of more services and an extra discovery hop before connecting.",
+          "chosen": "The design separates stateless APIs and service discovery from the connection fleet so the easy-to-scale parts scale trivially and discovery can place connections intelligently."
+        }
+      ]
     },
     {
       "id": "stateful-chat-connection-fleet",
@@ -628,7 +642,14 @@
           "ChatA",
           "ChatB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Connection locality vs. routing indirection",
+          "description": "Because each device's socket lives on exactly one chat server, delivery is a cheap in-process push when sender and recipient share a server — but recipients are usually elsewhere, so the system needs a connection registry mapping each online device to its owning server, an extra lookup and a piece of state that must track every connect and disconnect.",
+          "chosen": "The design keeps a connection registry recording which server owns each online device and routes events through it, accepting the registry's maintenance as the price of a stateful fleet."
+        }
+      ]
     },
     {
       "id": "message-storage-and-ids",
@@ -848,6 +869,18 @@
               "ConvLog"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Scan efficiency vs. query flexibility",
+          "description": "A wide-column store keyed by (conversation_id, message_id) turns scrollback and reconnect sync into a single contiguous range scan within a partition and scales horizontally, but cross-conversation and ad-hoc queries are awkward. A relational table offers SQL flexibility for moderation and reporting, but a chat-scale append workload demands manual sharding and index maintenance becomes the bottleneck.",
+          "chosen": "The design stores history in a wide-column store keyed by conversation and message id, matching the dominant read pattern — ordered scrollback — at the cost of ad-hoc query power."
+        },
+        {
+          "name": "Generated ids vs. log offsets",
+          "description": "An append-only per-conversation log makes the offset the order — no id generator needed — and lets sync queues and indexers consume the same stream, but random access by message id is weak and operating a partitioned log is heavier infrastructure. Snowflake-style sortable ids in a keyed store need generation logic but preserve keyed random access.",
+          "chosen": "The design mints sortable snowflake-style message ids in the keyed store, taking on id generation to keep both ordered scans and direct message lookup."
         }
       ]
     },
@@ -1101,6 +1134,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Send latency vs. durability guarantee",
+          "description": "Acking as soon as the message is queued gives the lowest send latency, but if the queue or a worker loses the message before persistence it is gone despite the ack. Acking only after durable storage puts persistence latency on the send path, but an acked message is never lost and offline recipients can always catch up from history.",
+          "chosen": "The design acks after durable persistence and enqueues delivery work from the persisted message, taking a slower ack for an unambiguous never-lost guarantee."
+        },
+        {
+          "name": "Ack meaning vs. ack availability",
+          "description": "Acking only on recipient delivery gives the strongest semantic — the ack means the other side has it — but the send then blocks on the recipient being reachable, which fails outright for offline users in a mobile-heavy system. Acking on persistence always succeeds but says nothing about delivery, so 'delivered' and 'read' need separate downstream signals.",
+          "chosen": "The design decouples the sender's ack (durability) from delivery status, driving delivered/read indicators as separate receipts rather than blocking sends on connectivity."
+        }
       ]
     },
     {
@@ -1250,6 +1295,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write amplification vs. read simplicity",
+          "description": "Copying each group message to every member's inbox multiplies writes and storage by group size, but with groups capped near 100 members that cost is bounded — and each member's read, online push, and offline catch-up all work off one simple per-member inbox. A shared timeline writes once but pushes assembly cost, unread counts, and per-member state onto every read.",
+          "chosen": "The design fans out on write to member inboxes, exploiting the 100-member cap to buy trivially fast reads with bounded write amplification."
+        }
       ]
     },
     {
@@ -1379,7 +1431,14 @@
           "Sync",
           "Cursor"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Client-side cursors vs. server-side tracking",
+          "description": "Having each device track its own highest-received message id per conversation pushes bookkeeping to clients and requires an acknowledge-progress protocol, but makes catch-up a simple fetch-after-cursor that naturally avoids gaps and duplicates per device. Server-tracked per-device state would relieve clients but multiplies server state and still needs the same acknowledgments to be correct.",
+          "chosen": "The design gives each device a per-conversation cursor it advances on ack, so phone, tablet, and browser each converge independently from durable history."
+        }
+      ]
     },
     {
       "id": "presence-and-heartbeats",
@@ -1515,6 +1574,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Responsiveness vs. flapping",
+          "description": "A short heartbeat timeout marks users offline promptly but flips them offline during every short mobile network blip, causing flapping status; a longer timeout tolerates blips but shows users online after they are gone. The timeout is a dial between accuracy and stability.",
+          "chosen": "The design derives presence from heartbeats with a timeout tuned so short blips do not flip status, accepting slightly delayed offline detection."
+        },
+        {
+          "name": "Push freshness vs. fanout load",
+          "description": "Pushing every presence change via pub/sub keeps friends' status fresh, but frequent changes for users with many watchers create heavy fanout; client polling avoids the fanout machinery entirely, but status goes laggy and most polls return nothing new.",
+          "chosen": "The design pushes presence changes through pub/sub to interested friends and conversations, keeping status live while keeping the ephemeral traffic off the durable message path."
+        }
       ]
     },
     {
@@ -1582,7 +1653,14 @@
           "Metrics",
           "Replay"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Deploy agility vs. connection stability",
+          "description": "Treating stateful chat servers like stateless ones — kill and replace — makes deploys fast but severs every held WebSocket at once, triggering reconnect storms that hammer discovery and the registry; draining servers first preserves user experience but makes every deploy slower and needs orchestration, alongside retry/dedup for mobile clients and replay tools for stuck queues.",
+          "chosen": "The design invests in draining, retry-with-deduplication, delivery-lag metrics, and queue replay tooling, accepting slower operations as the cost of reliability through deploys and failures."
+        }
+      ]
     }
   ],
   "satisfies": {

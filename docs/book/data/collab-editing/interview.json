@@ -637,62 +637,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Optimistic local apply",
-      "what": "Apply the user's own edit locally immediately, then reconcile with the server.",
-      "whenToUse": "Editing UIs where input latency must feel instant.",
-      "steps": [
-        "optimistic"
-      ],
-      "group": "Optimistic Local Editing"
-    },
-    {
-      "name": "Single authoritative ordering",
-      "what": "One server per document assigns a total order to ops; everyone replays that order.",
-      "whenToUse": "When all replicas must converge deterministically.",
-      "steps": [
-        "ordering"
-      ],
-      "group": "One Authoritative Order per Document"
-    },
-    {
-      "name": "Operational Transformation (OT)",
-      "what": "Transform a concurrent op against ops it didn't see so positions stay correct.",
-      "whenToUse": "Central-server text editing (Docs-style).",
-      "steps": [
-        "conflict"
-      ],
-      "group": "Conflict Resolution: OT vs CRDT"
-    },
-    {
-      "name": "CRDT",
-      "what": "Represent the document so concurrent ops commute and merge without a central transform.",
-      "whenToUse": "Peer-to-peer / offline-heavy or server-light convergence.",
-      "steps": [
-        "conflict"
-      ],
-      "group": "Conflict Resolution: OT vs CRDT"
-    },
-    {
-      "name": "Snapshot + op log",
-      "what": "Persist an append-only op log and periodic snapshots to bound replay and recover.",
-      "whenToUse": "Durable, replayable document state.",
-      "steps": [
-        "durability"
-      ],
-      "group": "Durability: Snapshots + Op Log"
-    },
-    {
-      "name": "Offline buffering + replay",
-      "what": "Queue ops made offline and merge them (via OT/CRDT) on reconnect.",
-      "whenToUse": "Editing that must survive disconnection.",
-      "steps": [
-        "offline"
-      ],
-      "group": "Offline Editing and Reconnection"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -744,7 +688,14 @@
           "instead": "Send fine-grained ops against a baseline version, order them centrally, and merge concurrent ops via OT/CRDT."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Whole-document saves vs. lost updates",
+          "description": "PUT-the-whole-blob is the simplest possible persistence and works fine for a single editor, but with two concurrent editors the last writer silently clobbers the first's work — there is no merge, no notion of concurrent edits, and changes only appear after a save-and-reload round trip.",
+          "chosen": "The design uses this last-write-wins baseline to motivate operation-based editing, where individual edits can be ordered and merged instead of overwritten."
+        }
+      ]
     },
     {
       "id": "optimistic",
@@ -806,9 +757,6 @@
         "prosemirror-collab",
         "websocket-rfc"
       ],
-      "patterns": [
-        "Optimistic local apply"
-      ],
       "whyNow": [
         "Local optimism is the UX foundation and the source of concurrency; everything about conflict resolution exists to reconcile it."
       ],
@@ -817,7 +765,14 @@
         "after": "Instant local editing; ops streamed to the server.",
         "newRisk": "Two users editing the same baseline concurrently produce conflicting ops — someone must order and reconcile them."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-optimistic.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-optimistic.jpg",
+      "tradeoffs": [
+        {
+          "name": "Local responsiveness vs. provisional state",
+          "description": "Applying each keystroke locally before the server confirms makes typing feel instant instead of waiting a round trip per edit, but the local copy becomes provisional — the client must track its synced baseline, keep a persisted pending-op queue with clientSeq ordering and durable clientOpIds, and be prepared to rebase when the server orders things differently.",
+          "chosen": "The design applies edits optimistically with a persisted pending-op queue because instant typing is non-negotiable and the ack/rebase machinery makes the provisional state safe."
+        }
+      ]
     },
     {
       "id": "ordering",
@@ -1034,6 +989,14 @@
           "whyItMatters": "It prevents split-brain: a paused old owner that resumes after failover cannot corrupt the version sequence, so single-owner ordering stays correct.",
           "example": "Router bumps epoch 9 -> 10 on transfer; old owner's epoch-9 append is rejected.",
           "group": "One Authoritative Order per Document"
+        },
+        {
+          "term": "Single authoritative ordering",
+          "description": "One server per document assigns a total order to ops; everyone replays that order.",
+          "whyItMatters": "When all replicas must converge deterministically.",
+          "steps": [
+            "ordering"
+          ]
         }
       ],
       "probeLinks": [
@@ -1042,9 +1005,6 @@
         "jupiter-paper",
         "sharedb-docs",
         "kafka-design"
-      ],
-      "patterns": [
-        "Single authoritative ordering"
       ],
       "whyNow": [
         "A single ordering authority per doc makes convergence tractable; it's the structural decision the conflict algorithm builds on."
@@ -1183,6 +1143,18 @@
           "scenario": "The old owner pauses (long GC / network partition), the router assigns a new owner, then the old owner resumes and tries to append.",
           "expectedBehavior": "The old owner's appends carry a stale owner_epoch and are rejected by the op log; only the new owner (current epoch) can stamp versions, so the (doc_id, version) sequence never forks.",
           "mitigation": "Lease + monotonic owner_epoch fencing; epoch stamped on every append; op log enforces current-epoch-only writes."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Single owner vs. replicated consensus",
+          "description": "Routing all ops for a document through one owning server gives a trivial total order — an in-memory sequence appended to the op log with no consensus round per op — but that server is a per-document single point of failure needing failover, and stale-owner split brain must be fenced with epoch leases; a Raft-style replicated log survives node loss automatically but adds a quorum round-trip that the optimistic-typing UX is trying to hide.",
+          "chosen": "The design assigns each document one owning server with epoch-fenced ownership because bounded editors-per-doc makes the simple order cheap and documents shard cleanly across servers."
+        },
+        {
+          "name": "Central order vs. peer-to-peer merge",
+          "description": "A leaderless CRDT swarm eliminates the per-document funnel and works offline-first with no always-on backend, but it forfeits an authoritative version number for snapshots, history, and access-control checkpoints, requires commutative op types rather than positional OT, and still needs some coordinator for a durable log.",
+          "chosen": "The design keeps a central authoritative order since versioned history and the OT conflict model both depend on one defined sequence."
         }
       ]
     },
@@ -1343,6 +1315,14 @@
           "whyItMatters": "Convergence without a central transform; great for offline/P2P.",
           "example": "Each char has a unique fractional id; inserts are ordered by id, not index.",
           "group": "Conflict Resolution: OT vs CRDT"
+        },
+        {
+          "term": "Operational Transformation (OT)",
+          "description": "Transform a concurrent op against ops it didn't see so positions stay correct.",
+          "whyItMatters": "Central-server text editing (Docs-style).",
+          "steps": [
+            "conflict"
+          ]
         }
       ],
       "probeLinks": [
@@ -1351,10 +1331,6 @@
         "yjs-docs",
         "automerge-conflicts",
         "ckeditor-architecture"
-      ],
-      "patterns": [
-        "Operational Transformation (OT)",
-        "CRDT"
       ],
       "whyNow": [
         "Conflict resolution is the intellectual core of the case; articulating OT vs CRDT and their tradeoff is exactly the senior signal."
@@ -1449,6 +1425,18 @@
             "DocServer"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "OT vs. CRDT",
+          "description": "Operational Transformation keeps the document a plain character sequence with small per-op metadata by transforming each incoming op against concurrent ones on the central server, but the transform functions must be proven correct for every op-pair and every new op type; CRDTs make concurrent edits commute by giving each character a stable id, removing fragile transforms at the cost of per-character metadata and tombstones that must be garbage-collected.",
+          "chosen": "The design picks OT because it fits the already-chosen single-owning-server model and is battle-tested for central-server text editing."
+        },
+        {
+          "name": "Merging vs. locking",
+          "description": "Pessimistic region locks make correctness trivial because concurrent edits never happen, but they destroy the real-time feel — editors block on locks, granularity is a lose-lose knob, and a disconnected lock holder strands a region until timeout — whereas merge-based approaches accept concurrency complexity to let everyone type freely.",
+          "chosen": "The design rejects locking and merges concurrent edits, since free simultaneous typing is the product's defining requirement."
+        }
       ]
     },
     {
@@ -1503,7 +1491,14 @@
         "after": "Target committed: OT for this server-centric editor; CRDT kept as the offline-first/P2P alternative.",
         "newRisk": "OT transform correctness — every op-pair (and every future rich-text op type) must transform correctly."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-ot-vs-crdt.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-ot-vs-crdt.jpg",
+      "tradeoffs": [
+        {
+          "name": "Server-centric fit vs. offline-first fit",
+          "description": "OT leans on a central server to define concurrency and keeps documents lean, which matches a Google-Docs-style always-connected editor; CRDTs pay per-character id and tombstone overhead to converge without any arbiter, which is exactly what peer-to-peer and offline-heavy editors need. The choice is really about where order comes from, and each side's cost is structural, not incidental.",
+          "chosen": "The design chooses OT for this server-centric editor, accepting hard-to-verify transform functions as the price of small documents and a natural fit with the owning-server order."
+        }
+      ]
     },
     {
       "id": "durability",
@@ -1667,6 +1662,14 @@
           "whyItMatters": "A half-written snapshot adopted as truth would silently corrupt the document on the next failover.",
           "example": "Worker dies mid-write; checksum fails; reader uses the prior snapshot + a longer tail.",
           "group": "Durability: Snapshots + Op Log"
+        },
+        {
+          "term": "Snapshot + op log",
+          "description": "Persist an append-only op log and periodic snapshots to bound replay and recover.",
+          "whyItMatters": "Durable, replayable document state.",
+          "steps": [
+            "durability"
+          ]
         }
       ],
       "probeLinks": [
@@ -1674,9 +1677,6 @@
         "yjs-document-updates",
         "kafka-design",
         "sre-monitoring"
-      ],
-      "patterns": [
-        "Snapshot + op log"
       ],
       "whyNow": [
         "Durability + bounded replay is what makes the authoritative-log model practical and crash-safe; it's the reliability backbone."
@@ -1701,6 +1701,18 @@
           "scenario": "The persistence worker crashes while writing a snapshot.",
           "expectedBehavior": "The partial snapshot fails its checksum on load and is ignored; the reader falls back to the previous good snapshot plus a longer op-log tail. snapshot_version is never advanced for an uncommitted snapshot.",
           "mitigation": "Atomic snapshot write + checksum + format_version; advance documents.snapshot_version only after durable commit."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Load speed vs. persistence simplicity",
+          "description": "Snapshot-plus-tail loading keeps opens fast even for documents with millions of historical ops while the op log stays the durable source of truth, but it adds a background compaction worker, a snapshot-cadence tuning knob, and two artifacts to keep version-aligned; pure op-log replay is the simplest durable model with full history yet load and recovery time grow without bound.",
+          "chosen": "The design materializes periodic snapshots and loads snapshot plus op-log tail, keeping acked edits crash-safe without unbounded replay."
+        },
+        {
+          "name": "History retention vs. storage economy",
+          "description": "Overwriting a single materialized blob bounds storage to one document size and makes loading a single read, but it destroys the op log — no fine-grained crash recovery, no version browsing, no audit trail, and idempotent retry via (doc_id, client_id, client_op_id) has nothing to key on.",
+          "chosen": "The design keeps the append-only op log as the source of truth (with snapshots layered on top) because persist-before-ack, dedupe on retry, and history all depend on it."
         }
       ]
     },
@@ -1845,9 +1857,6 @@
         }
       ],
       "decisionPrompt": "Should cursor positions go through the same durable, ordered path as document edits?",
-      "patterns": [
-        "Single authoritative ordering"
-      ],
       "probeLinks": [
         "yjs-awareness",
         "websocket-rfc",
@@ -1877,6 +1886,18 @@
           "trap": "Persisting cursor/selection updates through the durable op log.",
           "why": "Cursor moves are ~10/s/editor and ephemeral; logging them floods storage and replay and incurs an fsync-class cost per twitch, starving the real edit stream.",
           "instead": "Keep presence as throttled, best-effort, in-memory state broadcast on the live connection; never durable."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Ephemeral broadcast vs. durable ordering",
+          "description": "Broadcasting cursors and selections as throttled, lossy in-memory state over the existing WebSocket costs nothing on the persistence path and a dropped frame is harmless, but presence evaporates on failover and cursors must still be transformed alongside ops to stay anchored; pushing cursor moves through the durable op log would keep them version-consistent yet floods the log with fsync-cost twitches and slows the real edit stream.",
+          "chosen": "The design keeps presence as ephemeral best-effort state on the doc server's existing connection, rebuilding cursors from reconnecting clients after failover."
+        },
+        {
+          "name": "Reuse vs. dedicated infrastructure",
+          "description": "A separate pub/sub presence tier could scale awareness independently and aggregate who-is-online across documents, but it is another service to deploy and keep in sync with session membership, and the doc server would still have to feed it op context for cursor transforms — overkill when editors-per-doc is bounded.",
+          "chosen": "The design reuses the collab server's live connection for presence instead of standing up a dedicated service the bounded scale does not justify."
         }
       ]
     },
@@ -1911,9 +1932,6 @@
         ]
       },
       "decisionPrompt": "A user edits offline for an hour, then reconnects. How do their changes merge with everyone else's?",
-      "patterns": [
-        "Offline buffering + replay"
-      ],
       "probeLinks": [
         "yjs-offline",
         "automerge-docs",
@@ -1952,6 +1970,14 @@
           "whyItMatters": "Each ties to a concrete signal and action: checksum failure -> fall back to prior snapshot + longer tail; stuck lease -> force-expire and re-grant; hot-doc saturation -> shed/queue presence first, then throttle ops.",
           "example": "Snapshot checksum fails on attach -> automatically load prior good snapshot + replay a longer tail, page if it recurs.",
           "group": "Observability and Operations"
+        },
+        {
+          "term": "Offline buffering + replay",
+          "description": "Queue ops made offline and merge them (via OT/CRDT) on reconnect.",
+          "whyItMatters": "Editing that must survive disconnection.",
+          "steps": [
+            "offline"
+          ]
         }
       ],
       "recap": {
@@ -2096,7 +2122,14 @@
           "mitigation": "Cap pending unacked ops per client and per-connection send buffer; coalesce/drop redundant presence frames; if a client falls too far behind, force a snapshot resync rather than queueing unboundedly."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/08-offline.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-offline.jpg",
+      "tradeoffs": [
+        {
+          "name": "Offline continuity vs. reconnect complexity",
+          "description": "Letting a disconnected client keep editing against its last baseline preserves the user's work for an hour offline, but reconnection cannot be 'send everything' — the client must fetch the missed baseline-to-head ops, rebase its pending queue over them, and resubmit idempotently so ops already applied before the disconnect are deduped by clientOpId rather than duplicated.",
+          "chosen": "The design buffers ops client-side and runs a precise rebase-then-idempotent-resubmit reconnect protocol, trading protocol complexity for safe offline editing."
+        }
+      ]
     }
   ],
   "finalDesign": {
