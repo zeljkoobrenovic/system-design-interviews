@@ -996,89 +996,11 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Time-series storage (chunked, compressed)",
-      "what": "Store samples in time-ordered, columnar, delta/double-delta compressed chunks per series.",
-      "whenToUse": "Append-mostly timestamped data queried by range.",
-      "steps": [
-        "tsdb"
-      ],
-      "group": "Time-Series Storage"
-    },
-    {
-      "name": "Downsampling / rollups",
-      "what": "Pre-aggregate older data to coarser resolutions and drop raw points.",
-      "whenToUse": "Bounding storage and speeding wide-range queries over long history.",
-      "steps": [
-        "rollups"
-      ],
-      "group": "Downsampling & Retention"
-    },
-    {
-      "name": "Push vs pull collection",
-      "what": "Agents push samples, or the system scrapes/pulls targets on a schedule.",
-      "whenToUse": "Choose by service-discovery and network topology; pull eases liveness, push eases ephemeral jobs.",
-      "steps": [
-        "collection"
-      ],
-      "group": "Collection: Push vs Pull"
-    },
-    {
-      "name": "Cardinality control",
-      "what": "Limit unique label combinations so the series index doesn't explode.",
-      "whenToUse": "Always — high-cardinality labels (user id, request id) are the #1 way TSDBs fall over.",
-      "steps": [
-        "cardinality"
-      ],
-      "group": "Cardinality Control"
-    },
-    {
-      "name": "Pre-aggregation / read model",
-      "what": "Materialize common aggregations so queries don't scan raw samples.",
-      "whenToUse": "Dashboards repeatedly running the same heavy aggregations.",
-      "steps": [
-        "query",
-        "rollups"
-      ],
-      "group": "Querying & Alerting"
-    },
-    {
-      "name": "Rule-based alerting",
-      "what": "Continuously evaluate expressions with a 'for' duration to debounce, then route notifications.",
-      "whenToUse": "Turning metrics into actionable, non-flappy alerts.",
-      "steps": [
-        "query"
-      ],
-      "group": "Querying & Alerting"
-    },
-    {
-      "name": "Sharding by series",
-      "what": "Partition series across nodes by a hash of the series id/labels.",
-      "whenToUse": "When ingest/query volume outgrows one node.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling by Sharding"
-    },
-    {
-      "name": "Work queue / ingestion buffer",
-      "what": "Buffer incoming samples so write spikes don't overwhelm storage.",
-      "whenToUse": "Bursty, high-volume ingestion.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Ingestion Pipeline"
-    }
-  ],
   "steps": [
     {
       "id": "naive-ingest",
       "title": "1. Naive Metrics Table (the baseline)",
       "description": "Start by writing every metric sample as a row in a relational table and querying with GROUP BY. It works for one service; at 10M points/sec a row-per-sample table takes ~0.86 trillion rows/day before indexes and retention — so it falls over, motivating a purpose-built time-series store.",
-      "patterns": [
-        "Time-series storage (chunked, compressed)"
-      ],
       "probeLinks": [
         "sre-monitoring",
         "prometheus-data-model",
@@ -1151,15 +1073,19 @@
           "TSDB"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-ingest.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive-ingest.jpg",
+      "tradeoffs": [
+        {
+          "name": "Familiar tooling vs. write scale",
+          "description": "A row-per-sample relational table with GROUP BY queries is the easiest thing to build and works for one service, but at 10M points/sec it means roughly 0.86 trillion rows a day before indexes and retention — the general-purpose engine collapses under pure write volume.",
+          "chosen": "The design rejects the naive table and commits to purpose-built time-series machinery, because the write rate is the defining constraint of the system."
+        }
+      ]
     },
     {
       "id": "ingest",
       "title": "2. Ingestion Pipeline",
       "description": "Accept samples fire-and-forget into a buffer, then write to storage asynchronously. Batching and a buffer absorb spikes and decouple producers from storage. Pin down the acceptance boundary (what `202` means), report partial acceptance, and define priority-based shedding so overload sacrifices debug/high-cardinality metrics before alert-critical ones.",
-      "patterns": [
-        "Work queue / ingestion buffer"
-      ],
       "probeLinks": [
         "prometheus-remote-write",
         "otel-collector",
@@ -1192,6 +1118,14 @@
           "definition": "Under overload, drop low-value series (debug, high-cardinality) first and keep alert-critical metrics.",
           "whyItMatters": "Best-effort metrics still need a contract that protects the data alerts depend on.",
           "group": "Ingestion Pipeline"
+        },
+        {
+          "term": "Work queue / ingestion buffer",
+          "description": "Buffer incoming samples so write spikes don't overwhelm storage.",
+          "whyItMatters": "Bursty, high-volume ingestion.",
+          "steps": [
+            "ingest"
+          ]
         }
       ],
       "deepDives": [
@@ -1384,15 +1318,24 @@
             "Queue"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Producer availability vs. sample durability",
+          "description": "Buffering samples and writing to storage in async batches absorbs 10M points/sec bursts and never blocks the emitting services, but a purely in-memory buffer can lose the most recent samples on node failure and a replicated buffer/WAL costs money. Synchronous durable writes lose nothing but block producers on storage — a burden a metrics system shouldn't impose on the services it observes.",
+          "chosen": "The design buffers and batches asynchronously because metrics emission must be fire-and-forget, accepting a small loss window (or WAL cost) instead of ever blocking producers."
+        },
+        {
+          "name": "Bare 202 vs. honest acceptance contract",
+          "description": "Returning a plain 202 keeps the ingest protocol minimal, but it hides what was actually accepted; reporting partial acceptance, idempotency handling, and priority-based shedding adds protocol surface while making overload behavior explicit — debug metrics get dropped before alert-critical ones.",
+          "chosen": "The design pins down what 202 promises and adds partial-acceptance reporting and priority shedding, trading a fatter protocol for predictable behavior under overload."
+        }
       ]
     },
     {
       "id": "tsdb",
       "title": "3. Time-Series Storage",
       "description": "Store samples per series in time-ordered, compressed chunks (delta-of-delta timestamps, XOR-compressed values), with recent data in a hot store and an index from labels to series ids. This is what makes both writes and range reads cheap.",
-      "patterns": [
-        "Time-series storage (chunked, compressed)"
-      ],
       "probeLinks": [
         "prometheus-storage",
         "prometheus-histograms",
@@ -1420,6 +1363,14 @@
           "definition": "Latency distributions stored as bucket-count series (per `le` bound) or mergeable sketches (t-digest/HDR), not scalar values.",
           "whyItMatters": "Percentiles require mergeable distributions — you cannot average per-host p95s into a global p95.",
           "group": "Time-Series Storage"
+        },
+        {
+          "term": "Time-series storage (chunked, compressed)",
+          "description": "Store samples in time-ordered, columnar, delta/double-delta compressed chunks per series.",
+          "whyItMatters": "Append-mostly timestamped data queried by range.",
+          "steps": [
+            "tsdb"
+          ]
         }
       ],
       "deepDives": [
@@ -1606,16 +1557,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-tsdb-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Purpose-built efficiency vs. off-the-shelf operability",
+          "description": "A custom TSDB with delta-of-delta timestamps, XOR-compressed values, and a label inverted index makes both appends and range scans cheap in a way no generic engine matches — but it is a complex storage engine to build and operate. An LSM/wide-column store gives you sharding, replication, and durability for free, yet compresses worse, scans more bytes per query, and still needs a label index bolted on top.",
+          "chosen": "The design builds the purpose-built TSDB because compression and range-scan efficiency at this volume are the core problem, not an optimization."
+        },
+        {
+          "name": "Time-series specialization vs. query generality",
+          "description": "Fixing the schema to the time-series shape buys extreme efficiency but gives up ad-hoc relational joins and SQL flexibility; a relational table with a time-series extension keeps SQL, transactions, and joins, but row-per-sample overhead and index bloat cap throughput far below what the workload needs.",
+          "chosen": "The design accepts the narrow time-series query model, since dashboards and alerts need rates, percentiles, and group-bys — not joins."
+        }
       ]
     },
     {
       "id": "rollups",
       "title": "4. Downsampling & Retention",
       "description": "Bound storage and speed wide queries by pre-aggregating older data into coarser resolutions (raw -> 1m -> 1h) and expiring raw points past a retention window. Queries pick the finest resolution that covers the requested range.",
-      "patterns": [
-        "Downsampling / rollups",
-        "Pre-aggregation / read model"
-      ],
       "decisionPrompt": "A user asks for a 90-day CPU graph. What do you actually read?",
       "concepts": [
         {
@@ -1629,6 +1588,14 @@
           "definition": "Raw for days, 1m for weeks, 1h for months.",
           "whyItMatters": "Caps storage while preserving useful history.",
           "group": "Downsampling & Retention"
+        },
+        {
+          "term": "Downsampling / rollups",
+          "description": "Pre-aggregate older data to coarser resolutions and drop raw points.",
+          "whyItMatters": "Bounding storage and speeding wide-range queries over long history.",
+          "steps": [
+            "rollups"
+          ]
         }
       ],
       "traps": [
@@ -1863,15 +1830,24 @@
         "thanos-compactor",
         "thanos-getting-started",
         "mimir-architecture"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Precompute cost vs. wide-query speed",
+          "description": "Pre-aggregating raw points into 1m and 1h tiers means a 90-day graph reads coarse points instead of scanning billions of raw samples, but you run and monitor a rollup pipeline, pay extra storage, and repeated dashboard queries are the win it targets. Query-time downsampling has the simplest pipeline and total aggregation freedom, but every wide query redoes an enormous scan.",
+          "chosen": "The design precomputes rollup tiers with queries reading the finest tier that covers the range, because wide dashboard queries are frequent and must be fast."
+        },
+        {
+          "name": "Storage bounds vs. aggregation flexibility",
+          "description": "Expiring raw points past a retention window bounds hot-store size, but aggregations are frozen at rollup time — an unanticipated function (or a percentile computed naively) may need raw data you have already deleted. Keeping tiered raw data forever preserves exactness but saves only cost, not query time, and long horizons stay expensive.",
+          "chosen": "The design expires raw data past a retention window and lives with fixed rollup functions, using percentile-safe rollups to keep the aggregates trustworthy."
+        }
       ]
     },
     {
       "id": "collection",
       "title": "5. Collection: Push vs Pull",
       "description": "Decide how samples arrive: agents push to ingestion, or the system pulls/scrapes targets on a schedule via service discovery. This needs a control plane — a service-discovery/target registry that schedules scrapes, injects discovery labels, and tracks per-target health, plus a push gateway for ephemeral jobs and per-tenant auth so arbitrary clients can't mint unlimited labels. Many systems do both (pull for long-lived services, push for ephemeral jobs).",
-      "patterns": [
-        "Push vs pull collection"
-      ],
       "probeLinks": [
         "prometheus-instrumentation",
         "prometheus-pushgateway",
@@ -1898,6 +1874,14 @@
           "definition": "The control-plane component that discovers targets, injects discovery labels, schedules scrapes, and records each target's last scrape status and owner.",
           "whyItMatters": "Collection identity and labels drive cardinality and tenant limits; a failed scrape is a liveness signal, not 'value is zero'.",
           "group": "Collection: Push vs Pull"
+        },
+        {
+          "term": "Push vs pull collection",
+          "description": "Agents push samples, or the system scrapes/pulls targets on a schedule.",
+          "whyItMatters": "Choose by service-discovery and network topology; pull eases liveness, push eases ephemeral jobs.",
+          "steps": [
+            "collection"
+          ]
         }
       ],
       "deepDives": [
@@ -2023,15 +2007,19 @@
           "Discovery",
           "PushGW"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Pull liveness vs. push reach",
+          "description": "Scraping targets on a schedule gives a free liveness signal (a failed scrape is itself an alertable fact) and central control of collection rate, but it needs service discovery and struggles with firewalled targets and jobs that die before the next scrape. Push works behind NAT and is natural for ephemeral jobs, but a dead target is just silence and producers control the rate.",
+          "chosen": "The design pulls via service discovery for long-lived services and adds a push gateway for ephemeral jobs, getting liveness where it matters and coverage where pull cannot reach."
+        }
+      ]
     },
     {
       "id": "cardinality",
       "title": "6. Cardinality Control",
       "description": "Cardinality — the number of unique label combinations — is the silent killer of TSDBs. A single unbounded label (user id, request id, URL with ids) creates millions of series and blows up the index. Guard ingestion: drop, limit, or relabel high-cardinality labels.",
-      "patterns": [
-        "Cardinality control"
-      ],
       "probeLinks": [
         "prometheus-data-model",
         "prometheus-config-limits",
@@ -2052,6 +2040,14 @@
           "definition": "An unbounded label multiplying series.",
           "whyItMatters": "It's the most common way these systems OOM and crash.",
           "group": "Cardinality Control"
+        },
+        {
+          "term": "Cardinality control",
+          "description": "Limit unique label combinations so the series index doesn't explode.",
+          "whyItMatters": "Always — high-cardinality labels (user id, request id) are the #1 way TSDBs fall over.",
+          "steps": [
+            "cardinality"
+          ]
         }
       ],
       "deepDives": [
@@ -2196,16 +2192,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/06-cardinality-opt2.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Central enforcement vs. source-side prevention",
+          "description": "A guard at the ingestion endpoint enforces per-metric series limits in one place at the last choke point before the label index, but the offending series were already emitted and shipped over the wire, and the guard itself must sustain full ingest throughput. Agent-side relabeling stops explosive labels before they leave the host and saves network cost, but policy is scattered across thousands of agents and one misconfigured agent can still flood you.",
+          "chosen": "The design centralizes the cardinality guard at ingestion because the label index is the thing that actually explodes, and one enforcement point beats thousands of hopefully-correct agents."
+        },
+        {
+          "name": "Index protection vs. data fidelity",
+          "description": "Dropping, limiting, or relabeling a high-cardinality label like user_id protects the TSDB from millions of runaway series, but it silently discards detail the producer intended to send — the guard is deciding that some observability data is not worth its index cost.",
+          "chosen": "The design accepts controlled detail loss, treating cardinality control as an operator workflow with limits and relabeling rules rather than letting one label take down the store."
+        }
       ]
     },
     {
       "id": "query",
       "title": "7. Querying & Alerting",
       "description": "A query service evaluates range expressions (rate, percentiles, group-by) over the index + chunks, with admission control (max series, max lookback, timeout) and caching for repeated dashboard queries. A separate alerting subsystem schedules and evaluates rules on fine data, runs each alert through an inactive -> pending -> firing -> resolved state machine persisted for failover, applies silences/inhibition/dedup, and routes notifications with retries and escalation.",
-      "patterns": [
-        "Pre-aggregation / read model",
-        "Rule-based alerting"
-      ],
       "probeLinks": [
         "sre-monitoring",
         "sre-slo-alerting",
@@ -2239,6 +2243,23 @@
           "definition": "Caps on returned series, full-resolution lookback, timeout, and bytes scanned, enforced before fan-out.",
           "whyItMatters": "One expensive dashboard query can otherwise saturate every shard during an incident.",
           "group": "Querying & Alerting"
+        },
+        {
+          "term": "Pre-aggregation / read model",
+          "description": "Materialize common aggregations so queries don't scan raw samples.",
+          "whyItMatters": "Dashboards repeatedly running the same heavy aggregations.",
+          "steps": [
+            "query",
+            "rollups"
+          ]
+        },
+        {
+          "term": "Rule-based alerting",
+          "description": "Continuously evaluate expressions with a 'for' duration to debounce, then route notifications.",
+          "whyItMatters": "Turning metrics into actionable, non-flappy alerts.",
+          "steps": [
+            "query"
+          ]
         }
       ],
       "deepDives": [
@@ -2534,15 +2555,24 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-query.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-query.jpg",
+      "tradeoffs": [
+        {
+          "name": "Dashboard speed vs. evaluation cost",
+          "description": "Caching repeated dashboard queries and enforcing admission control (max series, max lookback, timeouts) keeps the query service fast and protected, but cached results can lag the freshest data and admission limits reject some legitimate heavy queries.",
+          "chosen": "The design caches repeated range queries and bounds every query's cost up front, preferring predictable fast dashboards over unlimited ad-hoc evaluation."
+        },
+        {
+          "name": "Alert responsiveness vs. flap noise",
+          "description": "Evaluating alert rules on fine-grained data catches problems fast, but a metric oscillating around a threshold would page on-call every 10 seconds; the pending state, dedup, silences, and inhibition damp that noise at the cost of slightly delayed notification.",
+          "chosen": "The design runs each alert through an inactive-pending-firing-resolved state machine with dedup and silences, trading a short confirmation delay for pages people actually trust."
+        }
+      ]
     },
     {
       "id": "scale",
       "title": "8. Scaling by Sharding",
       "description": "Shard series across nodes by a hash of series id/labels so ingest and queries scale horizontally. A metric router directs samples and queries to the owning shard; queries spanning shards fan out and merge. Replicate shards for availability.",
-      "patterns": [
-        "Sharding by series"
-      ],
       "probeLinks": [
         "m3-uber",
         "monarch-paper",
@@ -2572,6 +2602,14 @@
           "definition": "A series fingerprint maps (via consistent hashing/virtual nodes) to a replica set of N nodes recorded in a membership registry.",
           "whyItMatters": "It defines ownership, how a node loss is survived, and how rebalancing moves only a fraction of series.",
           "group": "Scaling by Sharding"
+        },
+        {
+          "term": "Sharding by series",
+          "description": "Partition series across nodes by a hash of the series id/labels.",
+          "whyItMatters": "When ingest/query volume outgrows one node.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "options": [
@@ -2698,7 +2736,14 @@
           "ShardA",
           "ShardB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Horizontal scaling vs. cross-shard fan-out",
+          "description": "Hash-sharding series across nodes scales ingest and active-series count linearly while keeping each series' data together on one shard, but queries spanning shards must fan out and merge, and hot series or shards need rebalancing. A single vertically-scaled node has no routing or fan-out at all, but hits a hard ceiling and is a single point of failure.",
+          "chosen": "The design hash-shards by series with replicas for availability, accepting fan-out and merge on wide queries as the cost of unbounded horizontal growth."
+        }
+      ]
     }
   ],
   "finalDesign": {

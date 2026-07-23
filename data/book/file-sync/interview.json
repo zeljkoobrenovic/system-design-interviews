@@ -716,71 +716,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Content-addressed chunking",
-      "what": "Split files into fixed/variable chunks and key each by the hash of its content.",
-      "whenToUse": "Storage where identical content recurs and partial transfer matters.",
-      "steps": [
-        "chunking"
-      ],
-      "group": "Split Files into Content-Addressed Chunks"
-    },
-    {
-      "name": "Deduplication",
-      "what": "Store each unique chunk once; reference it by hash from many files.",
-      "whenToUse": "When the same bytes appear across files, versions, and users.",
-      "steps": [
-        "dedup"
-      ],
-      "group": "Deduplicate: Store Each Chunk Once"
-    },
-    {
-      "name": "Metadata/data split",
-      "what": "Keep the file tree and chunk manifests in a transactional store; keep bytes in cheap object storage.",
-      "whenToUse": "Large-blob systems needing both rich metadata and cheap durable bytes.",
-      "steps": [
-        "meta-split"
-      ],
-      "group": "Split Metadata from Block Storage"
-    },
-    {
-      "name": "Delta sync",
-      "what": "Transfer only changed chunks by comparing hashes before upload/download.",
-      "whenToUse": "Bandwidth-constrained sync of large files with small edits.",
-      "steps": [
-        "sync"
-      ],
-      "group": "Delta Sync Across Devices"
-    },
-    {
-      "name": "Shared namespaces + ACLs",
-      "what": "Model a shared folder as its own namespace mounted into each member's tree, authorized by a membership/role table.",
-      "whenToUse": "Multi-user access to the same files with per-member read/write permissions and revocation.",
-      "steps": [
-        "sharing"
-      ],
-      "group": "Shared Namespaces and ACLs"
-    },
-    {
-      "name": "Change notification (long-poll/push)",
-      "what": "Tell other devices a namespace changed so they pull the delta.",
-      "whenToUse": "Near-real-time multi-device sync without constant polling.",
-      "steps": [
-        "notify"
-      ],
-      "group": "Change Notification and Conflict Handling"
-    },
-    {
-      "name": "Reference-counted GC",
-      "what": "Track chunk refcounts and reclaim chunks no version references.",
-      "whenToUse": "Dedup stores where deletes must eventually free space safely.",
-      "steps": [
-        "gc"
-      ],
-      "group": "Garbage Collection and Durability"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -831,7 +766,14 @@
           "instead": "Split files into content-addressed chunks; transfer and store only the chunks that changed, and resume per chunk."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. transfer and storage waste",
+          "description": "Uploading and storing whole files is trivially correct, but a one-byte edit to a 500 MB file re-uploads all 500 MB, ten users sharing a file store it ten times, and a drop at 90% restarts from zero because there are no independent pieces to resume from. At about 200k edits/sec against 100 MB files, that's on the order of 20 TB/sec of avoidable transfer.",
+          "chosen": "The design treats whole-file transfer as the baseline to break apart, since bandwidth, storage, and resumability all demand independent pieces."
+        }
+      ]
     },
     {
       "id": "chunking",
@@ -944,6 +886,14 @@
           "whyItMatters": "Identical content has the same id everywhere, which is what makes dedup and delta sync possible.",
           "example": "chunk hash = SHA-256(bytes); same bytes -> same hash -> stored once.",
           "group": "Split Files into Content-Addressed Chunks"
+        },
+        {
+          "term": "Content-addressed chunking",
+          "description": "Split files into fixed/variable chunks and key each by the hash of its content.",
+          "whyItMatters": "Storage where identical content recurs and partial transfer matters.",
+          "steps": [
+            "chunking"
+          ]
         }
       ],
       "probeLinks": [
@@ -951,9 +901,6 @@
         "lbfs-paper",
         "restic-cdc",
         "syncthing-bep"
-      ],
-      "patterns": [
-        "Content-addressed chunking"
       ],
       "whyNow": [
         "Chunking is the foundational decision; dedup, delta sync, and resumability all derive from it."
@@ -968,6 +915,18 @@
           "trap": "Fixed-size chunking with no rolling hash.",
           "why": "Inserting one byte at the front shifts all boundaries, so every chunk hash changes and dedup collapses.",
           "instead": "Use content-defined chunking (rolling hash) so boundaries are stable under edits."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Boundary stability vs. client CPU",
+          "description": "Fixed-size chunking is cheap on the client — split every N bytes and hash — but inserting one byte at the front shifts every boundary, so all chunk hashes change and dedup collapses into re-uploading the whole file. Content-defined boundaries from a rolling hash survive insertions so only the edited region re-chunks, at the cost of more client CPU and variable chunk sizes.",
+          "chosen": "The design picks content-defined chunking because stable boundaries are what make dedup and delta sync actually save bandwidth, and pays the rolling-hash cost on the client."
+        },
+        {
+          "name": "Adaptive boundaries vs. predictable overhead",
+          "description": "Purely content-driven boundaries can degenerate on pathological content into very tiny chunks (exploding per-chunk overhead and chunk-index cardinality) or very large ones (defeating delta transfer). Bounding sizes (min ~1 MB, target ~4 MB, max ~8 MB) keeps overhead predictable but occasionally forces a cut at a non-content boundary, slightly reducing reuse.",
+          "chosen": "The design bounds chunk sizes around a ~4 MB target so overhead and index size stay predictable even on adversarial content."
         }
       ]
     },
@@ -1001,9 +960,6 @@
         ]
       },
       "decisionPrompt": "How much bandwidth does saving a 1 GB video with a 1-second trim re-cost?",
-      "patterns": [
-        "Deduplication"
-      ],
       "probeLinks": [
         "dropbox-magic-pocket",
         "restic-cdc",
@@ -1082,7 +1038,24 @@
         "after": "Only novel chunks transfer and store.",
         "newRisk": "Need a place for the file tree, versions, and chunk manifests — separate from the bytes."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-dedup.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-dedup.jpg",
+      "concepts": [
+        {
+          "term": "Deduplication",
+          "description": "Store each unique chunk once; reference it by hash from many files.",
+          "whyItMatters": "When the same bytes appear across files, versions, and users.",
+          "steps": [
+            "dedup"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Storage savings vs. existence leakage",
+          "description": "Global cross-user dedup stores each shared PDF exactly once, maximizing savings — but the check-before-upload response reveals whether a hash already exists anywhere, leaking that someone else holds that exact content. Scoping dedup per user or namespace, or salting hashes, closes the side channel but forfeits cross-user savings.",
+          "chosen": "The design dedups globally by default for the storage win, but scopes or salts dedup for sensitive data so the existence answer stops leaking across trust boundaries."
+        }
+      ]
     },
     {
       "id": "meta-split",
@@ -1142,9 +1115,6 @@
         "fdb-record-layer",
         "spanner-paper"
       ],
-      "patterns": [
-        "Metadata/data split"
-      ],
       "whyNow": [
         "The metadata/data split is the architectural backbone; ordering chunk-upload before metadata-commit is the correctness nuance."
       ],
@@ -1165,7 +1135,19 @@
           "instead": "Carry a client-generated commitId; a repeat of the same commitId returns the already-written version instead of re-committing."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-meta-split.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-meta-split.jpg",
+      "tradeoffs": [
+        {
+          "name": "Transactional richness vs. cheap bulk storage",
+          "description": "Storing file bytes in the metadata database would give one transactional system, but the huge, opaque byte volume would bloat and slow the rich, queryable part. Splitting planes keeps the namespace tree, versions, and chunk manifests small and transactional while bytes live cheaply and durably in object storage — at the cost of two systems whose references must stay consistent.",
+          "chosen": "The design splits metadata from blocks so the queryable part stays small and the huge part stays cheap, and manages consistency through commit ordering."
+        },
+        {
+          "name": "Orphan chunks vs. dangling pointers",
+          "description": "Committing metadata before chunks finish uploading risks a version that points at bytes that never arrived — a dangling pointer a reader can hit. Uploading chunks first and committing metadata last means a mid-upload crash leaves only orphan chunks, which are invisible to readers and reclaimable by GC, at the cost of temporarily wasted storage and an idempotent-commit protocol for retries.",
+          "chosen": "The design commits metadata last with idempotent commitIds, choosing harmless GC-able orphans over reader-visible dangling references."
+        }
+      ]
     },
     {
       "id": "sync",
@@ -1208,9 +1190,6 @@
           "expectedBehavior": "The server can't replay a truncated log, so it returns reset=true and the device resyncs from a metadata snapshot plus the tail delta — correct state, bounded cost.",
           "mitigation": "Detect cursor < retained min seq; serve a snapshot + delta instead of replaying; retain ~30 days and compact older entries."
         }
-      ],
-      "patterns": [
-        "Delta sync"
       ],
       "probeLinks": [
         "dropbox-sync-engine",
@@ -1306,7 +1285,24 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/05-sync.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-sync.jpg",
+      "concepts": [
+        {
+          "term": "Delta sync",
+          "description": "Transfer only changed chunks by comparing hashes before upload/download.",
+          "whyItMatters": "Bandwidth-constrained sync of large files with small edits.",
+          "steps": [
+            "sync"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Cheap deltas vs. unbounded log retention",
+          "description": "Cursor-based delta sync means a device downloads only the changed metadata and missing chunks since its last sequence — a 4 MB change to a 500 MB file costs about 4 MB. But keeping the change log forever to serve any cursor is unaffordable, so retention is bounded and a long-offline device's cursor can fall off the log.",
+          "chosen": "The design bounds change-log retention and signals a reset to long-offline devices, which fall back to a metadata snapshot plus delta instead of replaying a truncated log."
+        }
+      ]
     },
     {
       "id": "sharing",
@@ -1359,10 +1355,15 @@
           "whyItMatters": "Decouples who-can-access from any one user's path, so a single change cursor and one set of chunks serve all members.",
           "example": "A 'Team Photos' namespace with 50 members; each member mounts it at their own path but shares one cursor and chunk set.",
           "group": "Shared Namespaces and ACLs"
+        },
+        {
+          "term": "Shared namespaces + ACLs",
+          "description": "Model a shared folder as its own namespace mounted into each member's tree, authorized by a membership/role table.",
+          "whyItMatters": "Multi-user access to the same files with per-member read/write permissions and revocation.",
+          "steps": [
+            "sharing"
+          ]
         }
-      ],
-      "patterns": [
-        "Shared namespaces + ACLs"
       ],
       "probeLinks": [
         "dropbox-sharing-guide",
@@ -1457,7 +1458,19 @@
           "instead": "Scope or salt dedup for sensitive content, or fall back to per-namespace dedup so existence isn't a side channel."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-sharing.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-sharing.jpg",
+      "tradeoffs": [
+        {
+          "name": "Folder-granular namespaces vs. sharing flexibility",
+          "description": "Modeling a shared folder as its own namespace with a membership table keeps authorization, change logs, and mounting clean — each member mounts it at their chosen path and one ACL check covers everything inside. The price is granularity: single-file links or per-file permissions inside a shared folder don't fit this unit and would need a separate mechanism.",
+          "chosen": "The design deliberately scopes sharing to folder-level namespace membership, trading fine-grained per-file ACLs for a simple, enforceable commit contract."
+        },
+        {
+          "name": "Strict authorization vs. preserving in-flight work",
+          "description": "Checking the caller's role at every commit makes ACL state part of the commit contract, so a downgraded viewer's write is rejected even if their client is stale — but a user downgraded mid-edit can have real work refused at commit time. Being lenient with in-flight edits would avoid that loss but would let revoked users keep writing.",
+          "chosen": "The design enforces the membership check at commit time, keeping authorization authoritative at the server and relying on the client to preserve the rejected edit locally."
+        }
+      ]
     },
     {
       "id": "notify",
@@ -1626,6 +1639,14 @@
           "whyItMatters": "Detects concurrent edits without locking the file.",
           "example": "Commit baseVersion=7 fails if the file is now at version 8 -> conflict.",
           "group": "Change Notification and Conflict Handling"
+        },
+        {
+          "term": "Change notification (long-poll/push)",
+          "description": "Tell other devices a namespace changed so they pull the delta.",
+          "whyItMatters": "Near-real-time multi-device sync without constant polling.",
+          "steps": [
+            "notify"
+          ]
         }
       ],
       "probeLinks": [
@@ -1634,9 +1655,6 @@
         "microsoft-graph-delta",
         "kafka-design",
         "seafile-conflicts"
-      ],
-      "patterns": [
-        "Change notification (long-poll/push)"
       ],
       "whyNow": [
         "Notification turns 'eventually correct' into 'syncs in seconds'; the conflict policy is the data-safety nuance senior interviewers probe."
@@ -1710,6 +1728,18 @@
           "trap": "Last-writer-wins overwrite on conflict.",
           "why": "Silently destroys one user's edits.",
           "instead": "Keep both via a conflicted copy and let the user reconcile."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Push hints vs. authoritative pull",
+          "description": "Making pushes authoritative would deliver changes fastest, but every missed push over a flaky mobile connection would silently desynchronize a device. Making the durable change log the source of truth and the push a best-effort, data-free 'namespace changed' hint means a missed push only delays convergence until the next cursor pull — at the cost of a pull round-trip after every wake-up.",
+          "chosen": "The design keeps the change log authoritative and uses pushes purely as wake-up hints, so correctness never depends on delivery of a notification."
+        },
+        {
+          "name": "Preserving both edits vs. automatic convergence",
+          "description": "Last-writer-wins converges devices with zero user effort but silently destroys the losing device's offline edits — unacceptable for a file product — while OT/CRDT auto-merge gives seamless convergence only for structured content and cannot merge opaque binaries like video or zip. A conflicted copy never loses a write and is detected by a cheap optimistic baseVersion check, but dumps the manual merge on the user.",
+          "chosen": "The design keeps both versions as a conflicted copy, accepting duplicate-file annoyance because a general blob store must never silently lose a write."
         }
       ]
     },
@@ -1884,9 +1914,6 @@
         "dynamo-paper",
         "sre-monitoring"
       ],
-      "patterns": [
-        "Reference-counted GC"
-      ],
       "whyNow": [
         "Closing on GC + durability shows the dedup design is complete: space is actually reclaimed, and data is safe."
       ],
@@ -1975,6 +2002,18 @@
           "highlight": [
             "ChunkIdx"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Instant reclamation vs. deletion safety",
+          "description": "Deleting a chunk synchronously the moment its refcount hits zero reclaims space immediately, but it races a just-started upload whose check-before-upload said the chunk exists — the commit would then reference deleted bytes — and it puts deletes on the hot commit path. A grace period before sweeping zero-ref chunks closes the race but lets freed bytes linger.",
+          "chosen": "The design sweeps zero-refcount chunks lazily after a grace period, off the hot path, trading delayed space reclamation for never deleting a chunk a live upload is about to reference."
+        },
+        {
+          "name": "Incremental refcounts vs. self-correcting sweeps",
+          "description": "Per-chunk refcounts make liveness an O(1) lookup and reclamation continuous, but counts drift when crashes interrupt updates, so they need auditing; pure mark-and-sweep recomputes truth from manifests each run and heals drift, but a full mark phase over trillions of chunks is prohibitively expensive as the only mechanism.",
+          "chosen": "The design leads with refcounts for cheap continuous GC and backstops them with periodic audits against metadata to correct drift."
         }
       ]
     }

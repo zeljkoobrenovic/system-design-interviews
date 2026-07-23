@@ -289,7 +289,14 @@
           "VisualIndex",
           "Reranker"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Retrieval breadth vs. ranking precision",
+          "description": "Splitting the stack into retrieval first and ranking second lets a cheap wide net pull candidates from title, description, and visual content, while an expensive model orders only the survivors — but relevance is then bounded by what retrieval surfaces, since ranking cannot recover a video that was never retrieved. Ranking everything with one rich model would remove that bound but is computationally impossible over the full corpus.",
+          "chosen": "The design commits to a two-phase retrieval-then-ranking stack, accepting that retrieval recall becomes the ceiling on end-to-end relevance."
+        }
+      ]
     },
     {
       "id": "text-and-video-data-preparation",
@@ -350,7 +357,14 @@
           "FrameSampler",
           "TrainingPairs"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Sampling economy vs. content fidelity",
+          "description": "Sampling videos into frames or clips makes them tractable for encoders and indexes, but sparse sampling can miss the moments that actually match a query, while denser sampling multiplies storage and compute. Similarly, interaction-derived query-video labels are plentiful but noisy compared to curated judgments.",
+          "chosen": "The design samples frames and clips and labels with interaction pairs, trading some fidelity and label purity for a pipeline that scales to the corpus."
+        }
+      ]
     },
     {
       "id": "query-text-encoder",
@@ -517,6 +531,18 @@
               "TextVectorIndex"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Semantic recall vs. lexical precision",
+          "description": "Dense embeddings capture intent and paraphrase, hitting relevant videos that share no exact words with the query, but they are weak on exact titles, rare tokens, and specific IDs — precisely where BM25 over an inverted index excels. Lexical-only search is cheap and interpretable yet misses natural-language reformulations entirely.",
+          "chosen": "The design runs lexical and dense retrieval in parallel so paraphrase recall and exact-match precision both survive, rather than sacrificing one for the other."
+        },
+        {
+          "name": "One index vs. two to operate",
+          "description": "A single retrieval index — either lexical or dense — is cheaper to build, serve, and keep fresh, with one scoring scheme and no fusion step. The hybrid doubles the indexing and serving surface and forces candidate scores from incompatible scales to be normalized before they can be merged.",
+          "chosen": "The design accepts the cost of maintaining two retrieval indexes because neither alone covers the query spectrum a video search product sees."
         }
       ]
     },
@@ -690,6 +716,18 @@
               "TextIndexer"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Per-query compute vs. indexing lag",
+          "description": "Precomputing visual embeddings offline means requests never decode video and encoding cost is paid once per video, but a new upload is not visually searchable until its pipeline completes, and a model upgrade forces re-encoding the whole corpus. Encoding frames at query time would always reflect the latest content yet blows the search latency budget and wastes compute re-encoding the same videos per query.",
+          "chosen": "The design precomputes visual embeddings offline and indexes them for ANN retrieval, accepting freshness lag as the price of feasible query latency."
+        },
+        {
+          "name": "Multimodal recall vs. pipeline cost",
+          "description": "Indexing only titles, descriptions, and tags is the simplest and cheapest pipeline — no frame sampling, visual encoder, or embedding storage — but it misses videos whose visual content matches while their text is sparse or misleading, and clickbait metadata goes unchecked. The visual pathway costs an entire offline processing fleet to close that gap.",
+          "chosen": "The design builds the visual embedding pipeline because multimodal recall — finding videos by what is in them, not just what they are labeled — defines the product."
         }
       ]
     },
@@ -893,6 +931,18 @@
               "FusionModel"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Score information vs. normalization fragility",
+          "description": "Weighted score fusion keeps each source's confidence magnitude and offers tunable, easy-to-reason-about weights, but scores from lexical, semantic, and visual indexes live on incompatible scales, and getting normalization right is fiddly and drifts over time. Reciprocal rank fusion sidesteps normalization entirely by using only rank positions, yet it throws away the confidence a strongly-matching source expresses.",
+          "chosen": "The design uses weighted score fusion with normalization, keeping score magnitude and simple tunable control over how much each source counts."
+        },
+        {
+          "name": "Transparent weights vs. learned combination",
+          "description": "Hand-tuned linear weights are debuggable and cheap but coarse — they cannot capture source interactions or adapt the blend to query type. A learned fusion model conditions the combination on the query and adapts via retraining, at the cost of training data, a pipeline, serving latency, and a new failure mode inside the retrieval path.",
+          "chosen": "The design keeps fusion as transparent tunable weights, deferring a learned combiner until the simple blend demonstrably plateaus."
         }
       ]
     },
@@ -1155,6 +1205,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Relevance ceiling vs. serving cost",
+          "description": "A deep cross-encoder that jointly attends over the query and each candidate offers the highest relevance ceiling, especially on hard queries, but per-candidate neural scoring needs accelerator serving and forces a tight cap on candidate count to meet latency. Gradient-boosted trees score the candidate set fast on CPU with solid accuracy on mixed tabular features.",
+          "chosen": "The design reranks with gradient-boosted trees over joined query, text, visual, freshness, and engagement features, fitting the latency budget with limited training data."
+        },
+        {
+          "name": "Learned ranking vs. hand-set heuristics",
+          "description": "A heuristic weighted-sum scorer needs no training pipeline and is fully transparent — a reasonable launch baseline — but it cannot capture interactions among signals and plateaus under constant manual tuning. A learned model requires labels, retraining as engagement priors drift, and a feature-join step at serving time, in exchange for materially better ordering.",
+          "chosen": "The design invests in a trained GBDT reranker rather than staying on heuristics, keeping feature importances as the debugging handle."
+        }
       ]
     },
     {
@@ -1217,7 +1279,14 @@
           "ABTest",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Offline proxies vs. behavioral truth",
+          "description": "NDCG, MRR, precision@K, and recall@K on judged query sets let candidate models be compared quickly and without user risk, but they only measure agreement with past labels. Watch time and completion rate reflect what users actually do, yet require live experiments that expose real traffic and take time to reach significance.",
+          "chosen": "The design gates launches on offline ranking metrics first and confirms with online watch-behavior metrics before rollout, using each where it is strong."
+        }
+      ]
     },
     {
       "id": "index-refresh-and-operations",
@@ -1284,7 +1353,14 @@
           "IndexVersions",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Searchability speed vs. rollout safety",
+          "description": "Pushing new and updated videos through indexing as fast as possible makes fresh content findable quickly, but activating an unvalidated index version risks corpus-wide quality or latency regressions. Validating each version before activation and keeping rollback ready slows the freshness path with checkpoints.",
+          "chosen": "The design versions its text and visual indexes and validates, monitors, and rolls back per version, accepting some activation delay so a bad index never silently ships."
+        }
+      ]
     }
   ],
   "satisfies": {

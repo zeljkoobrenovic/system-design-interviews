@@ -1094,36 +1094,6 @@
     ],
     "types": []
   },
-  "patterns": [
-    {
-      "name": "Cache-aside",
-      "what": "Read from cache first; on a miss, read the source of truth and backfill the cache.",
-      "whenToUse": "Read-heavy workloads with a hot subset of keys, where a slightly stale read is acceptable.",
-      "steps": [
-        "cache"
-      ],
-      "group": "Add a Cache for Hot URLs"
-    },
-    {
-      "name": "Sharding (horizontal partitioning)",
-      "what": "Split data across nodes by a partition key so no single node holds the whole dataset.",
-      "whenToUse": "When data or write volume exceeds what one node can hold or serve.",
-      "steps": [
-        "sharded-mapping-store"
-      ],
-      "group": "Shard the Mapping Store"
-    },
-    {
-      "name": "Edge caching (CDN)",
-      "what": "Serve cacheable responses from points of presence close to users.",
-      "whenToUse": "Geographically distributed read traffic for cacheable content.",
-      "steps": [
-        "cdn-and-analytics",
-        "multi-region"
-      ],
-      "group": "CDN, Analytics, and Async Pipeline"
-    }
-  ],
   "technologyChoices": [
     {
       "concern": "Public API, traffic entry, and abuse throttling",
@@ -3622,7 +3592,14 @@
           "Client",
           "Server"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Speed of iteration vs. durability",
+          "description": "A process-local in-memory map is the fastest way to nail down the create/redirect API semantics with no database concepts in the way, but every mapping vanishes on restart and a second server can never run safely. An embedded on-disk store survives a restart, but still ties state to one machine and only defers the real database migration.",
+          "chosen": "The design starts with the in-memory map to clarify product behavior and API shape first, explicitly deferring durability to the next step."
+        }
+      ]
     },
     {
       "id": "add-database",
@@ -3927,7 +3904,14 @@
         "highlight": [
           "DB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Relational guarantees vs. built-in scale",
+          "description": "A SQL database gives transactions and a UNIQUE constraint that makes custom-alias collisions clean and correct, but its single primary becomes a write bottleneck and manual sharding looms at large cardinality. A managed key-value store has partitioning and horizontal scale built in and matches the by-key redirect workload, but owner dashboards need extra indexes and alias transactions are less ergonomic.",
+          "chosen": "The design picks a SQL database for the first durable version because operational familiarity and a clean alias-collision story matter more now than scale it does not yet need."
+        }
+      ]
     },
     {
       "id": "load-balancer",
@@ -4252,16 +4236,19 @@
           "S2",
           "S3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Failover control vs. simplicity",
+          "description": "DNS round-robin is cheap and removes a dedicated component from the request path, but DNS caching makes client-side failover slow and there are no request-level health checks or safe deployment hooks. A managed load balancer adds a dependency but gives built-in health checks, TLS termination, and fast removal of dead servers.",
+          "chosen": "The design fronts the stateless app pool with a managed HA load balancer, paying for one more managed dependency to get health-checked failover and safe autoscaling."
+        }
+      ]
     },
     {
       "id": "cache",
       "title": "4. Add a Cache for Hot URLs",
       "description": "Redirects vastly outnumber creations, and a small fraction of URLs receive most of the traffic. Add an in-memory cache in front of the database. On a redirect, check the cache first; on a miss, fall back to the database and populate the cache.",
-      "patterns": [
-        "Cache-aside",
-        "TTL expiry"
-      ],
       "probeLinks": [
         "redis-cache",
         "cloudflare-cache"
@@ -4296,6 +4283,9 @@
           "definition": "A time-to-live after which a cached value expires automatically.",
           "whyItMatters": "TTL limits stale redirects and bounds cache memory without requiring perfect invalidation.",
           "group": "Add a Cache for Hot URLs"
+        },
+        {
+          "term": "TTL expiry"
         }
       ],
       "options": [
@@ -4591,6 +4581,18 @@
               }
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Feature richness vs. operational simplicity",
+          "description": "Redis brings data structures useful beyond caching (sorted sets and hashes for counters and rate limiting) plus replication and Cluster sharding, at slightly higher operational complexity and a single-threaded event loop per shard. Memcached is a simpler, multithreaded pure cache with predictable LRU behavior but nothing beyond get/set.",
+          "chosen": "The design picks Redis because the same tier can serve hot-URL lookups and the counters and rate-limiting the system will need anyway."
+        },
+        {
+          "name": "Warm restarts vs. pure-cache semantics",
+          "description": "Memcached's lack of persistence means a restart wipes the cache and exposes the database to a thundering herd of misses; Redis's optional AOF/RDB persistence avoids cold starts but blurs the line between cache and store and adds write overhead.",
+          "chosen": "The design leans on Redis's optional persistence so a cache restart does not translate into a database load spike on the redirect hot path."
         }
       ]
     },
@@ -4920,7 +4922,19 @@
         "highlight": [
           "IDGen"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Central coordination vs. local minting",
+          "description": "Snowflake-style IDs let every app server mint codes independently with no central counter, but require careful clock-rollback handling and machine-id assignment, and encode to longer codes. Range allocation keeps a central allocator but only on the rare block-claim path, so servers mint compact base62 codes locally between claims.",
+          "chosen": "The design uses range allocation: servers claim ID blocks and mint locally, keeping codes compact while pushing the coordination dependency off the per-request hot path."
+        },
+        {
+          "name": "Compactness vs. predictability",
+          "description": "Monotonic integers from a range allocator encode to the shortest possible base62 codes, but sequential codes are enumerable — anyone can walk the ID space and discover links. Randomized or scrambled codes resist enumeration at the cost of length or an extra transformation.",
+          "chosen": "The design accepts predictable monotonic codes for compactness, noting that scrambling can be layered on if enumeration becomes a real concern."
+        }
+      ]
     },
     {
       "id": "sharded-mapping-store",
@@ -4939,6 +4953,14 @@
           "definition": "The value used to choose which shard owns a record.",
           "whyItMatters": "For redirects, short_code is the natural key because every lookup starts with it.",
           "group": "Shard the Mapping Store"
+        },
+        {
+          "term": "Sharding (horizontal partitioning)",
+          "description": "Split data across nodes by a partition key so no single node holds the whole dataset.",
+          "whyItMatters": "When data or write volume exceeds what one node can hold or serve.",
+          "steps": [
+            "sharded-mapping-store"
+          ]
         }
       ],
       "probeLinks": [
@@ -5299,7 +5321,19 @@
           "DB2",
           "DB3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Operational burden vs. managed cost",
+          "description": "Hash-sharding the existing SQL design preserves in-shard constraints and transactional alias creation, and can be split gradually from what already runs, but resharding, backups, schema changes, and failover across many shards are operationally heavy. A managed partitioned KV store takes on sharding, replication, and elastic throughput, but at 100k+ reads/sec and 75 TB retention its cost is significant and relational owner queries need separate indexes.",
+          "chosen": "The design hash-shards SQL by short_code, keeping the transactional alias story and evolving the existing store rather than rewriting onto a managed KV at a steep price."
+        },
+        {
+          "name": "Lookup locality vs. query flexibility",
+          "description": "Sharding by short_code hash routes every redirect and create to exactly one shard — optimal for the dominant lookup workload — but scatters any one owner's links across all shards, so dashboards and admin queries need a separate owner index or fan-out.",
+          "chosen": "The design optimizes the shard key for the redirect lookup first and pays for owner dashboards with a dedicated owner index."
+        }
+      ]
     },
     {
       "id": "cdn-and-analytics",
@@ -5335,6 +5369,15 @@
           "definition": "Serve frequently requested redirect data from infrastructure close to users.",
           "whyItMatters": "It reduces origin load and improves latency for popular links.",
           "group": "CDN, Analytics, and Async Pipeline"
+        },
+        {
+          "term": "Edge caching (CDN)",
+          "description": "Serve cacheable responses from points of presence close to users.",
+          "whyItMatters": "Geographically distributed read traffic for cacheable content.",
+          "steps": [
+            "cdn-and-analytics",
+            "multi-region"
+          ]
         }
       ],
       "probeLinks": [
@@ -5764,7 +5807,19 @@
           "Queue",
           "Analytics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Cache aggressiveness vs. control",
+          "description": "Permanent 301 redirects let browsers and intermediaries cache so hard that repeat clicks never reach the edge or origin — cheapest possible, but click counts turn approximate and deletion or expiration becomes unenforceable once clients cache forever. Temporary 302s cost more repeat traffic but keep every click observable and every link revocable.",
+          "chosen": "The design serves 302s with CDN edge logging, trading extra repeat traffic for accurate-enough analytics and enforceable expiration and deletes."
+        },
+        {
+          "name": "Redirect latency vs. analytics completeness",
+          "description": "Recording a click synchronously before responding would guarantee no event is ever missed but puts analytics on the redirect hot path; funneling clicks through a queue keeps the 302 fast but makes counts eventually consistent and droppable during queue outages.",
+          "chosen": "The design keeps only the mapping lookup on the synchronous path and pushes click events through an async queue, accepting eventual and occasionally lossy analytics."
+        }
+      ]
     },
     {
       "id": "multi-region",
@@ -6183,7 +6238,19 @@
           "AppB",
           "Rep"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Write simplicity vs. create latency",
+          "description": "Active-passive gives one primary region ownership of all mapping writes — no cross-region conflict resolution and a simple correctness story for custom aliases — but far-region creates pay cross-region latency and a primary outage pauses link creation until failover. Active-active makes creates local everywhere, but needs region-scoped ID prefixes, a global alias reservation service, and handling for replication-lag misses.",
+          "chosen": "The design picks active-passive writes: creates are rarer and more latency-tolerant than redirects, so the simpler correctness model wins while read replicas keep redirects fast everywhere."
+        },
+        {
+          "name": "Read availability vs. write availability",
+          "description": "With read replicas in every region, redirects — the traffic that matters most — survive a primary-region outage untouched; the cost is that writes are pinned to one region and pause until a standby is deliberately promoted.",
+          "chosen": "The design accepts a paused create path during failover as the price for redirects that stay available and low-latency through a regional outage."
+        }
+      ]
     }
   ],
   "finalDesign": {

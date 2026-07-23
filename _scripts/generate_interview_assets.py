@@ -14,8 +14,8 @@ Usage:
 The script reads one ``interview.json`` file and creates assets next to it:
 
   - ``icon.png`` — square overview icon for the interview
-  - ``assets/icons/patterns/<slug>.png`` — icons for ``patterns[]`` and
-    ``patternCatalog[]`` entries
+  - ``assets/icons/patterns/<slug>.png`` — icons for ``patternCatalog[]``
+    entries
   - ``assets/icons/concepts/<slug>.png`` — icons for step ``concepts[]``
   - ``assets/images/final-design.png`` — image for final design, if present
 
@@ -225,7 +225,7 @@ def collect_assets(
         ),
     )
 
-    for collection_name in ("patterns", "patternCatalog"):
+    for collection_name in ("patternCatalog",):
         for item in data.get(collection_name) or []:
             name = item_name(item, collection_name)
             slug = slugify(name, collection_name)
@@ -321,7 +321,7 @@ def update_asset_links(
         for key in ("requirements", "capacityEstimation", "apiDesign"):
             remove_field(data["assets"], key, "dataset assets")
 
-    for collection_name in ("patterns", "patternCatalog"):
+    for collection_name in ("patternCatalog",):
         for index, item in enumerate(data.get(collection_name) or []):
             if not isinstance(item, dict):
                 continue

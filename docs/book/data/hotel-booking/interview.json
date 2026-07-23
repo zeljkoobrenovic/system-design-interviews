@@ -1558,100 +1558,6 @@
       "makesIrrelevant": "Managed object storage with lifecycle policies removes most custom archival jobs for old booking histories, availability audit logs, and reconciliation evidence."
     }
   ],
-  "patterns": [
-    {
-      "name": "Date-range inventory",
-      "what": "Model availability per unit per night so a stay is a contiguous range of open nights.",
-      "whenToUse": "Reservations over date ranges (lodging, rentals).",
-      "steps": [
-        "inventory"
-      ],
-      "group": "Model Inventory as Date-Range Availability"
-    },
-    {
-      "name": "Approximate browse vs authoritative book",
-      "what": "Search from a fast (slightly stale) availability cache; verify exactly at booking time.",
-      "whenToUse": "Read-heavy discovery where the book step must be exact.",
-      "steps": [
-        "search"
-      ],
-      "group": "Search: Approximate Browse"
-    },
-    {
-      "name": "Hold (reservation lock)",
-      "what": "Temporarily mark the date range held during checkout so two guests can't both pay.",
-      "whenToUse": "Multi-step checkout on contended inventory.",
-      "steps": [
-        "hold"
-      ],
-      "group": "Hold-Then-Confirm Checkout"
-    },
-    {
-      "name": "Atomic range reservation",
-      "what": "Check-and-mark the whole date range in one atomic operation (committing only if affected rows = nights) to prevent double-booking.",
-      "whenToUse": "Concurrent bookings on the same unit.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Preventing Double-Booking"
-    },
-    {
-      "name": "TTL hold expiry (reaping)",
-      "what": "Auto-release holds whose checkout didn't complete, returning dates to inventory.",
-      "whenToUse": "Holds that must not lock inventory forever.",
-      "steps": [
-        "hold"
-      ],
-      "group": "Hold-Then-Confirm Checkout"
-    },
-    {
-      "name": "Idempotent confirm",
-      "what": "An idempotency key makes confirming a booking safe to retry without double-booking/charging.",
-      "whenToUse": "Money-moving confirm steps over unreliable networks.",
-      "steps": [
-        "confirm"
-      ],
-      "group": "Confirm, Idempotency, and Expiry"
-    },
-    {
-      "name": "Confirm saga / booking state machine",
-      "what": "Model confirm as recoverable states (confirming/confirmed/confirm_failed) keyed to stable references, since external payment capture can't join a local DB transaction.",
-      "whenToUse": "A confirm that crosses an external payment plus multiple stores.",
-      "steps": [
-        "confirm"
-      ],
-      "group": "Confirm, Idempotency, and Expiry"
-    },
-    {
-      "name": "Cancel & release",
-      "what": "Cancel a confirmed booking via confirmed -> cancelling -> cancelled, releasing the nights to open exactly once, invalidating caches, and refunding per policy — idempotently.",
-      "whenToUse": "Reservations that can be undone after confirmation.",
-      "steps": [
-        "confirm"
-      ],
-      "group": "Confirm, Idempotency, and Expiry"
-    },
-    {
-      "name": "Change stream + projector (derived stores)",
-      "what": "Stream truth-store changes (durably, via an outbox/CDC committed with the write) through a projector that idempotently updates derived browse stores (cache, search index), giving freshness a named owner.",
-      "whenToUse": "Approximate read views derived from an authoritative write store.",
-      "steps": [
-        "search",
-        "scale"
-      ],
-      "group": "Search: Approximate Browse"
-    },
-    {
-      "name": "Reconciliation worker (stuck-state recovery)",
-      "what": "A background worker scans bookings stuck in confirming/confirm_failed/cancelling and compares the local record against the payment provider's reference, finalizing, releasing, or reissuing to converge the state.",
-      "whenToUse": "Money-moving sagas where a crash can leave local and provider state disagreeing.",
-      "steps": [
-        "confirm",
-        "scale"
-      ],
-      "group": "Confirm, Idempotency, and Expiry"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1707,7 +1613,14 @@
           "instead": "Reserve the whole date range in one atomic conditional operation so exactly one booking wins."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Intuitive flow vs. concurrency correctness",
+          "description": "Check-then-write reads naturally and is trivial to build, but between the availability check and the booking write a second guest can pass the same check on the same unit and double-book overlapping dates — the classic read-then-write race. Correctness requires making the check and the reservation one operation, which is exactly the machinery the naive version omits.",
+          "chosen": "The design rejects the naive flow as the motivating failure, committing instead to an atomic reserve step and a separate scalable browse path."
+        }
+      ]
     },
     {
       "id": "inventory",
@@ -1865,9 +1778,6 @@
         "postgres-isolation",
         "elastic-range-query"
       ],
-      "patterns": [
-        "Date-range inventory"
-      ],
       "whyNow": [
         "The per-night inventory model is the foundation; search, holds, and double-book prevention all reason about date ranges over it."
       ],
@@ -1875,7 +1785,19 @@
         "before": "Check-then-write bookings on shared tables.",
         "after": "Per-night availability is the source of truth.",
         "newRisk": "Searching this directly across millions of properties on every browse is too slow."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Row explosion vs. exact overlap detection",
+          "description": "Per-night rows (one per unit and date, with open/held/booked state) make conflict detection exact — two stays conflict iff they share a night — and map cleanly onto atomic conditional range updates, but a long stay touches many rows and the table grows to units times calendar horizon (~365M rows). Interval records are compact (one row per booking) and match how a stay is conceived, but overlap queries need careful indexing and atomic reserve-this-range plus per-night state like held-vs-booked and per-date pricing become awkward.",
+          "chosen": "The design stores per-night availability rows, accepting bounded, shardable row growth to make the no-double-booking invariant a clean single state transition."
+        },
+        {
+          "name": "Binary precision vs. quantity generality",
+          "description": "The capacity-1 listing model gives a crisp binary invariant per (unit, date), but a hotel room type with N identical rooms needs available_count counters instead — which allow concurrent holds on the same type and defer physical room assignment, at the cost of hold-allocation bookkeeping and a fuzzier counter invariant in place of a clean open-held-booked transition.",
+          "chosen": "The design makes the Airbnb-style capacity-1 unit primary and layers hotel counters on as a deliberate extension, keeping the core invariant simple before generalizing."
+        }
+      ]
     },
     {
       "id": "search",
@@ -2039,6 +1961,23 @@
           "whyItMatters": "Keeps browse fast and cheap without risking double-booking (verified later).",
           "example": "Search shows ~available results; the hold step re-checks authoritatively.",
           "group": "Search: Approximate Browse"
+        },
+        {
+          "term": "Approximate browse vs authoritative book",
+          "description": "Search from a fast (slightly stale) availability cache; verify exactly at booking time.",
+          "whyItMatters": "Read-heavy discovery where the book step must be exact.",
+          "steps": [
+            "search"
+          ]
+        },
+        {
+          "term": "Change stream + projector (derived stores)",
+          "description": "Stream truth-store changes (durably, via an outbox/CDC committed with the write) through a projector that idempotently updates derived browse stores (cache, search index), giving freshness a named owner.",
+          "whyItMatters": "Approximate read views derived from an authoritative write store.",
+          "steps": [
+            "search",
+            "scale"
+          ]
         }
       ],
       "probeLinks": [
@@ -2052,9 +1991,6 @@
         "debezium-outbox",
         "bookingcom-slos"
       ],
-      "patterns": [
-        "Approximate browse vs authoritative book"
-      ],
       "whyNow": [
         "The browse-vs-book consistency split is the central design insight; it lets search scale while booking stays correct."
       ],
@@ -2062,7 +1998,14 @@
         "before": "Search hits the truth store.",
         "after": "Fast approximate search; truth reserved for booking.",
         "newRisk": "Two guests can both reach checkout for the same unit — booking must not double-sell."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. read scalability",
+          "description": "Querying the authoritative availability store on every browse gives exact results but hammers the booking-critical store with read-heavy traffic and runs slow geo plus multi-attribute filters on a transactional database. A search index plus availability read cache is fast and scales independently, but results are approximate — a unit shown free may be booked a second later — and a change-stream-plus-projector pipeline must keep the derived stores fresh.",
+          "chosen": "The design serves browse from a search index and read cache fed by booking change events, accepting approximate availability because exactness is enforced at the booking step anyway."
+        }
+      ]
     },
     {
       "id": "hold",
@@ -2244,6 +2187,14 @@
           "whyItMatters": "Protects the inventory across a multi-step, human-paced checkout.",
           "example": "Mark Jun 1-4 held for 10 min; confirm -> booked; expire -> open.",
           "group": "Hold-Then-Confirm Checkout"
+        },
+        {
+          "term": "TTL hold expiry (reaping)",
+          "description": "Auto-release holds whose checkout didn't complete, returning dates to inventory.",
+          "whyItMatters": "Holds that must not lock inventory forever.",
+          "steps": [
+            "hold"
+          ]
         }
       ],
       "probeLinks": [
@@ -2254,10 +2205,6 @@
         "dynamodb-condition",
         "stripe-idempotency",
         "airbnb-payments-idempotency"
-      ],
-      "patterns": [
-        "Hold (reservation lock)",
-        "TTL hold expiry (reaping)"
       ],
       "whyNow": [
         "The hold is how a multi-step checkout coexists with contended inventory; it's the booking-flow backbone."
@@ -2272,6 +2219,18 @@
           "trap": "Holding inventory indefinitely (no TTL).",
           "why": "Abandoned checkouts lock rooms forever, starving real bookings.",
           "instead": "Short TTL holds reaped on expiry."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Inventory liquidity vs. checkout certainty",
+          "description": "An explicit TTL hold guarantees the guest keeps the room through the payment screen and abandoned checkouts self-heal via expiry, but held-but-never-confirmed nights are briefly unsellable and the TTL is a knob with no perfect setting — too short rushes guests, too long starves real demand. Reserving only at confirm never ties up inventory for browsers, but a guest can pay and then lose the room mid-checkout, wasting authorizations on popular units exactly when contention peaks.",
+          "chosen": "The design holds the date range with a short TTL and authorizes payment at hold time, trading a few minutes of locked inventory for a checkout that cannot be yanked away."
+        },
+        {
+          "name": "Application state vs. database locks",
+          "description": "Modeling the hold as an explicit held state gives a clear open-held-booked lifecycle the whole system can reason about, but needs a hold store and a reaper. A pessimistic DB lock across the payment window needs no new state, but ties up a database resource for minutes of human think-time and a crashed client strands the lock — the same expiry problem with a worse blast radius.",
+          "chosen": "The design models the hold as data with a TTL rather than a long-held lock, because minutes-long locks on hot units cascade under contention."
         }
       ]
     },
@@ -2437,9 +2396,6 @@
         "dynamodb-transactions",
         "spanner-paper"
       ],
-      "patterns": [
-        "Atomic range reservation"
-      ],
       "whyNow": [
         "Double-book prevention is the non-negotiable correctness property; atomic check-and-mark is the precise mechanism and the senior signal."
       ],
@@ -2529,6 +2485,18 @@
             "AvailDB"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Optimistic vs. pessimistic concurrency",
+          "description": "An atomic conditional update with a version column lets the first request win the range without holding locks — the loser just gets a conflict and retries — but the transaction must verify affected rows equal the number of nights or a partially-taken range silently half-reserves. SELECT FOR UPDATE is deterministic and familiar with no retry loop, but locks queue under load on hot units, risk deadlocks when ranges lock in different orders, and extend poorly to sharded stores.",
+          "chosen": "The design uses an atomic conditional update with optimistic concurrency, keeping the hot path lock-free and letting per-unit sharding serialize writes naturally."
+        },
+        {
+          "name": "In-store atomicity vs. external coordination",
+          "description": "Enforcing exclusivity inside the availability store keeps the check and the write in one transactional primitive. A separate distributed lock service works even when the store lacks that primitive and coordinates across booking services, but it adds a critical HA dependency, and lock-then-write is not atomic with the DB write — lease expiry without fencing can still let a double-book through.",
+          "chosen": "The design enforces the invariant in the store's own conditional update, avoiding a lock service whose failure modes reintroduce the exact race it was meant to prevent."
+        }
       ]
     },
     {
@@ -2580,6 +2548,39 @@
           "whyItMatters": "Abandoned holds never permanently lock inventory, and the still-held guard avoids racing a confirm or a newer hold.",
           "example": "An unpaid hold passes its TTL; the reaper sets its nights open only if they're still held by that hold.",
           "group": "Confirm, Idempotency, and Expiry"
+        },
+        {
+          "term": "Idempotent confirm",
+          "description": "An idempotency key makes confirming a booking safe to retry without double-booking/charging.",
+          "whyItMatters": "Money-moving confirm steps over unreliable networks.",
+          "steps": [
+            "confirm"
+          ]
+        },
+        {
+          "term": "Confirm saga / booking state machine",
+          "description": "Model confirm as recoverable states (confirming/confirmed/confirm_failed) keyed to stable references, since external payment capture can't join a local DB transaction.",
+          "whyItMatters": "A confirm that crosses an external payment plus multiple stores.",
+          "steps": [
+            "confirm"
+          ]
+        },
+        {
+          "term": "Cancel & release",
+          "description": "Cancel a confirmed booking via confirmed -> cancelling -> cancelled, releasing the nights to open exactly once, invalidating caches, and refunding per policy — idempotently.",
+          "whyItMatters": "Reservations that can be undone after confirmation.",
+          "steps": [
+            "confirm"
+          ]
+        },
+        {
+          "term": "Reconciliation worker (stuck-state recovery)",
+          "description": "A background worker scans bookings stuck in confirming/confirm_failed/cancelling and compares the local record against the payment provider's reference, finalizing, releasing, or reissuing to converge the state.",
+          "whyItMatters": "Money-moving sagas where a crash can leave local and provider state disagreeing.",
+          "steps": [
+            "confirm",
+            "scale"
+          ]
         }
       ],
       "probeLinks": [
@@ -2590,13 +2591,6 @@
         "expedia-itinerary-history",
         "dynamodb-ttl",
         "redis-expire"
-      ],
-      "patterns": [
-        "Idempotent confirm",
-        "Confirm saga / booking state machine",
-        "TTL hold expiry (reaping)",
-        "Cancel & release",
-        "Reconciliation worker (stuck-state recovery)"
       ],
       "whyNow": [
         "A retry-safe confirm state machine + reaping + a real cancel path complete the correctness story: no double-booking, no double-charge, no leaked inventory, and a clean release on cancellation."
@@ -2800,7 +2794,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-confirm.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-confirm.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single transaction vs. saga across systems",
+          "description": "Confirm spans an external payment capture and two stores, so it cannot be one atomic transaction; pretending it is leaves the recoverable edges — capture succeeded but the booking write failed, or the response was lost and the guest retried — as double-charges and phantom bookings. A retry-safe state machine keyed by hold_id, authorization id, and an idempotency key handles every edge, at the cost of explicit states and recovery paths.",
+          "chosen": "The design models confirm as a small saga with idempotent, retry-safe steps, confining atomicity to the local held-to-booked update and making retries recognize prior work instead of repeating it."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -2872,7 +2873,19 @@
           "mitigation": "Alert on bookings stuck in 'confirming'/'cancelling', reaper backlog, and unmatched-payment-reference counts; a reconciliation worker compares stuck states against payment-provider references and the availability audit/history to converge them."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Correctness vs. throughput on hot units",
+          "description": "The atomic range reservation keeps a famous listing's peak weekend correct, but it serializes thousands of concurrent attempts on one unit's rows — a deliberate throughput ceiling that no amount of sharding removes, because contention is inherently per-unit. Admission control (a short waiting room in front of the hold endpoint) smooths the spike but adds queueing in front of checkout.",
+          "chosen": "The design accepts per-unit serialization as the price of correctness and smooths genuine hotspots with admission control rather than weakening the reservation."
+        },
+        {
+          "name": "Sizing browse vs. sizing booking",
+          "description": "Browse and booking differ by orders of magnitude (~50k search QPS vs ~500 hold/confirm QPS), so scaling them together wastes capacity on one side or starves the other. Sharding the authoritative stores by unit id while replicating the derived index and cache independently sizes each tier to its own load, at the cost of operating two differently-shaped tiers.",
+          "chosen": "The design scales the derived read tier separately from the unit-sharded booking core, letting each side grow with its own traffic."
+        }
+      ]
     }
   ],
   "finalDesign": {

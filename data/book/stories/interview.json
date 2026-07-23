@@ -842,91 +842,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "TTL-native storage",
-      "what": "Tag every story/media/tray entry with an expiry so the store auto-purges it (no manual delete).",
-      "whenToUse": "Content that is meant to disappear on a deadline.",
-      "steps": [
-        "ttl"
-      ],
-      "group": "Ephemeral by Design: TTL Everywhere"
-    },
-    {
-      "name": "Fanout-on-write to trays",
-      "what": "Push a new story id into each follower's tray at post time for cheap reads.",
-      "whenToUse": "Read-heavy ephemeral feeds with bounded fanout.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Fanout to Story Trays"
-    },
-    {
-      "name": "Hybrid fanout (celebrity pull)",
-      "what": "Pull stories of very-high-follower authors at read time instead of pushing.",
-      "whenToUse": "Heavy-tailed follower counts.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Fanout to Story Trays"
-    },
-    {
-      "name": "Audience policy with read-time revalidation",
-      "what": "Store each story's audience (followers/close-friends) and check eligibility at fanout time, then revalidate at read/view time against current relationship state so unfollow/block/close-friends changes during the live window suppress already-fanned-out entries.",
-      "whenToUse": "Time-limited content whose audience can change while it is still visible.",
-      "steps": [
-        "fanout",
-        "views"
-      ],
-      "group": "Fanout to Story Trays"
-    },
-    {
-      "name": "Per-viewer seen-state",
-      "what": "Track seen stories per viewer to order unseen-first and dim seen ones.",
-      "whenToUse": "Story UIs that distinguish new vs viewed.",
-      "steps": [
-        "seen"
-      ],
-      "group": "Per-Viewer Seen-State"
-    },
-    {
-      "name": "Lazy + TTL expiry",
-      "what": "Rely on store TTL for cleanup plus filter expired entries on read; a reaper backstops trays.",
-      "whenToUse": "Avoiding expensive scheduled deletion scans.",
-      "steps": [
-        "expiry"
-      ],
-      "group": "Reliable Expiry (Never Show a Stale Story)"
-    },
-    {
-      "name": "Async view counting",
-      "what": "Aggregate view events for the author's viewer list/counts off the hot path, deduped by (viewer, story).",
-      "whenToUse": "High-volume view tracking.",
-      "steps": [
-        "views"
-      ],
-      "group": "View Counts and Viewer Lists"
-    },
-    {
-      "name": "Bounded async fanout",
-      "what": "Buffer fanout jobs in a queue drained by autoscaled workers with idempotent tray writes and a lag budget.",
-      "whenToUse": "Bursty fanout with heavy-tailed follower counts.",
-      "steps": [
-        "fanout",
-        "scale"
-      ],
-      "group": "Scaling and Cleanup at Volume"
-    },
-    {
-      "name": "Rebuildable derived state",
-      "what": "Treat trays/seen-state/viewer-lists as caches rebuildable (rate-limited) from the authoritative self-expiring store.",
-      "whenToUse": "Derived read stores that can be reconstructed from a source of truth.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling and Cleanup at Volume"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -978,7 +893,14 @@
           "instead": "TTL-native storage that auto-purges, precomputed trays via fanout, and filter-on-read so no expired story is ever shown."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Reuse vs. purpose-built lifecycle",
+          "description": "Storing stories exactly like permanent posts and deleting them with a nightly reaper reuses everything an existing feed system already has, but a nightly scan over hundreds of millions of rows is brutally expensive, the store holds far more than a day of data between runs, and expired stories remain servable until the job fires. Ephemerality bolted on as cleanup is cheap to build and wrong in exactly the ways that matter.",
+          "chosen": "The baseline is kept only to expose the three failures — scan cost, storage bloat, and stale serving — that the TTL-native design then removes."
+        }
+      ]
     },
     {
       "id": "ttl",
@@ -1154,9 +1076,6 @@
         "haystack-paper",
         "tail-at-scale"
       ],
-      "patterns": [
-        "TTL-native storage"
-      ],
       "whyNow": [
         "TTL-native storage is the foundational decision for ephemeral content; it's what makes the whole 'disappears at scale' requirement tractable."
       ],
@@ -1164,7 +1083,19 @@
         "before": "Nothing.",
         "after": "Stories + media + entries all auto-expire.",
         "newRisk": "Followers need to see new stories fast — a read-heavy fanout problem like any feed."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Built-in purge vs. store flexibility",
+          "description": "Making every artifact carry expiresAt and live in a TTL-native store folds cleanup into the storage layer — no job enumerates hundreds of millions of expired stories a day, and cost scales automatically with volume. The constraint is that every store (record, media, tray) must natively support TTL and their expiries must stay aligned; a reaper sweep works on any store but pays the scan cost this design exists to avoid.",
+          "chosen": "The design makes expiry intrinsic via TTL-native stores, accepting a constrained storage choice so deletion is free at the storage layer instead of a scheduled liability."
+        },
+        {
+          "name": "Proactive cleanup vs. lazy reclamation",
+          "description": "Lazy delete-on-read spends zero background effort and reuses the read-time expiry check that is needed anyway, but cold stories nobody reads again are never reclaimed, so storage grows unbounded and the ~24h bounded-data advantage is lost. Proactive TTL purge reclaims everything on schedule regardless of read traffic.",
+          "chosen": "The design relies on proactive TTL auto-purge for reclamation, using read-time checks only as a correctness net rather than as the deletion mechanism."
+        }
+      ]
     },
     {
       "id": "fanout",
@@ -1334,6 +1265,31 @@
           "whyItMatters": "Cheap tray reads, and the tray self-cleans as entries expire.",
           "example": "Push to normal followers' trays; pull celebrities at read time.",
           "group": "Fanout to Story Trays"
+        },
+        {
+          "term": "Fanout-on-write to trays",
+          "description": "Push a new story id into each follower's tray at post time for cheap reads.",
+          "whyItMatters": "Read-heavy ephemeral feeds with bounded fanout.",
+          "steps": [
+            "fanout"
+          ]
+        },
+        {
+          "term": "Hybrid fanout (celebrity pull)",
+          "description": "Pull stories of very-high-follower authors at read time instead of pushing.",
+          "whyItMatters": "Heavy-tailed follower counts.",
+          "steps": [
+            "fanout"
+          ]
+        },
+        {
+          "term": "Audience policy with read-time revalidation",
+          "description": "Store each story's audience (followers/close-friends) and check eligibility at fanout time, then revalidate at read/view time against current relationship state so unfollow/block/close-friends changes during the live window suppress already-fanned-out entries.",
+          "whyItMatters": "Time-limited content whose audience can change while it is still visible.",
+          "steps": [
+            "fanout",
+            "views"
+          ]
         }
       ],
       "probeLinks": [
@@ -1341,12 +1297,6 @@
         "haystack-paper",
         "redis-cache",
         "sre-overload"
-      ],
-      "patterns": [
-        "Fanout-on-write to trays",
-        "Hybrid fanout (celebrity pull)",
-        "Audience policy with read-time revalidation",
-        "Bounded async fanout"
       ],
       "whyNow": [
         "Fanout is the read-scaling mechanism; reusing the push/pull hybrid with TTL'd entries connects it to feeds while staying ephemeral."
@@ -1431,6 +1381,18 @@
             "Fanout",
             "TrayCache"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write amplification vs. read cost",
+          "description": "Pure fanout-on-write makes every tray open a single cached lookup but turns a 50M-follower post into 50M tray writes, most of which may never be viewed within the 24h window. Pure fanout-on-read makes posting free but forces every tray open to query all followees exactly when read traffic peaks. The system is read-heavy, so read cost matters more — except at celebrity scale, where write cost explodes.",
+          "chosen": "The design pushes for normal authors and pulls celebrities at read time, paying write amplification only where it is affordable and read-time merging only for the few accounts where push is not."
+        },
+        {
+          "name": "One code path vs. two",
+          "description": "A single fanout mode is simpler to build and reason about; the hybrid needs a celebrity threshold to tune, two delivery paths to reconcile, and a read-time merge of pushed tray entries with pulled celebrity stories. In exchange the hybrid caps the worst case of each pure approach.",
+          "chosen": "The design accepts the two-path complexity because neither pure mode survives both the ordinary case and the celebrity case."
         }
       ]
     },
@@ -1580,15 +1542,20 @@
           "whyItMatters": "Enables unseen-first UX without an ever-growing viewer x story table.",
           "example": "seen[viewer] = {s_9, s_42}; expires as those stories do.",
           "group": "Per-Viewer Seen-State"
+        },
+        {
+          "term": "Per-viewer seen-state",
+          "description": "Track seen stories per viewer to order unseen-first and dim seen ones.",
+          "whyItMatters": "Story UIs that distinguish new vs viewed.",
+          "steps": [
+            "seen"
+          ]
         }
       ],
       "probeLinks": [
         "haystack-paper",
         "redis-cache",
         "tail-at-scale"
-      ],
-      "patterns": [
-        "Per-viewer seen-state"
       ],
       "whyNow": [
         "Seen-state is the story-specific UX requirement; recognizing it's bounded by the same TTL is the elegant insight."
@@ -1597,7 +1564,19 @@
         "before": "No new-vs-seen distinction.",
         "after": "Per-viewer seen-state (unseen-first), self-bounding via TTL.",
         "newRisk": "Even with TTLs, expired entries can linger in caches — reads must never show an expired story."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Reader-keyed vs. author-keyed state",
+          "description": "Keying seen-state by viewer makes the hot query — order my tray unseen-first — a fast membership check on one set, but the author-side question 'who saw my story' becomes a different access pattern. Keying by story makes the author's viewer list trivial but turns the reader's tray ordering into a scatter-read across many stories, and a celebrity story's viewer set balloons to millions of entries.",
+          "chosen": "The design keys seen-state by viewer because tray rendering is the high-frequency path, and serves author-side viewer lists from the separate view pipeline instead."
+        },
+        {
+          "name": "Exact granularity vs. tiny storage",
+          "description": "A per-viewer set of seen story ids records exactly which stories were viewed, at viewer x active-stories storage that the 24h TTL keeps bounded. A single high-water-mark timestamp per viewer/author pair is far smaller and cheaper to bump, but cannot represent seeing a newer story while an older one is unseen, and a late-arriving older story gets wrongly marked seen.",
+          "chosen": "The design stores exact seen-sets aligned to the story TTL, judging that TTL-bounded storage is a fair price for per-story correctness in the UI."
+        }
+      ]
     },
     {
       "id": "expiry",
@@ -1758,6 +1737,14 @@
           "whyItMatters": "Guarantees correctness (read filter) while keeping cleanup cheap (TTL).",
           "example": "Tray read skips entries past expiresAt even before TTL purge runs.",
           "group": "Reliable Expiry (Never Show a Stale Story)"
+        },
+        {
+          "term": "Lazy + TTL expiry",
+          "description": "Rely on store TTL for cleanup plus filter expired entries on read; a reaper backstops trays.",
+          "whyItMatters": "Avoiding expensive scheduled deletion scans.",
+          "steps": [
+            "expiry"
+          ]
         }
       ],
       "probeLinks": [
@@ -1766,9 +1753,6 @@
         "haystack-paper",
         "kafka-design",
         "s3-lifecycle"
-      ],
-      "patterns": [
-        "Lazy + TTL expiry"
       ],
       "whyNow": [
         "Reliable expiry is the correctness crux of ephemeral content; filter-on-read over TTL purge is the layered answer that never shows a stale story."
@@ -1854,6 +1838,18 @@
           "highlight": [
             "TraySvc"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Hard guarantee vs. free reads",
+          "description": "Relying on TTL purge alone gives the cheapest read path, but purge timing is approximate, so an expired story can be served for seconds — the precise defect the product cannot have. Filtering every tray read against the authoritative expiresAt costs a small per-entry check but makes 'never show an expired story' true regardless of purge lag.",
+          "chosen": "The design puts the correctness boundary at read time — filter on expiresAt, with signed media URLs capped to the same expiry — and lets TTL purge be mere background hygiene."
+        },
+        {
+          "name": "Prompt deletion vs. sweep cost",
+          "description": "An aggressive reaper as primary deleter minimizes how long expired data lingers and gives one auditable enforcement point, but frequent sweeps over hundreds of millions of stories reintroduce exactly the scan cost TTL-native storage eliminated — and a race window remains unless reads also filter. A lightweight straggler reaper on top of TTL purge keeps costs near zero.",
+          "chosen": "The design uses TTL purge plus read-time filtering and keeps only a lightweight reaper for stragglers, refusing to buy promptness with expensive full sweeps."
         }
       ]
     },
@@ -2027,10 +2023,6 @@
         }
       ],
       "decisionPrompt": "A celebrity's story gets 10M views. Do you write each view to the story row?",
-      "patterns": [
-        "Async view counting",
-        "Audience policy with read-time revalidation"
-      ],
       "probeLinks": [
         "kafka-design",
         "instagram-architecture",
@@ -2048,6 +2040,14 @@
           "whyItMatters": "Avoids hotspotting popular stories; the data self-bounds with the story.",
           "example": "View events -> aggregate -> viewer list (expires with the story).",
           "group": "View Counts and Viewer Lists"
+        },
+        {
+          "term": "Async view counting",
+          "description": "Aggregate view events for the author's viewer list/counts off the hot path, deduped by (viewer, story).",
+          "whyItMatters": "High-volume view tracking.",
+          "steps": [
+            "views"
+          ]
         }
       ],
       "recap": {
@@ -2123,6 +2123,18 @@
             "ViewAggregator",
             "ViewerStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Exact counts vs. hotspot avoidance",
+          "description": "Synchronously incrementing a counter on the story row keeps the count exact and instantly fresh, but a celebrity story under 10M views turns that single row into a write hotspot that throttles the whole popular-author path. Streaming view events to an async aggregator takes writes off the hot path and shares one pipeline with seen-state, at the cost of counts that lag by the aggregation window and a stream to operate.",
+          "chosen": "The design emits view events to a stream with (viewer_id, story_id) dedupe and aggregates asynchronously, trading real-time exactness for a path that survives celebrity virality."
+        },
+        {
+          "name": "Approximation vs. viewer lists",
+          "description": "A probabilistic sketch like HyperLogLog counts unique views in tiny fixed space no matter how viral a story goes, but yields only an estimate and no viewer list at all — and Stories promises authors an actual list of who viewed. Exact aggregation costs more storage and needs capping and pagination for huge audiences.",
+          "chosen": "The design aggregates exact deduped viewers because the viewer list is a product feature, using capping and pagination rather than approximation to control cost."
         }
       ]
     },
@@ -2295,10 +2307,6 @@
         "haystack-paper",
         "kafka-design"
       ],
-      "patterns": [
-        "Bounded async fanout",
-        "Rebuildable derived state"
-      ],
       "concepts": [
         {
           "term": "Bounded async fanout",
@@ -2371,6 +2379,18 @@
           "scenario": "A story is reported or policy-blocked and must disappear before its 24h TTL.",
           "expectedBehavior": "The story's status flips to taken_down: read paths treat it like an expired entry (the tray read service and view service drop it on read, so it vanishes from trays and can't be viewed), media URLs are revoked / CDN entries invalidated so the blob can't be fetched, and the viewer list stops growing. Cached tray responses age out within their short TTL or are invalidated. Physical media deletion still follows the same approximate-purge path as expiry — the user-facing guarantee is enforced at read time, not by instant erasure.",
           "mitigation": "Treat takedown as early expiry: set status=taken_down (an authoritative read-time gate alongside expiresAt), revoke signed URLs / invalidate CDN, and let TTL/lifecycle reclaim bytes. The safety scan in Step 2 blocks unsafe media before it ever goes live; takedown handles content reported after it does."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Availability vs. completeness",
+          "description": "When a tray-cache shard is lost, blocking reads until each tray fully rebuilds guarantees no one ever sees a partial tray, but it turns a cache outage into a user-visible read outage and triggers a synchronized rebuild stampede against the story store at peak load. Serving a best-effort partial tray keeps users browsing during recovery at the cost of a few stories missing until rebuilt.",
+          "chosen": "The design serves partial trays during a rate-limited, jittered rebuild, protecting the source-of-truth story store and keeping the product usable through cache loss."
+        },
+        {
+          "name": "Durability cost vs. rebuildability",
+          "description": "Making the tray cache a durable replicated store means node loss never loses tray state and no rebuild path exists, but it pays permanent replication cost for derived data that is cheap to recompute and expires within 24 hours anyway — and creates a second source of truth to keep consistent. Treating trays as rebuildable derived state keeps steady-state cost low but requires a disciplined recovery path.",
+          "chosen": "The design keeps trays as ephemeral derived state, betting that a well-throttled rebuild is cheaper than making a 24h-lived cache durable."
         }
       ]
     }

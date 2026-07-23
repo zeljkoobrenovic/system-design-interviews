@@ -1044,78 +1044,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Candidate generation (recall)",
-      "what": "Cheaply gather a few hundred plausible items from bounded sources before expensive ranking.",
-      "whenToUse": "Huge catalogs where scoring everything is infeasible.",
-      "steps": [
-        "candidates",
-        "ann-recall"
-      ],
-      "icon": "assets/icons/patterns/candidate-generation-recall.png",
-      "group": "Start with Simple Candidate Generation"
-    },
-    {
-      "name": "Embedding + ANN retrieval",
-      "what": "Represent users/items as vectors; retrieve nearest items via an ANN index.",
-      "whenToUse": "Semantic/behavioral similarity recall at scale.",
-      "steps": [
-        "ann-recall"
-      ],
-      "icon": "assets/icons/patterns/embedding-ann-retrieval.png",
-      "group": "Refine Recall with Embeddings and ANN"
-    },
-    {
-      "name": "Two-stage ranking",
-      "what": "Bounded recall first, then an expensive ML ranking pass over the small candidate set.",
-      "whenToUse": "Balancing relevance quality against serving latency.",
-      "steps": [
-        "ranking"
-      ],
-      "icon": "assets/icons/patterns/two-stage-ranking.png",
-      "group": "Ranking the Candidates"
-    },
-    {
-      "name": "Feature store (online/offline parity)",
-      "what": "Serve features online with the same definitions used to train offline.",
-      "whenToUse": "Avoiding train/serve skew in ML systems.",
-      "steps": [
-        "features"
-      ],
-      "icon": "assets/icons/patterns/feature-store-online-offline-parity.png",
-      "group": "Features and the Feature Store"
-    },
-    {
-      "name": "Feedback loop",
-      "what": "Log impressions and interactions, then refresh features, embeddings, and ranking models from them.",
-      "whenToUse": "Systems that should improve from user behavior.",
-      "steps": [
-        "feedback"
-      ],
-      "icon": "assets/icons/patterns/feedback-loop.png",
-      "group": "The Feedback Loop: Events, Training, Models"
-    },
-    {
-      "name": "Post-ranking filters (diversity/dedup)",
-      "what": "Apply business rules, dedup, freshness, and diversity after ranking.",
-      "whenToUse": "When raw model scores aren't the final list.",
-      "steps": [
-        "filters"
-      ],
-      "icon": "assets/icons/patterns/post-ranking-filters-diversity-dedup.png",
-      "group": "Post-Ranking Filters and Diversity"
-    },
-    {
-      "name": "Graceful degradation / fallback serving",
-      "what": "Keep a usable response under dependency failure by degrading per component — partial recall, feature/ranker fallbacks, and cached or popularity lists — instead of erroring.",
-      "whenToUse": "Latency-critical paths with many dependencies where some answer beats no answer.",
-      "steps": [
-        "serving"
-      ],
-      "group": "Serving: Latency, Cold Start, and Resilience"
-    }
-  ],
   "steps": [
     {
       "id": "candidates",
@@ -1169,6 +1097,16 @@
           "example": "New user on the home surface gets local trending and category-based items.",
           "icon": "assets/icons/concepts/cold-start-fallback.png",
           "group": "Start with Simple Candidate Generation"
+        },
+        {
+          "term": "Candidate generation (recall)",
+          "description": "Cheaply gather a few hundred plausible items from bounded sources before expensive ranking.",
+          "whyItMatters": "Huge catalogs where scoring everything is infeasible.",
+          "icon": "assets/icons/patterns/candidate-generation-recall.png",
+          "steps": [
+            "candidates",
+            "ann-recall"
+          ]
         }
       ],
       "probeLinks": [
@@ -1180,9 +1118,6 @@
         "google-recs-overview",
         "amazon-candidate-ope",
         "tensorflow-basic-retrieval"
-      ],
-      "patterns": [
-        "Candidate generation (recall)"
       ],
       "whyNow": [
         "Start with a simple, explainable recall layer; it proves the funnel shape and gives you a fallback path before advanced retrieval."
@@ -1283,7 +1218,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-candidates.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-candidates.jpg",
+      "tradeoffs": [
+        {
+          "name": "Sophistication vs. debuggability",
+          "description": "Jumping straight to ML retrieval promises better personalization but produces an opaque recall layer that is hard to debug and useless for cold-start users. Simple sources — popularity, trending, user history, followed categories — are cheap, explainable, and serve cold-start users immediately, at the cost of missing items those rules cannot surface.",
+          "chosen": "The design starts with a fan-out over simple, understandable candidate sources, establishing a debuggable recall layer before any embedding machinery is added."
+        }
+      ]
     },
     {
       "id": "ann-recall",
@@ -1467,6 +1409,15 @@
           "example": "user/session vector -> ANN -> 200 similar item vectors, merged with simple candidates.",
           "icon": "assets/icons/concepts/embedding-ann.png",
           "group": "Refine Recall with Embeddings and ANN"
+        },
+        {
+          "term": "Embedding + ANN retrieval",
+          "description": "Represent users/items as vectors; retrieve nearest items via an ANN index.",
+          "whyItMatters": "Semantic/behavioral similarity recall at scale.",
+          "icon": "assets/icons/patterns/embedding-ann-retrieval.png",
+          "steps": [
+            "ann-recall"
+          ]
         }
       ],
       "probeLinks": [
@@ -1478,9 +1429,6 @@
         "meta-silvertorch",
         "instagram-explore-ranking",
         "tensorflow-basic-retrieval"
-      ],
-      "patterns": [
-        "Embedding + ANN retrieval"
       ],
       "whyNow": [
         "After the basic recall layer is clear, ANN is easier to justify as a targeted quality refinement rather than magic at the start."
@@ -1593,6 +1541,13 @@
           "highlight": [
             "ANN"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Recall quality vs. memory footprint",
+          "description": "An HNSW graph index gives excellent recall at candidate-generation latency and supports incremental inserts, but the graph is memory-hungry and must largely fit in RAM, and refreshing it from newly trained embeddings is non-trivial at catalog scale. IVF-PQ compresses vectors so a huge catalog fits in far less memory, but quantization is lossy so recall drops at the same latency budget.",
+          "chosen": "The design picks HNSW, paying the RAM cost for the best recall-versus-latency at the candidate-generation budget, and treats it as one recall source among several rather than the whole recommender."
         }
       ]
     },
@@ -1804,9 +1759,6 @@
         "google-wide-deep",
         "tensorflow-recommenders"
       ],
-      "patterns": [
-        "Two-stage ranking"
-      ],
       "whyNow": [
         "Ranking is where relevance quality comes from; the two-stage funnel is the canonical recsys architecture interviewers expect."
       ],
@@ -1915,6 +1867,18 @@
             "Ranker",
             "ModelReg"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Model power vs. serving cost",
+          "description": "A deep neural ranker learns nonlinear feature crosses and consumes embeddings directly for a higher engagement ceiling, but needs GPU-class serving to meet the latency budget plus heavier training infrastructure, and is harder to interpret. Gradient-boosted trees are fast to train, cheap to score over a few hundred candidates, and expose feature importances for debugging, though deep interactions need manual feature engineering.",
+          "chosen": "The design uses a gradient-boosted trees ranker — strong tabular accuracy within the latency budget with interpretable, versioned artifacts — over a costlier neural model."
+        },
+        {
+          "name": "One-stage vs. two-stage scoring",
+          "description": "A single model over the whole catalog would score everything uniformly but is computationally impossible per request; splitting into cheap recall and expensive ranking bounds the costly model to a few hundred candidates, at the price of the recall stage capping what the ranker can ever see.",
+          "chosen": "The design commits to the two-stage funnel: bounded candidates keep the expensive scorer inside the latency budget, accepting recall as the quality ceiling."
         }
       ]
     },
@@ -2117,9 +2081,6 @@
         "google-wide-deep",
         "nvidia-merlin"
       ],
-      "patterns": [
-        "Feature store (online/offline parity)"
-      ],
       "whyNow": [
         "Features make ranking work, and train/serve parity is the subtle ML-systems correctness point that separates a strong answer."
       ],
@@ -2233,6 +2194,18 @@
             "OfflineFeat",
             "DataLake"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. train/serve parity",
+          "description": "Computing features at request time makes them as fresh as the request, but it is hard to guarantee training used the exact same computation — inviting train/serve skew — and per-request derivation eats the latency budget. A batch-only store gives strong parity and pure-lookup serving but misses in-session signals like items viewed minutes ago.",
+          "chosen": "The design runs a feature store fed by both offline batch and real-time pipelines, so shared definitions enforce parity while the stream path keeps session recency."
+        },
+        {
+          "name": "Platform investment vs. inline simplicity",
+          "description": "A feature store with two pipelines is a whole platform to build, operate, and backfill, whereas inline feature code in the serving path is simple to start. But inline logic turns feature reuse across models and teams into copy-paste and makes offline reproduction of online features nearly impossible.",
+          "chosen": "The design accepts the feature-platform investment because skew and unshareable features cost more over time than the infrastructure does."
         }
       ]
     },
@@ -2396,9 +2369,6 @@
         }
       ],
       "decisionPrompt": "The model returns 20 nearly-identical items. What do you do before showing them?",
-      "patterns": [
-        "Post-ranking filters (diversity/dedup)"
-      ],
       "probeLinks": [
         "netflix-recommendations",
         "etsy-multi-task-ranker",
@@ -2421,6 +2391,15 @@
           "example": "MMR-style re-rank to spread categories; drop already-seen items.",
           "icon": "assets/icons/concepts/diversity-re-ranking.png",
           "group": "Post-Ranking Filters and Diversity"
+        },
+        {
+          "term": "Post-ranking filters (diversity/dedup)",
+          "description": "Apply business rules, dedup, freshness, and diversity after ranking.",
+          "whyItMatters": "When raw model scores aren't the final list.",
+          "icon": "assets/icons/patterns/post-ranking-filters-diversity-dedup.png",
+          "steps": [
+            "filters"
+          ]
         }
       ],
       "recap": {
@@ -2521,6 +2500,18 @@
             "Filters",
             "ItemCatalog"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Diversity quality vs. explainability",
+          "description": "Rule-based category caps are trivial to implement, deterministic, and easy to defend to product and policy teams, but they are blunt — a genuinely best item gets dropped just because its category is full — and rules sprawl as dimensions are added. MMR uses an item-similarity signal to trade relevance against redundancy with a single lambda knob, while a DPP is more principled and globally optimal but heavier to compute and harder to explain.",
+          "chosen": "The design re-ranks with MMR: cheap enough for the post-ranking budget, tunable with one knob, and meaningfully better than caps without DPP-level complexity."
+        },
+        {
+          "name": "Pure relevance vs. list feel",
+          "description": "Showing the model's raw top scores maximizes predicted engagement per item, but ten near-identical items make a list that feels repetitive and hides ineligible or policy-sensitive content risks. Post-ranking filters and diversity re-ranking sacrifice some raw score for eligibility, policy compliance, and variety.",
+          "chosen": "The design applies eligibility, policy, and already-seen filters first, then diversifies — treating the final list, not per-item score, as the product."
         }
       ]
     },
@@ -2752,9 +2743,6 @@
         "ico-ai-erasure-training-data",
         "google-human-values-recs"
       ],
-      "patterns": [
-        "Feedback loop"
-      ],
       "whyNow": [
         "The feedback loop is what makes it a learning system; logging impressions (not just clicks) is the senior nuance."
       ],
@@ -2912,6 +2900,18 @@
             "Trainer",
             "Observability"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Model stability vs. reaction speed",
+          "description": "Periodic batch retraining produces stable, well-evaluated model versions with clean shadow/A-B rollout and rollback, but the model lags reality between runs and cold items wait a cycle. Online incremental learning adapts within minutes but is far harder to evaluate, guardrail, and roll back, and a viral event can poison a continuously moving model.",
+          "chosen": "The design retrains in scheduled batches published through a model registry, valuing evaluable, reversible releases over minutes-level adaptivity."
+        },
+        {
+          "name": "Exploit vs. explore",
+          "description": "Training purely on logged engagement exploits known-good items but bakes in feedback bias — the model only learns about what was already shown. A contextual bandit deliberately spends impressions on uncertain items to learn faster and ease cold-start, but that exploration is a short-term engagement cost and reward attribution is subtle.",
+          "chosen": "The design stays with supervised retraining but logs impressions, not just clicks, so training is less biased and counterfactual evaluation stays possible without paying bandit complexity."
         }
       ]
     },
@@ -3125,9 +3125,6 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/07-serving-opt3.jpg"
         }
-      ],
-      "patterns": [
-        "Graceful degradation / fallback serving"
       ],
       "decisionPrompt": "The ranking model service times out. What should the user see instead of an error?",
       "whyNow": [
@@ -3366,6 +3363,28 @@
             "Observability",
             "RecAPI"
           ]
+        }
+      ],
+      "concepts": [
+        {
+          "term": "Graceful degradation / fallback serving",
+          "description": "Keep a usable response under dependency failure by degrading per component — partial recall, feature/ranker fallbacks, and cached or popularity lists — instead of erroring.",
+          "whyItMatters": "Latency-critical paths with many dependencies where some answer beats no answer.",
+          "steps": [
+            "serving"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. serving cost and risk",
+          "description": "Running the full recall-rank-filter funnel live per request gives the freshest, most personalized results and lets experiments take effect immediately, but it is the most expensive path and its quality depends on several live dependencies meeting tight deadlines. Precomputed per-user lists are a single cheap key lookup with no hot-path dependencies, but go stale between runs and cannot react to in-session intent.",
+          "chosen": "The design serves the full online funnel with per-stage deadlines, taking on the operational burden because in-session context and immediate experimentation are core to quality."
+        },
+        {
+          "name": "Fail hard vs. degrade gracefully",
+          "description": "Treating any dependency timeout as an error keeps every response fully fresh but shows users failures whenever one component is slow. Degrading per dependency — partial recall, default features, cached or popularity lists when the ranker is down — always returns something, at the cost of quietly serving lower-quality lists that must be monitored.",
+          "chosen": "The design degrades per dependency rather than all-or-nothing: a slightly worse list from fallbacks beats an error, with cache keys versioned by model arm and feature freshness so degraded results stay honest."
         }
       ]
     }

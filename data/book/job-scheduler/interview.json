@@ -566,62 +566,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Durable schedule store",
-      "what": "Persist job definitions + next-fire so schedules survive restarts.",
-      "whenToUse": "Any scheduler that must not forget jobs after a crash.",
-      "steps": [
-        "store"
-      ],
-      "group": "Durable Schedules"
-    },
-    {
-      "name": "Time-ordered due index",
-      "what": "Index jobs by next-fire time so 'what's due now' is a cheap range scan, not a full scan.",
-      "whenToUse": "Many schedules where polling all of them would be too slow.",
-      "steps": [
-        "due"
-      ],
-      "group": "Finding Due Jobs Efficiently"
-    },
-    {
-      "name": "Leader election + fencing",
-      "what": "Elect one dispatcher via a lease with a fencing token so only one triggers each fire.",
-      "whenToUse": "Avoiding duplicate triggers from multiple scheduler instances.",
-      "steps": [
-        "election"
-      ],
-      "group": "Leader Election to Avoid Duplicate Triggers"
-    },
-    {
-      "name": "Exactly-once trigger via dedup",
-      "what": "Mark a fire as dispatched (job_id, scheduled_fire) so a re-run of the dispatcher can't double-fire.",
-      "whenToUse": "Turning at-least-once dispatch into exactly-once triggering.",
-      "steps": [
-        "dispatch"
-      ],
-      "group": "Exactly-Once Triggering"
-    },
-    {
-      "name": "At-least-once execution + idempotency",
-      "what": "Queue runs at-least-once; workers dedup on a run key so re-delivery is safe.",
-      "whenToUse": "Reliable execution where workers can crash mid-run.",
-      "steps": [
-        "execute"
-      ],
-      "group": "At-Least-Once Execution with Idempotency"
-    },
-    {
-      "name": "Retry with backoff + DLQ",
-      "what": "Re-run failures with exponential backoff; dead-letter after a max.",
-      "whenToUse": "Transient failures that should self-heal without infinite loops.",
-      "steps": [
-        "retry"
-      ],
-      "group": "Retries, Backoff, and Dead-Lettering"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -675,7 +619,14 @@
           "instead": "Persist schedules durably, index them by next-fire time, elect one dispatcher, and execute via an idempotent queue."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single-box simplicity vs. durability and HA",
+          "description": "One cron process scanning an in-memory job list is perfectly fine for a handful of jobs, but a reboot silently drops every job due during the outage — the cardinal sin for a scheduler — and the obvious fix of running a second instance makes every due job fire twice. Durability, single-firing, and scale each demand machinery the naive loop lacks.",
+          "chosen": "The design uses the naive loop only to expose the three core problems — lost schedules, duplicate triggers, full scans — that the durable store, leader election, and time index then solve."
+        }
+      ]
     },
     {
       "id": "store",
@@ -727,6 +678,14 @@
           "whyItMatters": "After an outage or for long-running jobs, these decide correctness, not edge polish.",
           "example": "overlap=skip: the 03:00 fire is skipped because the 02:00 run is still executing.",
           "group": "Durable Schedules"
+        },
+        {
+          "term": "Durable schedule store",
+          "description": "Persist job definitions + next-fire so schedules survive restarts.",
+          "whyItMatters": "Any scheduler that must not forget jobs after a crash.",
+          "steps": [
+            "store"
+          ]
         }
       ],
       "probeLinks": [
@@ -736,9 +695,6 @@
         "temporal-schedule-api",
         "stripe-idempotency"
       ],
-      "patterns": [
-        "Durable schedule store"
-      ],
       "whyNow": [
         "Durability of schedules is the foundation; without it a crash silently drops jobs — the one failure a scheduler can never be allowed to have."
       ],
@@ -747,7 +703,14 @@
         "after": "All schedules durably persisted with next-fire times.",
         "newRisk": "Scanning millions of jobs every tick to find due ones is too slow."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-store.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-store.jpg",
+      "tradeoffs": [
+        {
+          "name": "Schedule expressiveness vs. model simplicity",
+          "description": "Persisting just a cron string and next_fire_at is simple, but leaves 'run at 02:00' undefined in the messy cases: DST shifts, fires missed during downtime, overlapping runs, retries, and timeouts. Carrying timezone, validity window, and misfire/overlap/retry/timeout policies per job makes the semantics explicit and gives the later dedup key its meaning, at the cost of a richer schema and versioning discipline.",
+          "chosen": "The design persists full schedule semantics with a schedule_version bumped on every update and idempotent create/update, so a fire is unambiguously an instance of a specific schedule version."
+        }
+      ]
     },
     {
       "id": "due",
@@ -904,9 +867,6 @@
         "meta-foqs",
         "debezium-outbox"
       ],
-      "patterns": [
-        "Time-ordered due index"
-      ],
       "whyNow": [
         "Efficient due lookup is what makes the scheduler scale; the time-ordered index is the standard mechanism and sets up dispatch."
       ],
@@ -914,7 +874,19 @@
         "before": "Full scan to find due jobs.",
         "after": "Cheap range lookup of due jobs each tick.",
         "newRisk": "If multiple scheduler instances run, each could fire the same due job — duplicates."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Index speed vs. single source of truth",
+          "description": "A dedicated time wheel or sorted set makes 'what's due this second' a cheap read of the imminent bucket, but it is a second structure that must mutate in step with every create, fire, reschedule, and cancel or it drifts from the store. Querying an ORDER BY next_fire_at index in the job store itself can never drift — the store is the index — but polling it every second at millions of jobs adds steady load and the imminent-row range becomes a lock hotspot under bursts.",
+          "chosen": "The design maintains a time-ordered index derived from and rebuildable from the job store, updating it in the same transaction as schedule changes so a lost index is a recompute, not data loss."
+        },
+        {
+          "name": "Memory residency vs. burst behavior",
+          "description": "Bucketing jobs by fire time keeps each tick touching only imminent entries, but far-future jobs occupy the structure until due, and round-time bursts — everything scheduled at 02:00 — still land in one bucket that must be fanned out. A flat scan avoids the structure entirely but grows with total job count rather than with what is actually due.",
+          "chosen": "The design accepts bucket-fanout at popular times as a dispatch concern, because paying cost proportional to due jobs rather than total jobs is what makes millions of schedules feasible."
+        }
+      ]
     },
     {
       "id": "election",
@@ -1069,6 +1041,14 @@
           "whyItMatters": "Guarantees a single dispatcher per shard, preventing duplicate triggers, with automatic failover.",
           "example": "Instance A holds lease (token 7); A pauses, B takes over (token 8); A's late write with token 7 is rejected.",
           "group": "Leader Election to Avoid Duplicate Triggers"
+        },
+        {
+          "term": "Leader election + fencing",
+          "description": "Elect one dispatcher via a lease with a fencing token so only one triggers each fire.",
+          "whyItMatters": "Avoiding duplicate triggers from multiple scheduler instances.",
+          "steps": [
+            "election"
+          ]
         }
       ],
       "probeLinks": [
@@ -1078,9 +1058,6 @@
         "airflow-scheduler",
         "quartz-clustering",
         "meta-twine"
-      ],
-      "patterns": [
-        "Leader election + fencing"
       ],
       "whyNow": [
         "Single-dispatcher election is the classic distributed-cron problem; fencing tokens are the senior detail that makes it actually safe."
@@ -1095,6 +1072,18 @@
           "trap": "Relying on 'only one instance running' by convention.",
           "why": "Deploys, network partitions, and restarts inevitably produce two live instances.",
           "instead": "Explicit lease-based election with a fencing token."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Lease pragmatism vs. consensus rigor",
+          "description": "A short-TTL lease with a fencing token gets single-dispatcher mutual exclusion from a small coordination store, but leaves a failover gap while the TTL elapses and makes clock/TTL tuning matter — too short flaps, too long delays takeover. Full consensus election gives linearizable leadership with no fencing edge cases even under partitions, but is heavier to operate for what is essentially mutual exclusion, and a single elected leader can bottleneck dispatch.",
+          "chosen": "The design elects per-shard dispatchers with TTL leases plus fencing tokens enforced at the write, taking the lighter primitive and closing its stale-leader hole with fencing rather than consensus."
+        },
+        {
+          "name": "Coordination vs. static ownership",
+          "description": "Statically partitioning the job-id space across dispatchers needs no election at all and scales linearly, but a dead owner's shard simply stops firing until someone reassigns it — and safe reassignment needs a coordinator anyway, or two owners fire the same shard. Dynamic leases add a dependency but make failover automatic.",
+          "chosen": "The design shards the lease space rather than assigning static owners, keeping horizontal scale while failover remains automatic within a TTL."
         }
       ]
     },
@@ -1214,6 +1203,14 @@
           "whyItMatters": "Combines with leader election to guarantee one run per scheduled occurrence; the version guards updates/cancels.",
           "example": "Unique constraint on (job_id, scheduled_fire, schedule_version); a repeat insert is ignored.",
           "group": "Exactly-Once Triggering"
+        },
+        {
+          "term": "Exactly-once trigger via dedup",
+          "description": "Mark a fire as dispatched (job_id, scheduled_fire) so a re-run of the dispatcher can't double-fire.",
+          "whyItMatters": "Turning at-least-once dispatch into exactly-once triggering.",
+          "steps": [
+            "dispatch"
+          ]
         }
       ],
       "probeLinks": [
@@ -1224,9 +1221,6 @@
         "borg-paper",
         "omega-paper",
         "sre-monitoring"
-      ],
-      "patterns": [
-        "Exactly-once trigger via dedup"
       ],
       "whyNow": [
         "Fire-level dedup is what actually delivers exactly-once triggering; election alone isn't enough, and naming this is the senior signal."
@@ -1322,6 +1316,13 @@
             "Outbox"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Outbox indirection vs. atomic coupling",
+          "description": "The transactional outbox commits the fire marker, next_fire advance, and outbox row in one DB transaction so a crash can never lose or double the enqueue, but it adds an outbox table and relay process and slight latency before the run reaches the queue. Atomic mark-and-enqueue is simpler and lower latency, but is only sound when the queue lives in the same transactional store as the marker — a normal DB plus Kafka or SQS cannot be made atomic that way, and it couples run-queue throughput to the schedule DB.",
+          "chosen": "The design uses the transactional outbox as the production default because the run queue is a separate store, accepting a relay hop to keep 'decided to fire' durable and 'delivered to queue' safely at-least-once."
+        }
       ]
     },
     {
@@ -1369,6 +1370,14 @@
           "whyItMatters": "Lets a dead or hung worker's 'running' claim be safely redelivered instead of stranding the run forever.",
           "example": "Worker claims run with a 60s lease, heartbeats every 20s; it crashes, the lease expires, another worker picks it up.",
           "group": "At-Least-Once Execution with Idempotency"
+        },
+        {
+          "term": "At-least-once execution + idempotency",
+          "description": "Queue runs at-least-once; workers dedup on a run key so re-delivery is safe.",
+          "whyItMatters": "Reliable execution where workers can crash mid-run.",
+          "steps": [
+            "execute"
+          ]
         }
       ],
       "probeLinks": [
@@ -1378,9 +1387,6 @@
         "meta-foqs",
         "celery-retries",
         "opentelemetry-docs"
-      ],
-      "patterns": [
-        "At-least-once execution + idempotency"
       ],
       "whyNow": [
         "Reliable execution is the other half of correctness; pairing at-least-once delivery with idempotency is the standard, honest answer (exactly-once delivery is a myth)."
@@ -1463,7 +1469,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-execute.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-execute.jpg",
+      "tradeoffs": [
+        {
+          "name": "Redelivery safety vs. side-effect discipline",
+          "description": "An at-least-once queue with worker leases guarantees a crashed worker's run is redelivered rather than lost, but the same run can then execute twice — and claiming the fire key in the run store only stops two workers racing, not a repeat of an external side effect the first attempt already performed. True protection requires target idempotency, pushing an idempotency key into the job's actual work, which constrains how jobs must be written.",
+          "chosen": "The design layers infrastructure idempotency (claim the fire key before executing) under target idempotency (the side effect itself keyed), because only the second actually stops a double payment or duplicate email."
+        },
+        {
+          "name": "Run isolation vs. schedule progress",
+          "description": "Letting workers touch the schedule would let a slow or stuck run delay every future occurrence. Having the dispatcher advance next_fire_at at trigger time and restricting workers to writing run status keeps occurrences flowing on time, but means overlap policy must explicitly decide whether a new fire may start while the previous run is still going.",
+          "chosen": "The design advances the schedule at dispatch, not completion, so a hung run never blocks the next occurrence and overlap is governed by per-job policy."
+        }
+      ]
     },
     {
       "id": "retry",
@@ -1502,6 +1520,14 @@
           "whyItMatters": "Self-heals transient failures while bounding effort on permanent ones and giving a clear remediation path instead of silent loss.",
           "example": "Retry timeouts at 1m, 2m, 4m...; after 6 attempts -> dead-letter + alert owner -> operator reruns by fire key.",
           "group": "Retries, Backoff, and Dead-Lettering"
+        },
+        {
+          "term": "Retry with backoff + DLQ",
+          "description": "Re-run failures with exponential backoff; dead-letter after a max.",
+          "whyItMatters": "Transient failures that should self-heal without infinite loops.",
+          "steps": [
+            "retry"
+          ]
         }
       ],
       "probeLinks": [
@@ -1513,9 +1539,6 @@
         "gcp-scheduler-retries",
         "temporal-schedule-api",
         "sre-monitoring"
-      ],
-      "patterns": [
-        "Retry with backoff + DLQ"
       ],
       "whyNow": [
         "Closing on retry/backoff/DLQ completes the reliable-execution story and shows you handle permanent failure gracefully."
@@ -1542,7 +1565,19 @@
           "mitigation": "Lease failover + durable due index + exactly-once trigger keys."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-retry.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-retry.jpg",
+      "tradeoffs": [
+        {
+          "name": "Self-healing vs. wasted attempts",
+          "description": "Retrying every failure with backoff lets transient blips heal themselves, but retrying a 4xx validation or auth error just burns attempts on a job that can never succeed, and unbounded retries let a permanently broken job churn forever. Failing fast on non-retryable errors and capping attempts saves resources but demands correct error classification and a place for exhausted runs to land.",
+          "chosen": "The design retries only classified-transient errors with per-job exponential backoff and jitter, then dead-letters after max_attempts and alerts the owner, so permanent failures stop consuming the fleet."
+        },
+        {
+          "name": "Global policy vs. per-job tuning",
+          "description": "A single global retry constant is easy to operate but forces a flaky third-party integration and a critical batch job into the same behavior. Per-job retry_policy (max_attempts, backoff, base) lets each job match its downstream's failure profile, at the cost of more configuration surface owners can get wrong.",
+          "chosen": "The design draws retry bounds from each job's own retry_policy rather than a global constant, accepting configuration sprawl for behavior that fits each integration."
+        }
+      ]
     }
   ],
   "finalDesign": {

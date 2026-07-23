@@ -876,108 +876,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Pipeline as DAG",
-      "what": "Model the pipeline as a directed acyclic graph of stages/jobs with explicit dependencies, fanned out across runners.",
-      "whenToUse": "Whenever build/test/deploy steps have dependencies and parallelism.",
-      "steps": [
-        "orchestrate"
-      ]
-    },
-    {
-      "name": "Affected-only builds",
-      "what": "Compute the dependency graph and rebuild/test only targets affected by the diff.",
-      "whenToUse": "Large monorepos where rebuilding everything is too slow.",
-      "steps": [
-        "fast-feedback"
-      ]
-    },
-    {
-      "name": "Immutable, signed artifacts",
-      "what": "Build once into a content-addressed, signed artifact; promote the same bytes through environments.",
-      "whenToUse": "Always — prevents drift between what was tested and what ships.",
-      "steps": [
-        "artifacts"
-      ]
-    },
-    {
-      "name": "Progressive delivery",
-      "what": "Shift traffic gradually (canary/blue-green) with automated gates instead of a big-bang deploy.",
-      "whenToUse": "Production deploys where blast radius must be bounded.",
-      "steps": [
-        "deploy",
-        "rollback"
-      ]
-    },
-    {
-      "name": "GitOps",
-      "what": "Declare desired environment state in Git; a controller reconciles the cluster to match.",
-      "whenToUse": "Auditable, revertible deploys.",
-      "steps": [
-        "deploy"
-      ]
-    },
-    {
-      "name": "Idempotent control plane",
-      "what": "Give every mutating operation (webhook intake, run start, deploy, rollback, store submission) an idempotency key, so retries are deduplicated instead of creating duplicate work.",
-      "whenToUse": "Any at-least-once event source (VCS webhooks, retried API calls).",
-      "steps": [
-        "orchestrate"
-      ]
-    },
-    {
-      "name": "Deploy-time admission policy",
-      "what": "Re-verify signature, provenance, scan result, and policy at deploy time; a registry entry alone is never deployable.",
-      "whenToUse": "Whenever supply-chain integrity must hold from source to runtime.",
-      "steps": [
-        "artifacts",
-        "deploy"
-      ]
-    },
-    {
-      "name": "Rollout state machine",
-      "what": "Model a rollout as explicit states (pending_approval, ramping, paused, aborted, live, rollback_in_progress, rolled_back) with manual override and post-rollback verification.",
-      "whenToUse": "Progressive delivery that must pause, abort, and resume safely.",
-      "steps": [
-        "deploy",
-        "rollback"
-      ]
-    },
-    {
-      "name": "Expand / contract migration",
-      "what": "Phase schema changes so old and new app versions stay compatible during a canary.",
-      "whenToUse": "Stateful changes shipped behind progressive delivery.",
-      "steps": [
-        "rollback"
-      ]
-    },
-    {
-      "name": "Merge queue",
-      "what": "Serialize merges to main through a queue that re-tests each PR against the current head (speculatively, in batches) so a green PR can't break main when it lands.",
-      "whenToUse": "High-concurrency repos where PRs go stale between CI-pass and merge.",
-      "steps": [
-        "fast-feedback"
-      ]
-    },
-    {
-      "name": "Flaky-test quarantine",
-      "what": "Track each test's flake rate and owner; bound reruns, quarantine known flakes as non-blocking-but-visible, and never let an unaudited rerun turn red into green.",
-      "whenToUse": "Any large test suite where non-determinism erodes trust in the pipeline.",
-      "steps": [
-        "fast-feedback"
-      ]
-    },
-    {
-      "name": "Flag-coordinated release",
-      "what": "Decouple deploy from release: ship dark behind a flag, then ramp/kill the feature via an external flag service so server, web, and mobile can be activated together under version skew.",
-      "whenToUse": "Cross-client features and mobile, where there is no traffic shift for installed apps.",
-      "steps": [
-        "deploy",
-        "mobile"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1027,7 +925,14 @@
         "gitlab-ci-pipelines",
         "dora-metrics"
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One-script simplicity vs. throughput and safety",
+          "description": "A single build box running one script is trivial to set up, but 40 services at ~8 minutes each build serially into a ~5-hour run, so a 500-commit day queues past the workday almost immediately — and the copy-to-prod deploy has no canary or rollback, secrets sit in the script, and iOS cannot build at all without a macOS host.",
+          "chosen": "The design keeps this baseline only to expose the problems — parallelism, hermeticity, heterogeneous runners, and safe promotion — that the rest of the pipeline solves."
+        }
+      ]
     },
     {
       "id": "orchestrate",
@@ -1155,9 +1060,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/02-orchestrate-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Pipeline as DAG"
-      ],
       "concepts": [
         {
           "term": "Hermetic build",
@@ -1182,6 +1084,22 @@
           "definition": "Scheduling that shares scarce runner capacity across job classes (PR, main, release, mobile) instead of FIFO.",
           "whyItMatters": "A burst of PR jobs shouldn't starve a release deploy or scarce macOS iOS jobs; priorities and per-class quotas keep the critical path moving.",
           "example": "Release/main jobs preempt PR jobs for the macOS pool; each class gets a guaranteed minimum slot quota."
+        },
+        {
+          "term": "Pipeline as DAG",
+          "description": "Model the pipeline as a directed acyclic graph of stages/jobs with explicit dependencies, fanned out across runners.",
+          "whyItMatters": "Whenever build/test/deploy steps have dependencies and parallelism.",
+          "steps": [
+            "orchestrate"
+          ]
+        },
+        {
+          "term": "Idempotent control plane",
+          "description": "Give every mutating operation (webhook intake, run start, deploy, rollback, store submission) an idempotency key, so retries are deduplicated instead of creating duplicate work.",
+          "whyItMatters": "Any at-least-once event source (VCS webhooks, retried API calls).",
+          "steps": [
+            "orchestrate"
+          ]
         }
       ],
       "whyNow": [
@@ -1248,6 +1166,18 @@
         "gitlab-ci-pipelines",
         "github-ephemeral-runners",
         "google-sre-release-engineering"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Hermetic ephemeral runners vs. persistent agents",
+          "description": "Ephemeral single-use pods give a clean state every job, so builds are reproducible by construction and the fleet autoscales with the cluster, at the cost of per-job scheduling overhead and operating the runner fleet plus separate macOS hosts; long-lived Jenkins-style agents are a simpler mental model but drift from hermetic, breed 'works on my agent' flakiness, and funnel through a controller that becomes a scaling and availability bottleneck.",
+          "chosen": "The design picks a Kubernetes-native DAG runner with ephemeral pods because hermetic, parallel, first-class-retryable jobs matter more than scheduling overhead at this fleet size."
+        },
+        {
+          "name": "Control vs. outsourced fleet ops",
+          "description": "Managed CI removes runner-fleet operations and gives ephemeral runners out of the box for a per-minute price, but its constrained environments make macOS/iOS support limited and costly and give less control over caching, network, and custom hardware — exactly the levers a large monorepo with mobile targets needs.",
+          "chosen": "The design self-operates the runner fleet to keep control over caching and heterogeneous (especially macOS) capacity, accepting the ops burden."
+        }
       ]
     },
     {
@@ -1391,11 +1321,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/03-fast-feedback-opt4.jpg"
         }
       ],
-      "patterns": [
-        "Affected-only builds",
-        "Merge queue",
-        "Flaky-test quarantine"
-      ],
       "concepts": [
         {
           "term": "Affected target graph",
@@ -1414,6 +1339,14 @@
           "definition": "Marking a known non-deterministic test so it still runs and is recorded, but no longer blocks merges, while keeping its flake rate and owner visible so the team fixes it rather than ignoring it.",
           "whyItMatters": "Unbounded 'rerun until green' makes the pipeline lie; quarantine isolates flakes without hiding them.",
           "example": "A test with a 30% rolling flake rate is quarantined, its owner notified, and reruns are bounded and logged."
+        },
+        {
+          "term": "Affected-only builds",
+          "description": "Compute the dependency graph and rebuild/test only targets affected by the diff.",
+          "whyItMatters": "Large monorepos where rebuilding everything is too slow.",
+          "steps": [
+            "fast-feedback"
+          ]
         }
       ],
       "whyNow": [
@@ -1486,6 +1419,18 @@
         "google-continuous-testing",
         "github-merge-queue",
         "uber-ci-at-scale"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Selective builds vs. guaranteed coverage",
+          "description": "Computing the affected-target graph and running only touched jobs bounds work to the change and is the biggest latency win on a monorepo, but a single missed dependency edge silently ships an untested target; a full rebuild with massive parallelism can never skip a target that mattered, yet is enormously wasteful at 40 services and still bounded by the slowest target.",
+          "chosen": "The design builds affected-only with a content-keyed remote cache, betting on an accurate dependency graph and full-input-hash keys to stay both fast and correct."
+        },
+        {
+          "name": "Cache reuse vs. staleness risk",
+          "description": "A shared remote cache lets cold runners skip dependency downloads, compilation, and tests that any prior run already did, but correctness depends entirely on the key being the full input hash — an under-specified key returns stale outputs — and a wide change with 200+ jobs restoring at once can saturate cache egress.",
+          "chosen": "The design keys the shared cache strictly by content (lockfile and source hashes) so reuse is safe, treating egress capacity as a scaling concern rather than weakening the key."
+        }
       ]
     },
     {
@@ -1517,9 +1462,6 @@
         ]
       },
       "decisionPrompt": "Why build the artifact once and promote it, instead of rebuilding for staging and prod separately?",
-      "patterns": [
-        "Immutable, signed artifacts"
-      ],
       "concepts": [
         {
           "term": "Build provenance / attestation",
@@ -1532,6 +1474,23 @@
           "definition": "A machine-readable inventory of every dependency baked into an artifact.",
           "whyItMatters": "Lets a policy gate block deploys with critical CVEs and answer 'are we exposed to this CVE?' instantly.",
           "example": "A CycloneDX/SPDX SBOM stored alongside the image digest, refreshed on each build."
+        },
+        {
+          "term": "Immutable, signed artifacts",
+          "description": "Build once into a content-addressed, signed artifact; promote the same bytes through environments.",
+          "whyItMatters": "Always — prevents drift between what was tested and what ships.",
+          "steps": [
+            "artifacts"
+          ]
+        },
+        {
+          "term": "Deploy-time admission policy",
+          "description": "Re-verify signature, provenance, scan result, and policy at deploy time; a registry entry alone is never deployable.",
+          "whyItMatters": "Whenever supply-chain integrity must hold from source to runtime.",
+          "steps": [
+            "artifacts",
+            "deploy"
+          ]
         }
       ],
       "whyNow": [
@@ -1586,7 +1545,14 @@
         "google-bab",
         "kubernetes-admission-control"
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-artifacts.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-artifacts.jpg",
+      "tradeoffs": [
+        {
+          "name": "Build once vs. rebuild per environment",
+          "description": "Building a signed, content-addressed artifact once and promoting the same bytes through every environment guarantees prod runs exactly what was tested in staging, at the cost of registry infrastructure, signing and provenance machinery, and a vault-based secrets flow; rebuilding per environment is simpler but risks drift, where staging tested different bytes than prod ships.",
+          "chosen": "The design builds immutable signed artifacts once with provenance attestations and promotes them everywhere, eliminating environment drift by construction."
+        }
+      ]
     },
     {
       "id": "deploy",
@@ -1724,10 +1690,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/05-deploy-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Progressive delivery",
-        "GitOps"
-      ],
       "deepDives": [
         {
           "title": "GitOps vs imperative deploy APIs",
@@ -1777,6 +1739,41 @@
           "definition": "Deploying ships code to servers; releasing exposes a feature to users. A feature flag separates the two so code can land dark and be turned on independently.",
           "whyItMatters": "It is the only 'rollback' for code already on user devices and the way to coordinate one feature across server, web, and mobile under version skew.",
           "example": "Ship the new flow behind a flag, deploy the compatible backend, then ramp the flag — or hit the kill switch — across all clients."
+        },
+        {
+          "term": "Progressive delivery",
+          "description": "Shift traffic gradually (canary/blue-green) with automated gates instead of a big-bang deploy.",
+          "whyItMatters": "Production deploys where blast radius must be bounded.",
+          "steps": [
+            "deploy",
+            "rollback"
+          ]
+        },
+        {
+          "term": "GitOps",
+          "description": "Declare desired environment state in Git; a controller reconciles the cluster to match.",
+          "whyItMatters": "Auditable, revertible deploys.",
+          "steps": [
+            "deploy"
+          ]
+        },
+        {
+          "term": "Rollout state machine",
+          "description": "Model a rollout as explicit states (pending_approval, ramping, paused, aborted, live, rollback_in_progress, rolled_back) with manual override and post-rollback verification.",
+          "whyItMatters": "Progressive delivery that must pause, abort, and resume safely.",
+          "steps": [
+            "deploy",
+            "rollback"
+          ]
+        },
+        {
+          "term": "Flag-coordinated release",
+          "description": "Decouple deploy from release: ship dark behind a flag, then ramp/kill the feature via an external flag service so server, web, and mobile can be activated together under version skew.",
+          "whyItMatters": "Cross-client features and mobile, where there is no traffic shift for installed apps.",
+          "steps": [
+            "deploy",
+            "mobile"
+          ]
         }
       ],
       "whyNow": [
@@ -1949,6 +1946,18 @@
         "flagger-deployment-strategies",
         "openfeature-flags",
         "kubernetes-admission-control"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Gradual blast radius vs. atomic cutover",
+          "description": "Canary routes a small slice of real production traffic to the new version and ramps only while golden signals stay healthy, bounding the blast radius but requiring enough traffic for significance and forward/backward compatibility since both versions run at once; blue-green flips everything atomically with instant rollback, but costs 2x capacity during the overlap and the first bad request hits everyone.",
+          "chosen": "The design defaults to canary with staged ramps because bounding blast radius under real traffic is worth the compatibility discipline, keeping blue-green for cases needing an atomic switch."
+        },
+        {
+          "name": "Traffic control vs. capacity cost",
+          "description": "Rolling updates need no extra capacity and are built into Kubernetes, but they leave a mixed-version window with no traffic control and rollback means rolling forward again; canary and blue-green both buy fast abort and controlled exposure at the price of running extra instances during the rollout.",
+          "chosen": "The design pays the temporary extra capacity for canary because a fast abort path and metric-gated ramps are prerequisites for the automated rollback of the next step."
+        }
       ]
     },
     {
@@ -1977,9 +1986,6 @@
         ]
       },
       "decisionPrompt": "Which signals can a gate trust within minutes, and which are too slow to gate on?",
-      "patterns": [
-        "Progressive delivery"
-      ],
       "concepts": [
         {
           "term": "Error-budget gate",
@@ -2137,7 +2143,14 @@
         "dora-metrics",
         "argo-rollouts-canary"
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-rollback.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-rollback.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fast automated gates vs. slow reliable signals",
+          "description": "Gating each ramp step on golden signals (error rate, latency, saturation) versus stable lets the controller abort and roll back without a human in the critical path, but only signals that move within minutes can be trusted at the gate — slow-burn regressions like memory leaks or business-metric drift surface after the ramp and need post-rollout monitoring instead.",
+          "chosen": "The design wires deploy gates to fast golden signals and SLO error budgets for automatic rollback, accepting that slower signals are handled outside the gate loop."
+        }
+      ]
     },
     {
       "id": "mobile",
@@ -2267,9 +2280,6 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/07-mobile-opt3.jpg"
         }
-      ],
-      "patterns": [
-        "Flag-coordinated release"
       ],
       "concepts": [
         {
@@ -2434,6 +2444,18 @@
         "apple-phased-release",
         "xcode-cloud",
         "openfeature-flags"
+      ],
+      "tradeoffs": [
+        {
+          "name": "Owned macOS fleet vs. managed mobile CI",
+          "description": "Self-hosted macOS runners with Fastlane give full control over Xcode versions, signing material, and caching at predictable steady-state cost, but macOS hardware is scarce and expensive, Apple licensing limits virtualization, and certificate and Xcode upkeep is real toil; managed mobile CI removes the fleet but charges premium macOS minutes and puts signing material with a third party.",
+          "chosen": "The design runs its own macOS hosts with Fastlane so signing secrets stay in the same vault story as the rest of the pipeline and toolchain control is retained."
+        },
+        {
+          "name": "Staged rollout vs. instant rollback",
+          "description": "Server deploys can shift traffic back instantly, but mobile users update on their own schedule behind store review, so the only safety lever is exposing the build to a growing percentage and halting when signals degrade — there is no forced downgrade, and a bad release requires a forward-fix through review.",
+          "chosen": "The design releases mobile via internal tracks, store review, and staged percentage rollout, treating halt-and-forward-fix as the rollback substitute the platform actually allows."
+        }
       ]
     }
   ],

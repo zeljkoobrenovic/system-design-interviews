@@ -771,201 +771,6 @@
       "notes": "Self-service config that keeps the core platform reusable across businesses, providers, and geographies."
     }
   ],
-  "patterns": [
-    {
-      "name": "Platform hourglass",
-      "what": "A narrow reusable payments platform bridges many business lines to many external rails.",
-      "whenToUse": "Use when products need shared capabilities but local market and provider behavior vary.",
-      "steps": [
-        "business-neutral-api"
-      ],
-      "group": "Start with a Business-Neutral Payments API"
-    },
-    {
-      "name": "Configuration over specialization",
-      "what": "Use data-driven product, geography, method, provider, and rollout rules instead of forking code per market.",
-      "whenToUse": "Use when the same platform capability must behave differently across countries and business lines.",
-      "steps": [
-        "business-neutral-api",
-        "finance-reporting-observability"
-      ],
-      "group": "Start with a Business-Neutral Payments API"
-    },
-    {
-      "name": "Double-entry ledger",
-      "what": "Represent every money movement as balanced account entries in an immutable order.",
-      "whenToUse": "Use when correctness, auditability, and reconciliation dominate availability.",
-      "steps": [
-        "immutable-zero-sum-orders",
-        "side-effect-validation"
-      ],
-      "group": "Model Money as Immutable Zero-Sum Orders"
-    },
-    {
-      "name": "Immutable event history",
-      "what": "Append corrective facts instead of rewriting financial history.",
-      "whenToUse": "Use when auditability matters more than simplifying the latest state.",
-      "steps": [
-        "immutable-zero-sum-orders"
-      ],
-      "group": "Model Money as Immutable Zero-Sum Orders"
-    },
-    {
-      "name": "Idempotent write API",
-      "what": "Persist request identity and result so retries converge on one logical effect.",
-      "whenToUse": "Use when clients or workers retry operations that can move money.",
-      "steps": [
-        "idempotent-order-state",
-        "external-psp-integration"
-      ],
-      "group": "Enforce Idempotent Order State and Optimistic Concurrency"
-    },
-    {
-      "name": "Optimistic concurrency",
-      "what": "Guard order transitions with expected state and version checks instead of distributed locks.",
-      "whenToUse": "Use when many processors may observe the same work but only one transition should win.",
-      "steps": [
-        "idempotent-order-state"
-      ],
-      "group": "Enforce Idempotent Order State and Optimistic Concurrency"
-    },
-    {
-      "name": "Durable event stream",
-      "what": "Use Kafka-style logs to carry asynchronous work and state changes through a payment pipeline.",
-      "whenToUse": "Use when processing is high-volume, retry-heavy, and too slow or fragile for one synchronous call.",
-      "steps": [
-        "stream-processing-core"
-      ],
-      "group": "Move Long-Running Payment Work onto Kafka Streams"
-    },
-    {
-      "name": "Competing consumers",
-      "what": "Scale processors horizontally by letting workers claim work from stream partitions or consumer groups.",
-      "whenToUse": "Use when throughput needs to grow without adding product-facing latency.",
-      "steps": [
-        "stream-processing-core"
-      ],
-      "group": "Move Long-Running Payment Work onto Kafka Streams"
-    },
-    {
-      "name": "Idempotent consumer",
-      "what": "Make repeated event handling converge on the same order state and side effects.",
-      "whenToUse": "Use with at-least-once streams, retries, replays, and poison-message recovery.",
-      "steps": [
-        "stream-processing-core"
-      ],
-      "group": "Move Long-Running Payment Work onto Kafka Streams"
-    },
-    {
-      "name": "External idempotency",
-      "what": "Bind retries to the same provider and external operation ID after ambiguous failures.",
-      "whenToUse": "Use when one operation can be sent to several PSPs or banks but must not execute twice.",
-      "steps": [
-        "external-psp-integration"
-      ],
-      "group": "Integrate PSPs and Banks Through Idempotent Gateways"
-    },
-    {
-      "name": "Provider adapter",
-      "what": "Hide provider-specific APIs, callbacks, files, status codes, and retry semantics behind normalized gateway behavior.",
-      "whenToUse": "Use when the platform integrates with many PSPs, banks, wallets, and local rails.",
-      "steps": [
-        "external-psp-integration"
-      ],
-      "group": "Integrate PSPs and Banks Through Idempotent Gateways"
-    },
-    {
-      "name": "Request metadata store",
-      "what": "Persist provider binding, external operation IDs, request hashes, retry state, and response evidence.",
-      "whenToUse": "Use when network failures leave the external operation outcome unknown.",
-      "steps": [
-        "external-psp-integration"
-      ],
-      "group": "Integrate PSPs and Banks Through Idempotent Gateways"
-    },
-    {
-      "name": "Side-effect validation and reconciliation",
-      "what": "Record expected effects and compare them with provider, ledger, and settlement outcomes.",
-      "whenToUse": "Use when external systems, async work, and money movement create latent correctness risk.",
-      "steps": [
-        "side-effect-validation",
-        "finance-reporting-observability"
-      ],
-      "group": "Validate Side Effects and Reconcile Continuously"
-    },
-    {
-      "name": "Side-effect ledger",
-      "what": "Record intended provider calls, ledger postings, files, callbacks, and other externally observable effects.",
-      "whenToUse": "Use when logs are insufficient evidence for financial correctness.",
-      "steps": [
-        "side-effect-validation"
-      ],
-      "group": "Validate Side Effects and Reconcile Continuously"
-    },
-    {
-      "name": "Reconciliation loop",
-      "what": "Continuously compare expected payment effects against observed provider, ledger, settlement, and order state.",
-      "whenToUse": "Use when external integrations can succeed, fail, timeout, or settle late.",
-      "steps": [
-        "side-effect-validation"
-      ],
-      "group": "Validate Side Effects and Reconcile Continuously"
-    },
-    {
-      "name": "Dead-letter and repair queue",
-      "what": "Move unprocessable or mismatched payment work into controlled repair paths with evidence and ownership.",
-      "whenToUse": "Use when automatic retries would hide or worsen financial mismatches.",
-      "steps": [
-        "side-effect-validation"
-      ],
-      "group": "Validate Side Effects and Reconcile Continuously"
-    },
-    {
-      "name": "Market-specific adapter",
-      "what": "Contain local payment behavior in adapters while preserving the shared payment-order model.",
-      "whenToUse": "Use when cash, wallets, offline flows, or local regulations differ by market.",
-      "steps": [
-        "cash-wallet-markets"
-      ],
-      "group": "Extend the Core to Cash and Digital Wallet Markets"
-    },
-    {
-      "name": "Offline-first workflow",
-      "what": "Let local payment actions proceed with cached or delayed state, then reconcile once connectivity returns.",
-      "whenToUse": "Use for cash collection, delivery workflows, and markets with intermittent connectivity.",
-      "steps": [
-        "cash-wallet-markets"
-      ],
-      "group": "Extend the Core to Cash and Digital Wallet Markets"
-    },
-    {
-      "name": "Operational dashboards",
-      "what": "Expose payment health by provider, operation, country, city, method, and business line.",
-      "whenToUse": "Use when aggregate success rate can mask localized payment failure.",
-      "steps": [
-        "finance-reporting-observability"
-      ],
-      "group": "Add Finance Consumers, Rollouts, and Operational Visibility"
-    },
-    {
-      "name": "Gradual rollout",
-      "what": "Launch payment routes and methods through configuration with health thresholds and rollback criteria.",
-      "whenToUse": "Use when a bad rollout can block collections or payouts.",
-      "steps": [
-        "finance-reporting-observability"
-      ],
-      "group": "Add Finance Consumers, Rollouts, and Operational Visibility"
-    },
-    {
-      "name": "Finance read models",
-      "what": "Project immutable ledger and order events into reporting, invoice, tax, statement, and settlement views.",
-      "whenToUse": "Use when finance needs stable operational reads without owning the write path.",
-      "steps": [
-        "finance-reporting-observability"
-      ],
-      "group": "Add Finance Consumers, Rollouts, and Operational Visibility"
-    }
-  ],
   "steps": [
     {
       "id": "business-neutral-api",
@@ -1011,11 +816,24 @@
           "whyItMatters": "Global payments need fast market expansion without making the core order model unstable.",
           "example": "Enable a wallet in India or a regional PSP in Europe without forking the charge flow.",
           "group": "Start with a Business-Neutral Payments API"
+        },
+        {
+          "term": "Platform hourglass",
+          "description": "A narrow reusable payments platform bridges many business lines to many external rails.",
+          "whyItMatters": "Use when products need shared capabilities but local market and provider behavior vary.",
+          "steps": [
+            "business-neutral-api"
+          ]
+        },
+        {
+          "term": "Configuration over specialization",
+          "description": "Use data-driven product, geography, method, provider, and rollout rules instead of forking code per market.",
+          "whyItMatters": "Use when the same platform capability must behave differently across countries and business lines.",
+          "steps": [
+            "business-neutral-api",
+            "finance-reporting-observability"
+          ]
         }
-      ],
-      "patterns": [
-        "Platform hourglass",
-        "Configuration over specialization"
       ],
       "probeLinks": [
         "underhood-uber-payments",
@@ -1102,6 +920,13 @@
             "PaymentProfile",
             "Risk"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Platform uniformity vs. market flexibility",
+          "description": "One business-neutral Payments API gives every line of business a single reusable integration and one normalized payment request, but it must not flatten away what genuinely varies — market configuration, payment methods, and risk context differ per geography and product. Letting each business integrate directly with each provider maximizes flexibility yet multiplies integrations into an unmaintainable mesh.",
+          "chosen": "The design commits to the hourglass: a uniform platform API in the middle, with per-market and per-method variation pushed into configuration rather than into bespoke integrations."
         }
       ]
     },
@@ -1229,11 +1054,24 @@
           "whyItMatters": "It detects missing or duplicated money movement even if the order is processed by several services.",
           "example": "Customer debit equals driver credit plus Uber fee plus tax or clearing entries.",
           "group": "Model Money as Immutable Zero-Sum Orders"
+        },
+        {
+          "term": "Double-entry ledger",
+          "description": "Represent every money movement as balanced account entries in an immutable order.",
+          "whyItMatters": "Use when correctness, auditability, and reconciliation dominate availability.",
+          "steps": [
+            "immutable-zero-sum-orders",
+            "side-effect-validation"
+          ]
+        },
+        {
+          "term": "Immutable event history",
+          "description": "Append corrective facts instead of rewriting financial history.",
+          "whyItMatters": "Use when auditability matters more than simplifying the latest state.",
+          "steps": [
+            "immutable-zero-sum-orders"
+          ]
         }
-      ],
-      "patterns": [
-        "Double-entry ledger",
-        "Immutable event history"
       ],
       "probeLinks": [
         "uber-nextgen-payments",
@@ -1320,6 +1158,13 @@
             "OrderStore",
             "AccountStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Auditability vs. write and read simplicity",
+          "description": "Modeling each payment as an immutable order of balanced entries makes missing or duplicated money movement detectable (everything must net to zero) and keeps an explainable audit trail, but it writes more records per payment and current balances must be derived from entries. Mutable per-account balance updates are a single fast write and a direct balance read, yet they overwrite history and offer no invariant to catch a lost movement.",
+          "chosen": "The design picks immutable zero-sum orders with corrections as new orders, because the zero-sum invariant is what makes distributed, asynchronous processing verifiable."
         }
       ]
     },
@@ -1449,11 +1294,24 @@
           "whyItMatters": "It avoids distributed locks while protecting the order state machine from concurrent consumers.",
           "example": "Move AUTHORIZED to CAPTURE_PENDING only if version 4 is still current.",
           "group": "Enforce Idempotent Order State and Optimistic Concurrency"
+        },
+        {
+          "term": "Idempotent write API",
+          "description": "Persist request identity and result so retries converge on one logical effect.",
+          "whyItMatters": "Use when clients or workers retry operations that can move money.",
+          "steps": [
+            "idempotent-order-state",
+            "external-psp-integration"
+          ]
+        },
+        {
+          "term": "Optimistic concurrency",
+          "description": "Guard order transitions with expected state and version checks instead of distributed locks.",
+          "whyItMatters": "Use when many processors may observe the same work but only one transition should win.",
+          "steps": [
+            "idempotent-order-state"
+          ]
         }
-      ],
-      "patterns": [
-        "Idempotent write API",
-        "Optimistic concurrency"
       ],
       "probeLinks": [
         "stripe-idempotency",
@@ -1546,6 +1404,18 @@
           "highlight": [
             "OrderStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Optimistic concurrency vs. lock serialization",
+          "description": "Advancing order state only when version and current state match avoids distributed locks and scales across many competing stream consumers, but concurrent processors on a hot order must retry on version conflicts and every consumer needs retry-on-conflict logic. A pessimistic lock per order gives a simple serialized mental model, yet the lock manager becomes a new highly available dependency with lease timeouts and throughput-capping contention.",
+          "chosen": "The design uses idempotency keys plus optimistic concurrency, accepting conflict retries to avoid introducing a lock manager on the money path."
+        },
+        {
+          "name": "Strict replay safety vs. key bookkeeping",
+          "description": "Persisting an idempotency key that maps retries to the original result guarantees a replay never double-creates money movement, but the key's scope must cover semantic request equality, not just a string, and the mapping is durable state written on every request. Skipping it keeps the write path lean while leaving retries free to duplicate payments.",
+          "chosen": "The design persists idempotency keys and returns the original result on replay, treating exactly-once payment effects as an application invariant rather than a transport assumption."
         }
       ]
     },
@@ -1686,12 +1556,31 @@
           "whyItMatters": "Payment correctness cannot depend on a single delivery attempt.",
           "example": "A capture processor reprocessing the same event sees the order already captured and becomes a no-op.",
           "group": "Move Long-Running Payment Work onto Kafka Streams"
+        },
+        {
+          "term": "Durable event stream",
+          "description": "Use Kafka-style logs to carry asynchronous work and state changes through a payment pipeline.",
+          "whyItMatters": "Use when processing is high-volume, retry-heavy, and too slow or fragile for one synchronous call.",
+          "steps": [
+            "stream-processing-core"
+          ]
+        },
+        {
+          "term": "Competing consumers",
+          "description": "Scale processors horizontally by letting workers claim work from stream partitions or consumer groups.",
+          "whyItMatters": "Use when throughput needs to grow without adding product-facing latency.",
+          "steps": [
+            "stream-processing-core"
+          ]
+        },
+        {
+          "term": "Idempotent consumer",
+          "description": "Make repeated event handling converge on the same order state and side effects.",
+          "whyItMatters": "Use with at-least-once streams, retries, replays, and poison-message recovery.",
+          "steps": [
+            "stream-processing-core"
+          ]
         }
-      ],
-      "patterns": [
-        "Durable event stream",
-        "Competing consumers",
-        "Idempotent consumer"
       ],
       "probeLinks": [
         "kafka-design",
@@ -1778,6 +1667,18 @@
             "Processor",
             "AuthSvc"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Async decoupling vs. immediate outcome",
+          "description": "Putting provider calls, settlement, and reconciliation behind Kafka gives the business line a fast acknowledgement and lets each stage scale and absorb spikes, but completion becomes eventual and callers must handle pending states. Synchronous in-request processing returns the terminal outcome immediately, yet it exposes PSP latency and outages directly to the caller and leaves no durable work queue to repair partial payments after a crash.",
+          "chosen": "The design moves long-running payment work onto Kafka with the order store as source of truth, accepting pending states in exchange for isolation from slow, failure-prone rails."
+        },
+        {
+          "name": "At-least-once delivery vs. consumer complexity",
+          "description": "Accepting at-least-once delivery from the stream keeps the transport simple and replayable, but it is only safe because every consumer is idempotent and state transitions are guarded — and poison messages, lag, and replay bugs become real production concerns. Demanding stronger delivery guarantees from the transport would simplify consumers but is not what Kafka provides end to end.",
+          "chosen": "The design embraces at-least-once delivery and pays for it with idempotent, guarded consumers, since correctness already lives in the order state machine."
         }
       ]
     },
@@ -1930,12 +1831,31 @@
           "whyItMatters": "A global platform must support modern PSPs, local wallets, and legacy settlement rails without changing the core order model.",
           "example": "Credit-card capture uses REST; a bank settlement uses deterministic file batches.",
           "group": "Integrate PSPs and Banks Through Idempotent Gateways"
+        },
+        {
+          "term": "External idempotency",
+          "description": "Bind retries to the same provider and external operation ID after ambiguous failures.",
+          "whyItMatters": "Use when one operation can be sent to several PSPs or banks but must not execute twice.",
+          "steps": [
+            "external-psp-integration"
+          ]
+        },
+        {
+          "term": "Provider adapter",
+          "description": "Hide provider-specific APIs, callbacks, files, status codes, and retry semantics behind normalized gateway behavior.",
+          "whyItMatters": "Use when the platform integrates with many PSPs, banks, wallets, and local rails.",
+          "steps": [
+            "external-psp-integration"
+          ]
+        },
+        {
+          "term": "Request metadata store",
+          "description": "Persist provider binding, external operation IDs, request hashes, retry state, and response evidence.",
+          "whyItMatters": "Use when network failures leave the external operation outcome unknown.",
+          "steps": [
+            "external-psp-integration"
+          ]
         }
-      ],
-      "patterns": [
-        "External idempotency",
-        "Provider adapter",
-        "Request metadata store"
       ],
       "probeLinks": [
         "uber-nextgen-payments",
@@ -2049,6 +1969,13 @@
             "PSPBank"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Provider binding vs. call-path simplicity",
+          "description": "Writing an external request record that binds each operation to one provider and one external ID before every call means an ambiguous timeout retry goes back to the same PSP instead of double-charging through a fallback rail — at the cost of extra durable state and adapter machinery on every provider call. Fire-and-reconcile keeps the call path lean but lets duplicate external charges exist until reconciliation catches them, with costly disputes and refunds.",
+          "chosen": "The design binds operations to providers in a request store up front, because preventing a double charge is far cheaper than reconciling and refunding one."
+        }
       ]
     },
     {
@@ -2099,12 +2026,32 @@
           "whyItMatters": "No online path can eliminate every external, timing, or integration failure at global scale.",
           "example": "Find authorizations older than the allowed window that were never captured or voided.",
           "group": "Validate Side Effects and Reconcile Continuously"
+        },
+        {
+          "term": "Side-effect validation and reconciliation",
+          "description": "Record expected effects and compare them with provider, ledger, and settlement outcomes.",
+          "whyItMatters": "Use when external systems, async work, and money movement create latent correctness risk.",
+          "steps": [
+            "side-effect-validation",
+            "finance-reporting-observability"
+          ]
+        },
+        {
+          "term": "Side-effect ledger",
+          "description": "Record intended provider calls, ledger postings, files, callbacks, and other externally observable effects.",
+          "whyItMatters": "Use when logs are insufficient evidence for financial correctness.",
+          "steps": [
+            "side-effect-validation"
+          ]
+        },
+        {
+          "term": "Dead-letter and repair queue",
+          "description": "Move unprocessable or mismatched payment work into controlled repair paths with evidence and ownership.",
+          "whyItMatters": "Use when automatic retries would hide or worsen financial mismatches.",
+          "steps": [
+            "side-effect-validation"
+          ]
         }
-      ],
-      "patterns": [
-        "Side-effect ledger",
-        "Reconciliation loop",
-        "Dead-letter and repair queue"
       ],
       "probeLinks": [
         "underhood-uber-payments",
@@ -2197,6 +2144,13 @@
             "Recon"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Continuous verification vs. pipeline overhead",
+          "description": "Recording expected side effects and continuously reconciling them against provider callbacks, settlement files, ledger postings, and order states catches duplicate payments, missing captures, dangling authorizations, and zero-sum violations that are invisible to a technically green pipeline. The price is a whole evidence store and worker fleet whose only job is to prove that things that should have happened happened exactly once.",
+          "chosen": "The design adds a side-effect store and reconciliation workers, treating financial correctness as something to be proven continuously, not assumed from successful responses."
+        }
       ]
     },
     {
@@ -2249,11 +2203,23 @@
           "whyItMatters": "Payment flows in emerging markets may occur where network connectivity is unreliable.",
           "example": "A delivery partner completes a cash drop at pickup and the app syncs the state when connectivity returns.",
           "group": "Extend the Core to Cash and Digital Wallet Markets"
+        },
+        {
+          "term": "Market-specific adapter",
+          "description": "Contain local payment behavior in adapters while preserving the shared payment-order model.",
+          "whyItMatters": "Use when cash, wallets, offline flows, or local regulations differ by market.",
+          "steps": [
+            "cash-wallet-markets"
+          ]
+        },
+        {
+          "term": "Offline-first workflow",
+          "description": "Let local payment actions proceed with cached or delayed state, then reconcile once connectivity returns.",
+          "whyItMatters": "Use for cash collection, delivery workflows, and markets with intermittent connectivity.",
+          "steps": [
+            "cash-wallet-markets"
+          ]
         }
-      ],
-      "patterns": [
-        "Market-specific adapter",
-        "Offline-first workflow"
       ],
       "probeLinks": [
         "uber-cash-eats",
@@ -2343,6 +2309,13 @@
             "CashWallet"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Local market fit vs. ledger invariant",
+          "description": "Cash collection, digital wallets, restaurant cash drops, arrears, and offline flows do not look like card payments, and modeling them faithfully pulls toward market-specific side systems. Bypassing the platform would ship those markets faster, but every flow outside the order, account, and entry model escapes the zero-sum invariant and the reconciliation machinery built on it.",
+          "chosen": "The design adds a Cash and Wallet Service that translates market-specific flows into the same balanced-order model, keeping local behavior while preserving the platform-wide correctness checks."
+        }
       ]
     },
     {
@@ -2395,12 +2368,31 @@
           "whyItMatters": "A bad rollout can lose money, double-charge users, or block partner payouts.",
           "example": "Enable a new PSP route for one city, compare authorization success, provider errors, and reconciliation cases, then expand.",
           "group": "Add Finance Consumers, Rollouts, and Operational Visibility"
+        },
+        {
+          "term": "Operational dashboards",
+          "description": "Expose payment health by provider, operation, country, city, method, and business line.",
+          "whyItMatters": "Use when aggregate success rate can mask localized payment failure.",
+          "steps": [
+            "finance-reporting-observability"
+          ]
+        },
+        {
+          "term": "Gradual rollout",
+          "description": "Launch payment routes and methods through configuration with health thresholds and rollback criteria.",
+          "whyItMatters": "Use when a bad rollout can block collections or payouts.",
+          "steps": [
+            "finance-reporting-observability"
+          ]
+        },
+        {
+          "term": "Finance read models",
+          "description": "Project immutable ledger and order events into reporting, invoice, tax, statement, and settlement views.",
+          "whyItMatters": "Use when finance needs stable operational reads without owning the write path.",
+          "steps": [
+            "finance-reporting-observability"
+          ]
         }
-      ],
-      "patterns": [
-        "Operational dashboards",
-        "Gradual rollout",
-        "Finance read models"
       ],
       "probeLinks": [
         "uber-nextgen-payments",
@@ -2487,6 +2479,13 @@
             "Reporting",
             "Observability"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Rollout speed vs. financial safety",
+          "description": "Launching a new payment method broadly gets revenue and learning fast, but PSP integrations and payment behavior vary so much by market that an unproven rail can silently lose money. Starting in safe regions and gating expansion on collection rate, failure modes, and provider health is slower and needs dashboards, anomaly detection, and DLQ review to exist first.",
+          "chosen": "The design makes rollout data-driven — start small, measure financial and operational health, then expand — accepting slower coverage for provable correctness per market."
         }
       ]
     }

@@ -2072,82 +2072,6 @@
       "makesIrrelevant": "Managed key custody, secret storage, and sensitive-data discovery remove many platform primitives, but not the retention policy matrix the application must enforce."
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The legal retrieve → draft → verify Pipeline runs ON this harness, with citation grounding and a human-lawyer review gate layered on top — and note this is the runtime harness, not the eval harness used to score outputs offline.",
-      "steps": [
-        "pipeline"
-      ]
-    },
-    {
-      "name": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-      "what": "An authored DAG (retrieve -> draft -> verify -> review), not an open autonomous loop.",
-      "whenToUse": "When a wrong citation is a malpractice-grade side effect to guard before surfacing.",
-      "steps": [
-        "pipeline"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A licensed attorney reviews and approves before any work product is finalized or filed.",
-      "whenToUse": "Before any legal work product leaves the platform.",
-      "steps": [
-        "attorney"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "Agents draft freely but a deterministic verify gate and attorney review fence the irreversible action.",
-      "whenToUse": "Draft-only autonomy with hard verification and review boundaries.",
-      "steps": [
-        "citation-gate",
-        "attorney"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Verify citations and evaluate drafts against attorney ground truth; track hallucination and citation-error rates.",
-      "whenToUse": "Measuring and gating the pipeline where hallucination is the core risk.",
-      "steps": [
-        "citation-gate",
-        "workflows-eval"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Retrieve from authoritative law and matter docs as grounding, scoped per tenant.",
-      "whenToUse": "Grounding every draft in citable sources, not model memory.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat matter documents as untrusted; partition them from tool authority and from other tenants.",
-      "whenToUse": "Documents and opposing-party text are attacker-reachable.",
-      "steps": [
-        "confidentiality"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Scoped, delegated matter access; approval is tied to a licensed attorney principal.",
-      "whenToUse": "Carrying matter authority and binding approval to a licensed user.",
-      "steps": [
-        "attorney"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "Level intake and fan due-diligence batches across thousands of documents.",
-      "whenToUse": "Large due-diligence document sets.",
-      "steps": [
-        "pipeline"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -2175,9 +2099,6 @@
         "caption": "An agent drafts from model memory and cites from memory — the hallucinated-citation malpractice baseline."
       },
       "decisionPrompt": "Why is a confidently cited but unverified draft more dangerous in law than in most domains?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)"
-      ],
       "probeLinks": [
         "stanford-legal-hallucination",
         "stanford-rag-legal-tools",
@@ -2199,7 +2120,14 @@
           "instead": "Ground in authoritative sources and verify every citation before an attorney sees it."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fluency vs. verifiability",
+          "description": "Drafting straight from the model produces a polished memo in seconds, but the citations come from memory: models hallucinate cases, and worse, cite real-but-overruled ones that read as good law. With no grounding, no citation check, no provenance, and no confidentiality terms, a fluent draft is the malpractice version of the product.",
+          "chosen": "The design refuses to trade verifiability for fluency, replacing the from-memory draft with a grounded, citation-verified, attorney-gated pipeline."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -2227,9 +2155,6 @@
         "caption": "The agent grounds drafts in retrieved authoritative law and matter docs, scoped per tenant with ethical walls preserved."
       },
       "decisionPrompt": "Why ground in Westlaw/KeyCite and the DMS rather than the open web or the model's own knowledge?",
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "legalbench-rag",
         "legalbenchrag-repo",
@@ -2251,6 +2176,14 @@
           "definition": "Every retrieval is scoped to the requester's tenant, matter, and jurisdiction and screened against firm ethical walls before any document is returned.",
           "whyItMatters": "In a legal platform, data isolation changes which documents can even be retrieved and who can approve — it cannot be bolted on later.",
           "example": "An attorney walled off a matter retrieves nothing from it, even though the document physically exists in the DMS."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Retrieve from authoritative law and matter docs as grounding, scoped per tenant.",
+          "whyItMatters": "Grounding every draft in citable sources, not model memory.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -2271,7 +2204,19 @@
         "after": "Drafts are grounded in retrieved authoritative law and matter docs.",
         "newRisk": "Grounding alone doesn't guarantee the cited source is current or on-point — it must be verified."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg",
+      "tradeoffs": [
+        {
+          "name": "Source breadth vs. authority",
+          "description": "The open web and the model's own knowledge offer effortless breadth, but legal work requires citable, current authority — Westlaw/Practical Law/KeyCite, statutes, and the client's own matter documents in the DMS — with the version and status of each source known. Restricting retrieval to authoritative tracks costs coverage and licensing, but every proposition can trace to a source that will survive scrutiny.",
+          "chosen": "The design grounds exclusively in authoritative legal sources and the matter DMS, drafting only from retrieved, citable material rather than model recollection."
+        },
+        {
+          "name": "Retrieval convenience vs. ethical walls",
+          "description": "Checking access policy only at output time keeps the retrieval path fast and simple, but a document the requesting attorney cannot see would already have influenced the draft — privilege and ethical walls would be breached at read time, not just at delivery. Putting the guardrail/access-policy service on the grounding path means every retrieval pays a tenant/matter/jurisdiction/wall check.",
+          "chosen": "The design enforces confidentiality from the very first read: the access-policy service sits on the retrieval path so a walled document is never retrieved, not merely never shown."
+        }
+      ]
     },
     {
       "id": "pipeline",
@@ -2308,10 +2253,6 @@
         "caption": "An authored DAG: the model drafts in a bounded node grounded in authoritative law; the pipeline writes a pending draft."
       },
       "decisionPrompt": "Why a fixed pipeline rather than an autonomous research agent that decides its own steps?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-        "Queue-based load leveling; admission control"
-      ],
       "probeLinks": [
         "legalbench-rag",
         "ragas-eval",
@@ -2332,6 +2273,30 @@
           "definition": "Every citation is checked before a draft is ever shown to an attorney, not after.",
           "whyItMatters": "It guards the malpractice-grade side effect at the right point — before the human invests trust in the draft.",
           "example": "A draft with an overruled citation is flagged and corrected before it reaches the review queue."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The legal retrieve → draft → verify Pipeline runs ON this harness, with citation grounding and a human-lawyer review gate layered on top — and note this is the runtime harness, not the eval harness used to score outputs offline.",
+          "steps": [
+            "pipeline"
+          ]
+        },
+        {
+          "term": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
+          "description": "An authored DAG (retrieve -> draft -> verify -> review), not an open autonomous loop.",
+          "whyItMatters": "When a wrong citation is a malpractice-grade side effect to guard before surfacing.",
+          "steps": [
+            "pipeline"
+          ]
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "Level intake and fan due-diligence batches across thousands of documents.",
+          "whyItMatters": "Large due-diligence document sets.",
+          "steps": [
+            "pipeline"
+          ]
         }
       ],
       "whyNow": [
@@ -2398,7 +2363,14 @@
         "before": "Drafts could come from an opaque research loop.",
         "after": "A deterministic pipeline produces each grounded draft.",
         "newRisk": "The draft's citations still must be proven current and on-point before anyone relies on them."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Research flexibility vs. mandatory verification",
+          "description": "An autonomous research loop can follow novel multi-hop paths with little upfront design, but it can skip or defer verification, is non-deterministic, and is hard to audit — the wrong default when a bad citation is malpractice. A fixed retrieve-draft-verify-review pipeline makes verification a stage that cannot be skipped, at the cost of flexibility and explicit exception routing to attorneys.",
+          "chosen": "The design picks the deterministic pipeline with LLM calls confined to bounded nodes, because a malpractice-grade side effect must be guarded by structure, not by hoping the loop remembers to verify."
+        }
+      ]
     },
     {
       "id": "citation-gate",
@@ -2431,10 +2403,6 @@
         "caption": "Every citation is checked for existence, currency (KeyCite), and relevance; a flag routes the draft back through the correction loop, not forward to the attorney."
       },
       "decisionPrompt": "Why is a real-but-overruled citation a worse failure than a citation that simply doesn't exist?",
-      "patterns": [
-        "Bounded autonomy (agent + deterministic gate)",
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "keycite-citator",
         "shepards-citations",
@@ -2450,6 +2418,24 @@
           "definition": "The three checks every citation must pass: it is real, it is still good law, and it supports the stated proposition.",
           "whyItMatters": "Existence alone is not enough — currency catches overruled law and relevance catches off-point cites.",
           "example": "A case exists and is on-point but KeyCite shows it was overruled -> flagged, draft returned."
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "Agents draft freely but a deterministic verify gate and attorney review fence the irreversible action.",
+          "whyItMatters": "Draft-only autonomy with hard verification and review boundaries.",
+          "steps": [
+            "citation-gate",
+            "attorney"
+          ]
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Verify citations and evaluate drafts against attorney ground truth; track hallucination and citation-error rates.",
+          "whyItMatters": "Measuring and gating the pipeline where hallucination is the core risk.",
+          "steps": [
+            "citation-gate",
+            "workflows-eval"
+          ]
         }
       ],
       "whyNow": [
@@ -2568,7 +2554,19 @@
           "instead": "Verify currency (KeyCite) and relevance too, and return the draft on any flag."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-citation-gate.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-citation-gate.jpg",
+      "tradeoffs": [
+        {
+          "name": "Draft velocity vs. citation certainty",
+          "description": "Surfacing a draft as soon as it's written gets work to the attorney fastest, but every citation must first pass existence, currency, and relevance checks — and any flagged citation sends the draft back through a correction loop instead of forward. Each correction attempt costs time and provider-API budget, but produces reviewable evidence (proposition span, source span, KeyCite status, relevance score, verifier version) the attorney can rely on.",
+          "chosen": "The design holds drafts until every citation clears the three-axis verifier, routing failures through an evidence-writing correction loop rather than letting the attorney be the first line of citation defense."
+        },
+        {
+          "name": "Deterministic checks vs. judged relevance",
+          "description": "Existence and currency are deterministic lookups against KeyCite, but relevance — whether the source actually supports the proposition it's attached to — is not a lookup and requires model judgment with a score. Keeping the gate purely deterministic would miss the subtlest failure (a real, current case cited for something it doesn't say); adding a judged relevance axis introduces a probabilistic component into the gate itself.",
+          "chosen": "The design accepts a scored, model-judged relevance check alongside the deterministic existence and currency checks, recording the score and verifier version as evidence so the judgment is itself reviewable."
+        }
+      ]
     },
     {
       "id": "attorney",
@@ -2601,10 +2599,6 @@
         "caption": "A licensed attorney reviews the verified draft; identity binds approval to the attorney before the work product is finalized."
       },
       "decisionPrompt": "What does the platform check to ensure the approver is a licensed attorney and not the agent itself?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Delegation not impersonation (OAuth token exchange, act claim)"
-      ],
       "probeLinks": [
         "aba-rule-1-1-tech-competence",
         "aba-rule-5-3",
@@ -2616,6 +2610,22 @@
           "definition": "A licensed attorney must review and approve AI-assisted work before it becomes finalized or filed work product.",
           "whyItMatters": "Responsibility and the unauthorized-practice line stay with the attorney; the agent cannot be the final authority.",
           "example": "The draft is marked finalized only after the identity broker confirms an attorney principal approved it."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A licensed attorney reviews and approves before any work product is finalized or filed.",
+          "whyItMatters": "Before any legal work product leaves the platform.",
+          "steps": [
+            "attorney"
+          ]
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Scoped, delegated matter access; approval is tied to a licensed attorney principal.",
+          "whyItMatters": "Carrying matter authority and binding approval to a licensed user.",
+          "steps": [
+            "attorney"
+          ]
         }
       ],
       "whyNow": [
@@ -2686,7 +2696,14 @@
         "after": "Only attorney-approved drafts become finalized work product.",
         "newRisk": "Client data and findings must be confidential and every finding defensible to a court."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-attorney.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-attorney.jpg",
+      "tradeoffs": [
+        {
+          "name": "Automation vs. professional responsibility",
+          "description": "Auto-finalizing verified drafts would remove the last human bottleneck, but verification makes a draft trustworthy, not work product — a licensed attorney must own what is finalized or filed, and that binding requires a license/jurisdiction source behind the approval. Mandatory attorney review, second reviews for high-risk work, and override-with-recorded-justification all cap throughput at human capacity.",
+          "chosen": "The design makes attorney approval mandatory and binds finalization to a verified licensed-attorney principal, with citation-flag overrides allowed only with recorded justification."
+        }
+      ]
     },
     {
       "id": "confidentiality",
@@ -2719,9 +2736,6 @@
         "caption": "Confidentiality (ZDR/no-train, tenant isolation, ethical walls) plus provenance: every finding traces to a source span."
       },
       "decisionPrompt": "How do you make every sentence in a memo defensible back to a source, and keep one client's data away from another's?",
-      "patterns": [
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "model-rule-1-6-confidentiality",
         "openai-enterprise-privacy",
@@ -2739,6 +2753,14 @@
           "definition": "A mapping from each finding to the exact source document, span, and version it was drawn from.",
           "whyItMatters": "Legal work must be defensible; a finding without a traceable source can't be relied on or defended.",
           "example": "A diligence finding links to 'Contract v2, §7.3, lines 4-9'."
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat matter documents as untrusted; partition them from tool authority and from other tenants.",
+          "whyItMatters": "Documents and opposing-party text are attacker-reachable.",
+          "steps": [
+            "confidentiality"
+          ]
         }
       ],
       "whyNow": [
@@ -2768,7 +2790,19 @@
         "after": "ZDR/no-train confidentiality with tenant isolation, and every finding traced to a source span.",
         "newRisk": "We still need to support the real workflows and measure quality where hallucination is the core failure."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-confidentiality.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-confidentiality.jpg",
+      "tradeoffs": [
+        {
+          "name": "Model improvement vs. zero retention",
+          "description": "Letting client data flow into provider training or long retention could improve the models and simplify operations, but privilege is genuinely at risk: legal work demands zero-data-retention and no-train terms, tenant segregation, and ethical walls. Those terms constrain provider choice and features in exchange for a defensible confidentiality story.",
+          "chosen": "The design runs all client data under zero-data-retention and no-train terms with enforced tenant segregation, treating matter documents as untrusted input partitioned from tool authority."
+        },
+        {
+          "name": "Provenance overhead vs. defensibility",
+          "description": "Tracing every finding and sentence back to an exact source span and version adds capture and storage cost to every pipeline step, and retention policy gets complicated — different artifacts retain differently and legal hold overrides all of it. The payoff is that an attorney or a court can follow any assertion to its source, making the work audit-defensible.",
+          "chosen": "The design pays the span-level provenance cost on every sentence, with artifact-specific retention and legal-hold override, because defensibility is the product in this domain."
+        }
+      ]
     },
     {
       "id": "workflows-eval",
@@ -2799,9 +2833,6 @@
         "caption": "Contract review, due-diligence tabular extract, and cited memos run on the pipeline; quality is evaluated vs attorney ground truth."
       },
       "decisionPrompt": "A memo reads beautifully but cites one overruled case — which signal catches it, fluency or citation-error eval?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "cuad-contract-review",
         "contractnli",
@@ -2856,7 +2887,19 @@
         "after": "Contract review, diligence, and memos run on one verified, attorney-gated pipeline, evaluated against ground truth.",
         "newRisk": "This completes phase 1 of the series — Foundations plus three verticals contrasting where the gate sits."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-workflows-eval.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-workflows-eval.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fluency signals vs. citation-error eval",
+          "description": "A memo that reads beautifully passes every surface-quality check while still citing one overruled case — fluency metrics and human skimming reward exactly the failure mode that matters least to catch. Evaluating against attorney ground truth with citation-error and hallucination rates via trajectory eval costs expert labeling time, but it is the only signal that catches bad law hiding in good prose.",
+          "chosen": "The design evaluates against attorney ground truth on citation-error and hallucination rates, treating evaluation as a release gate rather than trusting how polished the output reads."
+        },
+        {
+          "name": "Batch scale vs. traceability",
+          "description": "Due diligence across thousands of documents pushes toward fast bulk extraction, but every extracted table cell must still trace to a source span, and long batches must survive interruption. Resumable, provenance-carrying batch extraction is slower and heavier than a naive sweep, but a diligence finding without a source is worthless to the deal team.",
+          "chosen": "The design runs due diligence as resumable batch extraction with per-cell source spans, accepting the throughput cost so scale never severs the chain back to the document."
+        }
+      ]
     }
   ],
   "finalDesign": {

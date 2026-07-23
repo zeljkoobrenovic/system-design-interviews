@@ -1106,62 +1106,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Cache-aside (lazy loading)",
-      "what": "App checks cache, loads from DB on miss, and backfills the cache.",
-      "whenToUse": "Read-heavy data tolerant of brief staleness; the default caching pattern.",
-      "steps": [
-        "cache-aside"
-      ],
-      "group": "Cache-Aside in Front of the Database"
-    },
-    {
-      "name": "Consistent hashing",
-      "what": "Map keys to cache nodes on a ring so adding/removing a node moves few keys.",
-      "whenToUse": "Sharding a cache where node count changes and you want minimal cache churn.",
-      "steps": [
-        "sharding"
-      ],
-      "group": "Shard the Keyspace with Consistent Hashing"
-    },
-    {
-      "name": "Eviction policy (LRU/LFU/TTL)",
-      "what": "Reclaim memory by dropping least-useful entries when full.",
-      "whenToUse": "Any bounded-memory cache; the policy shapes the hit rate.",
-      "steps": [
-        "eviction"
-      ],
-      "group": "Eviction: Make Room When Memory Is Full"
-    },
-    {
-      "name": "Write-through / write-back",
-      "what": "Update the cache on writes (synchronously or asynchronously) to control consistency.",
-      "whenToUse": "When stale reads after a write are unacceptable, or to absorb write bursts.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Cache/DB Consistency on Writes"
-    },
-    {
-      "name": "Replication + failover",
-      "what": "Keep a replica of each node so a failure doesn't drop a whole shard.",
-      "whenToUse": "When a cold shard would overload the DB on failover.",
-      "steps": [
-        "failover"
-      ],
-      "group": "Replication, Failover, and Failure Modes"
-    },
-    {
-      "name": "Request coalescing (anti-stampede)",
-      "what": "Collapse concurrent misses for the same key into one DB load.",
-      "whenToUse": "Hot keys where a miss could trigger a thundering herd.",
-      "steps": [
-        "hotkeys"
-      ],
-      "group": "Hot Keys and Thundering Herds"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1208,7 +1152,14 @@
           "instead": "Move to a shared cache tier all instances read through (cache-aside), then shard, evict, and replicate it."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Local speed vs. shared capacity",
+          "description": "An in-process map gives microsecond hits with zero infrastructure, but nothing is shared: 50 app instances each load the same hot key from the DB, invalidation on one instance leaves the others stale, the working set is capped by one process's heap, and every deploy restarts cold and hammers the DB.",
+          "chosen": "The design uses the local map's failures — duplication, staleness, heap-bound size, cold restarts — to motivate a shared cache tier that survives app deploys."
+        }
+      ]
     },
     {
       "id": "cache-aside",
@@ -1324,6 +1275,14 @@
           "whyItMatters": "Simple, resilient (a cache outage just means more DB load), and caches only hot data.",
           "example": "GET user:42 -> miss -> SELECT from DB -> SET user:42 with TTL.",
           "group": "Cache-Aside in Front of the Database"
+        },
+        {
+          "term": "Cache-aside (lazy loading)",
+          "description": "App checks cache, loads from DB on miss, and backfills the cache.",
+          "whyItMatters": "Read-heavy data tolerant of brief staleness; the default caching pattern.",
+          "steps": [
+            "cache-aside"
+          ]
         }
       ],
       "probeLinks": [
@@ -1332,9 +1291,6 @@
         "redis-cache",
         "evcache-features",
         "tail-at-scale"
-      ],
-      "patterns": [
-        "Cache-aside (lazy loading)"
       ],
       "whyNow": [
         "Cache-aside is the baseline contract; every later concern (sharding, eviction, consistency) is layered on this read path."
@@ -1426,6 +1382,13 @@
           "highlight": [
             "CacheA"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "App-controlled loading vs. cache-controlled loading",
+          "description": "With cache-aside the application loads from the DB on a miss and backfills with a TTL, so a cache outage degrades gracefully to direct DB reads and the DB stays the unambiguous source of truth — but population logic is duplicated in every caller and a miss backfill can race a concurrent write; read-through centralizes the loader in the cache tier for one clean path, yet couples the cache to DB credentials and per-type loaders and fails reads outright when the cache is down.",
+          "chosen": "The design picks cache-aside because graceful degradation and a clear source of truth outweigh scattered population logic, which a shared client library contains."
         }
       ]
     },
@@ -1578,9 +1541,6 @@
         "mcrouter",
         "elasticache-resharding"
       ],
-      "patterns": [
-        "Consistent hashing"
-      ],
       "whyNow": [
         "Sharding is how the cache scales; consistent hashing is specifically what protects the DB during topology changes."
       ],
@@ -1677,6 +1637,18 @@
           "highlight": [
             "Config"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Consistent hashing vs. modulo remapping",
+          "description": "Plain key % N remaps almost the entire keyspace when one node dies, collapsing the hit rate and stampeding the DB; a consistent-hashing ring with virtual nodes remaps only the failed node's share, at the cost of ring topology that must be distributed, versioned by epoch, and rolled out in stages.",
+          "chosen": "The design uses a consistent-hashing ring with virtual nodes so scaling events and failures disturb only a fraction of the keyspace."
+        },
+        {
+          "name": "Fat clients vs. proxy hop",
+          "description": "Client-side hashing talks straight to the owning node — no extra hop, no proxy tier to run — but every client in every language must embed correct, in-sync ring logic and a config change must reach all of them or stragglers route wrong; a proxy keeps clients thin and absorbs topology changes centrally, at the cost of an added hop and a new tier to scale and keep highly available.",
+          "chosen": "The design routes with client-side hashing for lowest hit latency, accepting fat clients that refresh topology from the config service."
         }
       ]
     },
@@ -1843,6 +1815,14 @@
           "whyItMatters": "LRU is cheap but vulnerable to scans; LFU protects hot keys but needs frequency tracking.",
           "example": "A one-time scan evicts hot keys under pure LRU; LFU (or scan-resistant LRU) keeps them.",
           "group": "Eviction: Make Room When Memory Is Full"
+        },
+        {
+          "term": "Eviction policy (LRU/LFU/TTL)",
+          "description": "Reclaim memory by dropping least-useful entries when full.",
+          "whyItMatters": "Any bounded-memory cache; the policy shapes the hit rate.",
+          "steps": [
+            "eviction"
+          ]
         }
       ],
       "probeLinks": [
@@ -1853,9 +1833,6 @@
         "pelikan-segcache",
         "memcached-extstore"
       ],
-      "patterns": [
-        "Eviction policy (LRU/LFU/TTL)"
-      ],
       "whyNow": [
         "Eviction is what turns 'infinite cache' fantasy into a real bounded-memory tier; the policy choice directly drives the hit-rate requirement."
       ],
@@ -1863,7 +1840,19 @@
         "before": "Assumed unlimited memory.",
         "after": "Bounded memory with a policy that protects hot data.",
         "newRisk": "After a write to the DB, cached copies are stale — need a consistency strategy."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Recency vs. frequency",
+          "description": "LRU is O(1), predictable, and a good default, but it treats a key read once the same as one read 10,000 times — a single scan of a million cold keys flushes the genuinely hot working set; LFU keeps hot keys resident through scans, but needs per-entry counters, cold-starts new-but-rising keys badly, and pins yesterday's hot keys without aging.",
+          "chosen": "The design defaults to LRU for its cost and predictability, noting scan-resistant variants like SLRU or TinyLFU as the production fix for cache pollution."
+        },
+        {
+          "name": "Time-bounded staleness vs. memory protection",
+          "description": "TTL-only expiry bounds how stale any entry can get with zero bookkeeping and pairs well with invalidate-on-write, but it does nothing to pick victims under memory pressure — a flood of new keys can still OOM the node, and synchronized expiries of a hot key invite a thundering herd.",
+          "chosen": "The design uses TTLs to cap staleness alongside a recency-based eviction policy, rather than relying on the clock alone to manage memory."
+        }
+      ]
     },
     {
       "id": "consistency",
@@ -2030,6 +2019,14 @@
           "whyItMatters": "Trades write latency and durability against freshness.",
           "example": "Write-back absorbs bursts but can lose unflushed writes if the node dies.",
           "group": "Cache/DB Consistency on Writes"
+        },
+        {
+          "term": "Write-through / write-back",
+          "description": "Update the cache on writes (synchronously or asynchronously) to control consistency.",
+          "whyItMatters": "When stale reads after a write are unacceptable, or to absorb write bursts.",
+          "steps": [
+            "consistency"
+          ]
         }
       ],
       "probeLinks": [
@@ -2039,9 +2036,6 @@
         "redis-cache",
         "aws-caching-strategies",
         "dynamo-paper"
-      ],
-      "patterns": [
-        "Write-through / write-back"
       ],
       "whyNow": [
         "Consistency is the subtle part interviewers push on; articulating invalidate-on-write and the read-miss race is the senior differentiator."
@@ -2159,6 +2153,18 @@
           "trap": "Updating the cache value on write instead of deleting it.",
           "why": "Concurrent writes can interleave and leave the wrong value cached.",
           "instead": "Delete (invalidate) and let the next read repopulate the authoritative value."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Invalidate vs. update on write",
+          "description": "Deleting the cached key on a DB write guarantees the next read repopulates from the source of truth and avoids the out-of-order lost-update race of writing computed values into the cache, but the first read after every write is a guaranteed miss and a read-miss backfill can still interleave with the write and re-stash a stale value; write-through keeps the cache warm with no post-write miss, but adds cache latency to every write, needs two-store failure handling, and wastes memory on write-only keys.",
+          "chosen": "The design invalidates on write and repopulates lazily, backing it with short TTLs or versioned compare-and-set fills to close the backfill race."
+        },
+        {
+          "name": "Write latency vs. durability",
+          "description": "Write-back lands writes in the cache and flushes to the DB asynchronously, giving the lowest write latency and coalescing bursts, but a node failure before flush loses acknowledged writes and every other reader sees a lagging DB — acceptable only for loss-tolerant data like counters.",
+          "chosen": "The design keeps the DB synchronously authoritative on writes because a cache tier must never be the only holder of durable data."
         }
       ]
     },
@@ -2336,6 +2342,14 @@
           "whyItMatters": "Turns a herd into a single DB load.",
           "example": "First miss takes a per-key lock and loads; others block briefly, then read the backfilled value.",
           "group": "Hot Keys and Thundering Herds"
+        },
+        {
+          "term": "Request coalescing (anti-stampede)",
+          "description": "Collapse concurrent misses for the same key into one DB load.",
+          "whyItMatters": "Hot keys where a miss could trigger a thundering herd.",
+          "steps": [
+            "hotkeys"
+          ]
         }
       ],
       "probeLinks": [
@@ -2345,9 +2359,6 @@
         "redis-observability",
         "sre-overload",
         "tail-at-scale"
-      ],
-      "patterns": [
-        "Request coalescing (anti-stampede)"
       ],
       "whyNow": [
         "Hot keys are the failure mode sharding alone can't fix; coalescing + key replication is the expected mitigation."
@@ -2425,6 +2436,18 @@
             "DB"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Blocking coalesced misses vs. redundant loads",
+          "description": "Single-flight coalescing lets exactly one request load an expired hot key from the DB while concurrent readers wait, capping DB load at one query per key per node — but all those readers block on one in-flight load, a slow DB read stalls many requests, and coordination is per-node so the herd can still hit once per node.",
+          "chosen": "The design coalesces concurrent misses as the default herd defense because it is cheap, local, and directly kills the expiry stampede."
+        },
+        {
+          "name": "Spreading hot reads vs. invalidation fan-out",
+          "description": "Replicating an extreme hot key across nodes (or fronting it with a tiny short-TTL L1 in each app instance) spreads sustained read load the ring cannot, but invalidation must now fan out to every copy, hot keys must be detected and promoted dynamically, and the L1 reintroduces the naive local cache's staleness window bounded only by its short TTL.",
+          "chosen": "The design escalates from coalescing to detection-driven hot-key replication only for the extreme cases, since replication buys read throughput at real invalidation and memory cost."
+        }
       ]
     },
     {
@@ -2466,9 +2489,6 @@
         ]
       },
       "decisionPrompt": "A cache node holding 10% of keys dies. What does the DB suddenly experience, and how do you cushion it?",
-      "patterns": [
-        "Replication + failover"
-      ],
       "probeLinks": [
         "redis-cluster",
         "evcache-features",
@@ -2578,7 +2598,29 @@
           "mitigation": "Version the ring with a config epoch and fence on it; converge clients on one owner, prefer a brief miss-to-DB over serving two divergent copies, and alert on epoch drift across clients."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-failover.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-failover.jpg",
+      "concepts": [
+        {
+          "term": "Replication + failover",
+          "description": "Keep a replica of each node so a failure doesn't drop a whole shard.",
+          "whyItMatters": "When a cold shard would overload the DB on failover.",
+          "steps": [
+            "failover"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Warm replicas vs. memory cost",
+          "description": "Keeping an asynchronously fed replica per primary means a node death promotes a warm copy instead of dumping 10% of the keyspace cold onto the DB at once, but it roughly doubles cache memory and the replica lags the primary; because the DB is authoritative and TTLs cap staleness, a slightly stale warm replica is strictly better than a cold shard.",
+          "chosen": "The design replicates each shard asynchronously and lets the config/membership service drive fenced promotion, spending memory to prevent DB load spikes on failure."
+        },
+        {
+          "name": "Fast promotion vs. split brain",
+          "description": "Letting a client or replica promote itself the moment the primary looks down minimizes cold time but risks two nodes both accepting writes for the same shard after a network blip; routing promotion through the config service with health checks and a new epoch adds seconds of decision latency but keeps exactly one owner per shard.",
+          "chosen": "The design centralizes promotion in the config/membership service with epoch-stamped topology so failover is slower but never splits ownership."
+        }
+      ]
     },
     {
       "id": "operations",
@@ -2672,7 +2714,19 @@
           "mitigation": "Top-K hot-key detection -> replicate/L1 promotion -> demote when it cools."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/08-operations.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-operations.jpg",
+      "tradeoffs": [
+        {
+          "name": "Serving stale vs. protecting the database",
+          "description": "When a cold start generates 200k misses/sec against a 60k QPS DB fallback budget, letting every miss through takes the DB down and keeps it down; rate-limiting backfill, serving stale values for eligible keys, and shedding optional fill work keep the DB inside its budget so it can recover, at the cost of temporarily staler and less complete cache answers.",
+          "chosen": "The design enforces an explicit DB-fallback budget with stale-serving and shed-able fill work, choosing degraded freshness over a feedback loop that keeps the DB dead."
+        },
+        {
+          "name": "Fast warmup vs. bounded backfill",
+          "description": "Backfilling a cold or failed-over shard as fast as possible restores the hit rate quickly but the unbounded miss-driven load is itself the stampede that overwhelms the DB; throttling warmup with jittered TTLs and capped single-flight waiters slows recovery of the hit rate but keeps the DB alive throughout.",
+          "chosen": "The design bounds warmup and jitters expiries so recovery is deliberately gradual, trading a longer cold period for a DB that stays up."
+        }
+      ]
     }
   ],
   "finalDesign": {

@@ -316,6 +316,12 @@ h3 {
     border-left-color: lightgrey;
 }
 
+/* Trade-off cards reuse the concept-card box; the accent edge marks them as
+   decision content rather than vocabulary. */
+.concept-card.tradeoff-card {
+    border-left-color: var(--accent);
+}
+
 .concept-card h4 {
     margin: 0 0 4px;
     font-size: 15px;

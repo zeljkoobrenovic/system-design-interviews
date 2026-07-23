@@ -395,6 +395,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Objective simplicity vs. engagement quality",
+          "description": "A click-only target is one clean, abundant label that is easy to train and evaluate, but it rewards clickbait and outrage, ignores hides and blocks, and misses high-value low-click actions like long dwell or shares — so the feed degrades over time. A weighted multi-action objective teaches the model what users actually value and lets negative reactions pull clickbait down, but per-action weights are subjective, several signals must be logged reliably, and a composite target is harder to debug.",
+          "chosen": "The design optimizes a weighted blend of likes, comments, shares, dwell, and negative actions, accepting weight-tuning and pipeline complexity so the model learns value rather than tap reflexes."
+        }
       ]
     },
     {
@@ -458,7 +465,14 @@
           "OfflineFS",
           "OnlineFS"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Feature parity vs. logging cost",
+          "description": "Turning every impression and reaction into training data with features logged at serving time eliminates training-serving skew — the model trains on exactly what it will see online — but it means running feature pipelines for user, post, author-affinity, and context features in both offline and online forms and storing enormous impression volumes. Logging less or recomputing features offline is cheaper but risks a model that behaves differently in production than in training.",
+          "chosen": "The design logs impressions, reactions, and the served feature values through shared pipelines feeding both training and serving, paying storage and pipeline cost to keep the two worlds consistent."
+        }
+      ]
     },
     {
       "id": "candidate-generation",
@@ -642,6 +656,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Recall breadth vs. retrieval complexity",
+          "description": "Multiple retrieval sources — social graph, topics, recency — each cover a different intent, so the union gives broad recall and a feed that is not one-note, but there are several systems to build and keep fresh, the union needs dedup, and the source mix becomes a hidden knob shaping the feed. A single two-tower ANN index is a simpler serving path that captures soft interest matches, but one embedding space can collapse diversity into a filter bubble and handles hard freshness poorly.",
+          "chosen": "The design retrieves from separate graph, topic, and freshness sources and unions them into a deduped candidate set, taking on multi-system operations for recall diversity within milliseconds."
+        },
+        {
+          "name": "Retrieval freshness vs. serving latency",
+          "description": "Precomputing per-user candidate lists offline makes request-time retrieval a cache read — ideal for the 200 ms budget — but lists go stale between rebuilds, breaking content is delayed, storage for billions of users is expensive, and cold users have weak sets. Retrieving live at request time reflects the newest posts but spends precious hot-path milliseconds.",
+          "chosen": "The design runs its retrieval sources live enough to surface fresh and breaking content, keeping each source fast and independently tunable instead of relying on fully precomputed lists."
+        }
       ]
     },
     {
@@ -799,6 +825,13 @@
               "Trainer"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Serving simplicity vs. rank fidelity",
+          "description": "Pointwise scoring treats each user-post pair independently, so it parallelizes trivially across hundreds of candidates, trains on abundant per-impression labels, and blends cleanly with business constraints needing calibrated scores — but it optimizes absolute scores rather than the relative order users experience and ignores interactions between items shown together. Pairwise and listwise approaches model order and even whole-list effects directly, but cost much more in pair or full-list labeling and training, and pairwise scores resist fusion with absolute business thresholds.",
+          "chosen": "The design trains a pointwise model predicting reaction probabilities per user-post pair, valuing parallel scoring, easy labels, and calibrated scores over directly optimizing list order."
         }
       ]
     },
@@ -961,7 +994,14 @@
           "OnlineFS",
           "ModelServer"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Feature richness vs. lookup latency",
+          "description": "Richer online features for the user and every candidate improve ranking quality, but each feature fetched at request time adds lookups across hundreds of candidates inside the 200 ms budget. Restricting the online set to precomputed, cheaply fetched features keeps scoring fast but sacrifices signals that could only be computed fresh.",
+          "chosen": "The design serves feature vectors from a low-latency online feature store with batched lookups per candidate set, bounding per-request feature work so model scoring fits the budget."
+        }
+      ]
     },
     {
       "id": "feed-ranking-under-200ms",
@@ -1128,6 +1168,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Compute placement vs. consistency",
+          "description": "Splitting work across offline precompute, nearline updates, and light request-time scoring keeps requests inside 200 ms and lets each tier scale to the freshness it needs, but three compute paths risk training-serving skew, the nearline pipeline has its own lag and failures, and cross-tier cache invalidation breeds bugs. Computing everything at request time has no staleness or skew but blows the budget; a fully offline feed is a single cache read but ignores in-session behavior and breaking content.",
+          "chosen": "The design tiers computation — expensive features offline, recent signals nearline, cached candidates and batched inference at request time — accepting three pipelines to hit both the latency budget and acceptable freshness."
+        }
       ]
     },
     {
@@ -1190,7 +1237,14 @@
           "Experiment",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Offline proxies vs. online truth",
+          "description": "Offline ranking metrics are fast and cheap gates that catch bad models before launch, but they are proxies that cannot predict real user impact. Online experiments measure the truth — engagement plus guardrails like hides, blocks, latency, and diversity — but are slow, consume live traffic, and expose some users to a possibly worse model.",
+          "chosen": "The design gates candidates on offline ranking quality first and then proves impact in online experiments with guardrail metrics, using each stage for what it can actually measure."
+        }
+      ]
     },
     {
       "id": "safety-diversity-and-ads",
@@ -1253,7 +1307,14 @@
           "Ads",
           "Feed"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Model purity vs. product constraints",
+          "description": "Ranking purely by model score maximizes predicted engagement per item, but a raw-score feed can pile on one author or topic, resurface content users hid or blocked, and leave no principled slots for sponsored insertion. A final rule layer applying hide/block penalties, diversity, freshness, and ads constraints produces a healthier, monetizable feed, but every hand-tuned rule overrides the learned model and adds another surface to maintain and debug.",
+          "chosen": "The design applies an explicit business-rules layer on top of pure model scores — penalties for negative feedback, author and topic diversity, freshness, and sponsored rules — treating the model score as an input to the feed, not the feed itself."
+        }
+      ]
     }
   ],
   "satisfies": {

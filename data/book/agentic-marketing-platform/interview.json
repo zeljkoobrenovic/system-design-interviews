@@ -1931,83 +1931,6 @@
       "makesIrrelevant": "Managed telemetry reduces collector/storage operations, but not the domain-specific eval gates that block unsafe prompt, model, or reviewer rollouts."
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The campaign orchestrator runs ON this harness in a hybrid mode — authored orchestration with a bandit/optimization loop and brand/spend approval gates layered on top.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Orchestrator-workers / scatter-gather subagents",
-      "what": "The orchestrator fans per-channel asset generation out to content agents.",
-      "whenToUse": "Generating many assets across channels and variants.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A brand owner approves high-risk claims before publishing.",
-      "whenToUse": "Before anything goes out in the brand's name.",
-      "steps": [
-        "brand-gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "Agents generate and optimize freely but a deterministic claim gate fences what publishes.",
-      "whenToUse": "High-volume generation with a brand-safety boundary.",
-      "steps": [
-        "brand-gate",
-        "optimize"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground every asset in the brand kit / DAM rather than generic model style.",
-      "whenToUse": "Enforcing brand voice and reusing approved assets.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate brand-voice conformance and track claim-violation rates.",
-      "whenToUse": "Measuring brand safety and campaign quality.",
-      "steps": [
-        "optimize"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat brief text and external content as untrusted; partition from channel authority.",
-      "whenToUse": "Briefs and scraped content are attacker-reachable.",
-      "steps": [
-        "compliance"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Scoped, delegated access to ad platforms and the CDP; approval tied to a brand owner.",
-      "whenToUse": "Activating on external channels on the brand's behalf.",
-      "steps": [
-        "brand-gate"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "The delivery workflow levels bursty generation and channel delivery, admitting jobs against concurrency/spend caps and per-provider token buckets.",
-      "whenToUse": "Large multi-channel campaigns.",
-      "steps": [
-        "naive",
-        "brand-gate",
-        "compliance"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -2036,9 +1959,6 @@
         "caption": "An agent generates and publishes directly to channels with no gate — the brand-unsafe baseline."
       },
       "decisionPrompt": "What's the cost of one off-brand or false-claim asset published automatically?",
-      "patterns": [
-        "Orchestrator-workers / scatter-gather subagents"
-      ],
       "probeLinks": [
         "google-ads-pmax-asset-groups",
         "google-ads-ctr-factory",
@@ -2054,6 +1974,32 @@
           "definition": "The deterministic runtime that wraps the model and drives the agent loop — context assembly, tool-call parsing/execution, and budget/stop-condition enforcement. Distinct from an eval harness (offline scoring).",
           "whyItMatters": "The campaign orchestrator and its brand/spend approval and bandit optimization gates all run inside this harness, so the gates fence what an agent loop can do rather than replacing the loop.",
           "example": "A campaign request enters the harness, which assembles brand/audience context, runs the scoped agent, and routes spend/creative changes through approval — the bandit loop sits inside the harness."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The campaign orchestrator runs ON this harness in a hybrid mode — authored orchestration with a bandit/optimization loop and brand/spend approval gates layered on top.",
+          "steps": [
+            "naive"
+          ]
+        },
+        {
+          "term": "Orchestrator-workers / scatter-gather subagents",
+          "description": "The orchestrator fans per-channel asset generation out to content agents.",
+          "whyItMatters": "Generating many assets across channels and variants.",
+          "steps": [
+            "naive"
+          ]
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "The delivery workflow levels bursty generation and channel delivery, admitting jobs against concurrency/spend caps and per-provider token buckets.",
+          "whyItMatters": "Large multi-channel campaigns.",
+          "steps": [
+            "naive",
+            "brand-gate",
+            "compliance"
+          ]
         }
       ],
       "recap": {
@@ -2068,7 +2014,19 @@
           "instead": "Ground in the brand kit, review claims, and gate high-risk assets on human approval."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Speed to publish vs. brand safety",
+          "description": "Reading a brief and posting straight to channels is the fastest possible campaign loop, but nothing checks assets against brand voice or the prohibited-claim list, synthetic images ship without disclosure, and no human signs off on regulated claims. One off-brand or false-claim asset published in the brand's name is public reputation damage that can't be quietly retracted.",
+          "chosen": "The design gives up the direct-publish loop and inserts grounding, a claim gate, and approvals before anything goes out in the brand's name."
+        },
+        {
+          "name": "Variant volume vs. spend control",
+          "description": "Generating freely across channels and variants maximizes creative coverage, but unbounded generation runs up LLM and image spend and slams each provider's delivery API past its rate limit. Concurrency caps, per-tenant budgets, and a queue to absorb bursts bound the cost at the price of slower, throttled generation.",
+          "chosen": "The design adds concurrency caps, per-tenant budgets, and queued burst absorption, trading raw generation throughput for bounded spend and provider-limit compliance."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -2152,9 +2110,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/02-grounding-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "rag-foundations",
         "pinecone-multitenancy",
@@ -2166,6 +2121,14 @@
           "definition": "Generating against a brand kit (voice, style, approved assets, prohibited claims) rather than generic model style.",
           "whyItMatters": "Brand voice consistency is the #1 differentiator; ungrounded generation drifts off-brand.",
           "example": "Copy is drafted from the brand voice guide and checked against the negative-claim library."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground every asset in the brand kit / DAM rather than generic model style.",
+          "whyItMatters": "Enforcing brand voice and reusing approved assets.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -2175,7 +2138,14 @@
         "before": "Assets used generic model style.",
         "after": "Assets are grounded in brand voice and approved material, and each records the brand-kit and claim-library version it used — the snapshot a later approval is tied to, so a kit/library change can expire pending approvals.",
         "newRisk": "Grounding biases toward on-brand but doesn't guarantee no prohibited claim slips through."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Versioned retrieval vs. prompt stuffing",
+          "description": "Pasting brand voice notes into the prompt needs no infrastructure, but it leaves no record of which guidance an asset was generated against and drifts off-brand as the kit outgrows the context window. Versioned retrieval from the brand kit, DAM, and negative-claim library requires a real index, but each asset records the versions it used and a changed claim library can re-flag pending assets by version diff.",
+          "chosen": "The design picks versioned retrieval with citation so every asset carries evidence of the brand-kit and claim-library versions it was grounded in, accepting the retrieval infrastructure cost."
+        }
+      ]
     },
     {
       "id": "brand-gate",
@@ -2279,11 +2249,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/03-brand-gate-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)",
-        "Delegation not impersonation (OAuth token exchange, act claim)"
-      ],
       "probeLinks": [
         "azure-content-safety",
         "bedrock-guardrails",
@@ -2297,6 +2262,31 @@
           "definition": "A maintained list of prohibited or regulated phrases/claims the reviewer enforces as rules.",
           "whyItMatters": "It turns brand/legal risk into a deterministic check instead of hoping the model behaves.",
           "example": "Copy claiming 'guaranteed returns' is flagged and routed to approval or rejected."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A brand owner approves high-risk claims before publishing.",
+          "whyItMatters": "Before anything goes out in the brand's name.",
+          "steps": [
+            "brand-gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "Agents generate and optimize freely but a deterministic claim gate fences what publishes.",
+          "whyItMatters": "High-volume generation with a brand-safety boundary.",
+          "steps": [
+            "brand-gate",
+            "optimize"
+          ]
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Scoped, delegated access to ad platforms and the CDP; approval tied to a brand owner.",
+          "whyItMatters": "Activating on external channels on the brand's behalf.",
+          "steps": [
+            "brand-gate"
+          ]
         }
       ],
       "whyNow": [
@@ -2410,6 +2400,18 @@
           "trap": "Treating brand safety as a model-prompt instruction.",
           "why": "A prompt can't guarantee a prohibited claim never appears across thousands of variants.",
           "instead": "Enforce the negative-claim library as a deterministic gate before publish."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Deterministic rules vs. model judgment",
+          "description": "A model-only self-check is one prompt with no separate rule engine, but a prompt can't guarantee a prohibited claim never appears across thousands of variants and produces no deterministic evidence for audit. Splitting the gate — hard rules for prohibited claims, disclosures, and blocked phrases; a thresholded model judge for brand-voice conformance — guarantees the guaranteeable, at the cost of maintaining two review paths and tuning voice-judge false positives.",
+          "chosen": "The design combines deterministic claim/regulatory rules with a model-judged voice check and escalation on low scores, because claims must be enforced as rules while voice genuinely needs judgment."
+        },
+        {
+          "name": "Review friction vs. risk tiering",
+          "description": "Requiring a brand owner's approval on every asset is the safest gate but throttles a platform whose point is variant volume; letting everything flow under policy is fast but puts regulated and financial claims out unreviewed. Risk-tiered approval routes high-risk assets to a human and lets low-risk variants flow, at the cost of a tiering policy that must itself be right.",
+          "chosen": "The design tiers by risk: regulated, financial, and claim-bearing assets require brand-owner approval while low-risk variants flow under policy, with C2PA provenance stamped on synthetic media."
         }
       ]
     },
@@ -2533,10 +2535,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/04-optimize-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Bounded autonomy (agent + deterministic gate)",
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "vowpal-bandits",
         "bandits-book",
@@ -2550,6 +2548,14 @@
           "definition": "A multi-armed bandit shifts budget toward better-performing variants while still exploring, instead of a fixed A/B split.",
           "whyItMatters": "It optimizes spend continuously, but must stay inside the brand gate to be safe.",
           "example": "A winning subject line gets more budget; a new variant is generated and re-reviewed."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate brand-voice conformance and track claim-violation rates.",
+          "whyItMatters": "Measuring brand safety and campaign quality.",
+          "steps": [
+            "optimize"
+          ]
         }
       ],
       "whyNow": [
@@ -2577,6 +2583,18 @@
             "Stale or missing analytics freezes allocation at the last safe split rather than exploring blind; the same applies if the brand-safety/eval feed is unavailable.",
             "Low-traffic and cold-start campaigns fall back to a fixed A/B or rules-based split until each arm has enough settled data to estimate reward."
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Exploration vs. guardrails",
+          "description": "An unconstrained bandit maximizes raw conversion lift fastest, but it will optimize into borderline claims, audience fatigue, and spend spikes — and can reallocate budget to a paused or revoked arm. A policy-constrained bandit only allocates among arms with current cleared claim status and valid approval, with budget, frequency, and audience caps bounding exploration, at the cost of eligibility-check latency on each reallocation and explicit cold-start fallbacks.",
+          "chosen": "The design runs a policy-constrained bandit whose every regenerated variant goes back through the brand/claim gate, so optimization chases performance without escaping brand safety."
+        },
+        {
+          "name": "Continuous optimization vs. statistical simplicity",
+          "description": "A fixed A/B test is predictable, easy to reason about, and immune to runaway allocation, but it wastes budget on losing variants for the whole test window and never optimizes continuously. The bandit reallocates as evidence arrives, at the price of harder attribution — delayed conversions need explicit attribution windows and each decision must be logged and reversible.",
+          "chosen": "The design accepts the bandit's statistical complexity over a fixed A/B split, using logged, reversible decisions and explicit attribution windows to keep continuous reallocation accountable."
         }
       ]
     },
@@ -2613,9 +2631,6 @@
         "caption": "Cleared assets enter the delivery workflow, which re-checks channel rules (CAN-SPAM/TCPA/GDPR) and approval validity before a delegated channel token activates them; everything is audited."
       },
       "decisionPrompt": "Where do channel-compliance rules live so the bandit can't optimize past them?",
-      "patterns": [
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "can-spam",
         "gdpr-text",
@@ -2629,6 +2644,14 @@
           "definition": "Per-channel legal/platform rules (opt-out, consent, template approval) enforced at activation.",
           "whyItMatters": "Optimization that ignores them creates legal and deliverability liability.",
           "example": "An opted-out recipient is suppressed regardless of what the bandit prefers."
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat brief text and external content as untrusted; partition from channel authority.",
+          "whyItMatters": "Briefs and scraped content are attacker-reachable.",
+          "steps": [
+            "compliance"
+          ]
         }
       ],
       "whyNow": [
@@ -2741,7 +2764,14 @@
         "after": "Compliance is enforced at activation and everything is audited.",
         "newRisk": "Quality and brand-safety must be measured, not assumed."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-compliance.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-compliance.jpg",
+      "tradeoffs": [
+        {
+          "name": "Personalization reach vs. consent scope",
+          "description": "Pulling freely from the CDP maximizes personalization power, but compliance is not one boolean: consent is scoped by recipient, channel, region, and purpose with a legal basis, channel policies are versioned, and provider templates can be pending or revoked. Encoding all of that as enforced structure narrows what any given activation may do, but keeps CAN-SPAM/TCPA suppression and GDPR deletion obligations from depending on the bandit's restraint.",
+          "chosen": "The design encodes consent, channel policy, and template status as versioned, enforced compliance state that activation checks at send time, so the optimization loop cannot optimize past it, with every action in an append-only audit."
+        }
+      ]
     },
     {
       "id": "eval",
@@ -2769,9 +2799,6 @@
         "caption": "Brand-safety (claim-violation rate) and performance are evaluated; the loop closes with the bandit."
       },
       "decisionPrompt": "A variant has the best CTR but makes a borderline claim — which signal stops it?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "openai-evals",
         "ragas-evals",
@@ -2802,7 +2829,14 @@
         "after": "Brand safety and performance are both evaluated.",
         "newRisk": "Other verticals (sales, HR) gate on deliverability and fairness — see the rest of the series."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-eval.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-eval.jpg",
+      "tradeoffs": [
+        {
+          "name": "Performance lift vs. claim safety",
+          "description": "Measuring campaigns purely on CTR and conversion lift rewards exactly the variant most likely to have drifted toward a borderline claim — the best-performing asset can be the least safe one. Tracking claim-violation and off-brand rates with trajectory eval alongside performance costs a second measurement dimension but ensures a high performer never hides a prohibited claim.",
+          "chosen": "The design evaluates in two dimensions — brand safety via claim-violation and off-brand rates, and performance via lift against goals — so the brand-safety signal can stop a winning variant."
+        }
+      ]
     }
   ],
   "finalDesign": {

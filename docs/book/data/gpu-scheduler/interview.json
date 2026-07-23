@@ -774,72 +774,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Priority queue",
-      "what": "Order pending jobs by priority and fair-share so the scheduler always considers the most deserving first.",
-      "whenToUse": "Any system arbitrating scarce resources among competing requests.",
-      "steps": [
-        "queueing"
-      ],
-      "group": "Accept and Queue Jobs by Priority"
-    },
-    {
-      "name": "Bin-packing placement",
-      "what": "Fit multi-dimensional resource requests (GPUs, type, memory) onto nodes to minimize fragmentation.",
-      "whenToUse": "Packing heterogeneous jobs onto finite heterogeneous hardware.",
-      "steps": [
-        "placement"
-      ],
-      "group": "Place Jobs: Bin-Packing onto GPUs"
-    },
-    {
-      "name": "Gang scheduling",
-      "what": "Allocate all GPUs of a distributed job at once or none — avoid partial holds that deadlock.",
-      "whenToUse": "Distributed training where every replica must start together.",
-      "steps": [
-        "gang"
-      ],
-      "group": "Gang Scheduling for Distributed Jobs"
-    },
-    {
-      "name": "Preemption",
-      "what": "Evict lower-priority jobs (after checkpoint) to free room for higher-priority work.",
-      "whenToUse": "When production work must beat best-effort work for capacity.",
-      "steps": [
-        "preemption"
-      ],
-      "group": "Preemption with Checkpointing"
-    },
-    {
-      "name": "Dominant-resource fairness",
-      "what": "Allocate by each team's most-constrained resource share so no tenant starves.",
-      "whenToUse": "Multi-tenant clusters with quotas and bursting.",
-      "steps": [
-        "fairness"
-      ],
-      "group": "Fairness and Quotas Across Teams"
-    },
-    {
-      "name": "Reconciliation loop",
-      "what": "Continuously drive actual cluster state toward desired job state; recover by re-reconciling.",
-      "whenToUse": "Control planes that must self-heal after crashes.",
-      "steps": [
-        "reliability"
-      ],
-      "group": "Reliability: Reconciliation and Failure Recovery"
-    },
-    {
-      "name": "Tenant admission & isolation",
-      "what": "Validate images, identities, and resource/log ACLs at submit so untrusted team workloads can share GPU nodes safely.",
-      "whenToUse": "Any multi-tenant platform running arbitrary user code on shared infrastructure.",
-      "steps": [
-        "queueing",
-        "placement"
-      ],
-      "group": "Accept and Queue Jobs by Priority"
-    }
-  ],
   "technologyChoices": [
     {
       "concern": "Scheduling framework / control plane",
@@ -1935,7 +1869,14 @@
           "instead": "Order by priority + fair-share, bin-pack under constraints, gang-schedule distributed jobs all-or-nothing, and preempt lower-priority work."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. shared-cluster needs",
+          "description": "A single FIFO queue handing each job the next free GPU is trivially simple and genuinely adequate for a tiny single-team lab, but it cannot express priority, fairness across teams, gang placement for a 64-GPU job, or GPU-type constraints. Every capability the shared cluster needs is a complexity cost the naive design avoids paying.",
+          "chosen": "The design accepts the FIFO baseline only as a framing device and moves past it, because at shared-cluster scale one team's flood starves everyone and distributed jobs are unschedulable."
+        }
+      ]
     },
     {
       "id": "queueing",
@@ -2047,10 +1988,6 @@
         }
       ],
       "decisionPrompt": "Should the queue be the source of truth for pending jobs, or the database?",
-      "patterns": [
-        "Priority queue",
-        "Tenant admission & isolation"
-      ],
       "probeLinks": [
         "kueue-docs",
         "volcano-docs",
@@ -2171,6 +2108,37 @@
           "trap": "Accepting any image, command, and checkpoint/log URI a tenant supplies.",
           "why": "On shared GPU nodes a team could run a privileged container, pull an unsigned image, or point its log/checkpoint URI at another team's bucket and exfiltrate their data.",
           "instead": "Enforce admission: signed images from allowed registries (by digest), no privileged/host mounts, a sandboxed runtime class, and tenant-scoped service accounts + checkpoint/log ACLs."
+        }
+      ],
+      "concepts": [
+        {
+          "term": "Priority queue",
+          "description": "Order pending jobs by priority and fair-share so the scheduler always considers the most deserving first.",
+          "whyItMatters": "Any system arbitrating scarce resources among competing requests.",
+          "steps": [
+            "queueing"
+          ]
+        },
+        {
+          "term": "Tenant admission & isolation",
+          "description": "Validate images, identities, and resource/log ACLs at submit so untrusted team workloads can share GPU nodes safely.",
+          "whyItMatters": "Any multi-tenant platform running arbitrary user code on shared infrastructure.",
+          "steps": [
+            "queueing",
+            "placement"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Durability vs. dispatch simplicity",
+          "description": "Making the database the source of truth means a submitted job survives any queue or scheduler crash and quota/audit history is queryable, but every dispatch must reconcile queue position against DB state and the queue must be rebuilt from pending rows after a restart. Letting the queue alone hold jobs is one system with the lowest dispatch latency, but a broker crash silently loses every pending job and queries like 'all jobs for team X' become impossible.",
+          "chosen": "The design persists jobs in the job store first and treats the priority queue as a fast, rebuildable index, because losing accepted work is worse than paying a reconciliation read on dispatch."
+        },
+        {
+          "name": "Openness vs. admission control",
+          "description": "Accepting any submission quickly keeps the API thin, but this cluster runs arbitrary team images on shared GPU nodes, so admission is where quota checks, idempotency keys, and image-provenance validation must happen — each adding a synchronous check to every submit. Skipping them shifts the cost to duplicate GPU runs, quota overruns, and multi-tenant security incidents later.",
+          "chosen": "The design front-loads validation at submission — quota, Idempotency-Key dedup, and allowed-image checks — trading a heavier intake path for a cluster that never runs duplicate or unauthorized work."
         }
       ]
     },
@@ -2349,6 +2317,14 @@
           "whyItMatters": "Poor packing fragments GPUs so large jobs can't fit even when total free GPUs suffice.",
           "example": "Best-fit onto partially-used nodes keeps whole nodes free for big gang jobs.",
           "group": "Place Jobs: Bin-Packing onto GPUs"
+        },
+        {
+          "term": "Bin-packing placement",
+          "description": "Fit multi-dimensional resource requests (GPUs, type, memory) onto nodes to minimize fragmentation.",
+          "whyItMatters": "Packing heterogeneous jobs onto finite heterogeneous hardware.",
+          "steps": [
+            "placement"
+          ]
         }
       ],
       "probeLinks": [
@@ -2361,10 +2337,6 @@
         "tiresias-paper",
         "philly-gpu-cluster",
         "kai-scheduler"
-      ],
-      "patterns": [
-        "Bin-packing placement",
-        "Tenant admission & isolation"
       ],
       "whyNow": [
         "Placement is the core scheduling decision; framing it as constrained bin-packing shows you understand fragmentation, the central efficiency problem."
@@ -2435,7 +2407,19 @@
         "before": "Jobs queued but unplaced.",
         "after": "Jobs packed onto matching GPUs and launched.",
         "newRisk": "Multi-GPU distributed jobs can grab some GPUs and wait for the rest — a deadlock; need gang scheduling."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Consolidation vs. blast radius",
+          "description": "Best-fit packing fills the fewest, fullest nodes, preserving large contiguous gaps for future gang jobs, enabling whole-node power-down, and keeping a job's GPUs on one NVLink domain — but a hot node's failure evicts many jobs at once and dense packing raises thermal and bandwidth contention. Worst-fit spreading limits any single node failure and lowers per-node contention, but fragments free GPUs so large gang jobs starve and no node ever idles for power savings.",
+          "chosen": "The design bin-packs best-fit, because on an expensive GPU cluster preserving contiguous capacity for multi-GPU jobs matters more than minimizing per-node failure impact."
+        },
+        {
+          "name": "Placement quality vs. decision cost",
+          "description": "Topology-aware scoring finds the best interconnect fit (same NVLink domain, rack, zone) for tightly-coupled training, but it needs fresh topology metadata, burns more CPU per scheduling decision, and over-constraining can leave jobs pending when no ideal fit exists. Simpler pack/spread policies decide fast over the resource manager's indexed free-lists without that state.",
+          "chosen": "The design defaults to best-fit over indexed free-lists rather than full topology scoring, keeping each placement a cheap lookup over tens of candidates instead of an expensive optimization."
+        }
+      ]
     },
     {
       "id": "gang",
@@ -2580,9 +2564,6 @@
         "tiresias-paper",
         "kai-scheduler"
       ],
-      "patterns": [
-        "Gang scheduling"
-      ],
       "whyNow": [
         "Gang scheduling is the GPU-specific twist interviewers probe; naming the partial-allocation deadlock and backfill is the differentiator."
       ],
@@ -2670,6 +2651,13 @@
           "highlight": [
             "Scheduler"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Atomicity vs. time-to-start",
+          "description": "All-or-nothing gang reservation guarantees no partial gang ever holds GPUs idle and eliminates the two-jobs-each-grab-half deadlock, but a 64-GPU job may wait a long time for a simultaneous window and a brief utilization dip can occur at its planned start. Incremental acquisition assembles the gang faster from freed GPUs, but every partially-held GPU is pure wasted compute and two big gangs can live-lock acquiring each other's remainders.",
+          "chosen": "The design places gangs all-or-nothing with a future-start reservation (a planned time, not held GPUs), because idle-held GPUs and deadlock are exactly the failures a gang scheduler exists to prevent."
         }
       ]
     },
@@ -2792,6 +2780,14 @@
           "whyItMatters": "Shows how reservation, backfill admission, and a fair-share shift interact in a single timeline.",
           "example": "Team Vision submits a 64-GPU gang; only 8 are free, so it gets a future-start reservation at T+12min (when a running 56-GPU job hits its walltime). The scheduler backfills the 8 free GPUs with two 1-GPU jobs whose walltimes (4min, 9min) both clear T+12min; a 20-min job is rejected. Then Team NLP, far under its guarantee, returns and submits prod work: fair-share floats it above Vision's borrowed best-effort jobs, the preemption controller checkpoints-and-requeues two of them, and NLP runs — but the 64-GPU reservation is untouched because no GPU was ever held by the pending gang.",
           "group": "Fairness and Quotas Across Teams"
+        },
+        {
+          "term": "Dominant-resource fairness",
+          "description": "Allocate by each team's most-constrained resource share so no tenant starves.",
+          "whyItMatters": "Multi-tenant clusters with quotas and bursting.",
+          "steps": [
+            "fairness"
+          ]
         }
       ],
       "probeLinks": [
@@ -2803,9 +2799,6 @@
         "kai-scheduler",
         "philly-gpu-cluster"
       ],
-      "patterns": [
-        "Dominant-resource fairness"
-      ],
       "whyNow": [
         "Multi-tenancy is what makes this a hard scheduling problem rather than a single queue; fairness is the requirement most candidates underweight."
       ],
@@ -2813,7 +2806,14 @@
         "before": "Strict priority order ignores tenants.",
         "after": "Priority blends class + fair-share; bursting is reclaimable.",
         "newRisk": "Reclaiming bursted capacity means evicting running jobs — preemption."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Utilization vs. predictability",
+          "description": "Hierarchical fair-share with borrowing lets Team B burst onto Team A's idle GPUs so expensive hardware never sits unused, but reclaiming that capacity when A returns requires preempting B's borrowed jobs and maintaining a usage-ledger feedback loop, and the weights themselves are politically contested. Hard per-team quotas are dead simple and instantly predictable, but idle GPUs in one team's slice sit wasted while another team queues, and teams over-request quota just in case.",
+          "chosen": "The design picks fair-share with borrowing and preemption-based reclaim, accepting scheduling complexity to keep a scarce, expensive GPU pool near full utilization."
+        }
+      ]
     },
     {
       "id": "preemption",
@@ -2939,6 +2939,14 @@
           "whyItMatters": "Makes preemption cheap enough to use for fairness/priority without massive waste.",
           "example": "Best-effort job checkpoints to storage, is requeued, resumes when GPUs free up.",
           "group": "Preemption with Checkpointing"
+        },
+        {
+          "term": "Preemption",
+          "description": "Evict lower-priority jobs (after checkpoint) to free room for higher-priority work.",
+          "whyItMatters": "When production work must beat best-effort work for capacity.",
+          "steps": [
+            "preemption"
+          ]
         }
       ],
       "probeLinks": [
@@ -2948,9 +2956,6 @@
         "kai-scheduler",
         "pytorch-distributed-checkpoint",
         "nvidia-dcgm-exporter"
-      ],
-      "patterns": [
-        "Preemption"
       ],
       "whyNow": [
         "Preemption is how priority and fairness are actually enforced under contention; the checkpointing nuance separates strong answers."
@@ -3028,6 +3033,13 @@
           "why": "Throws away hours of training and wastes the GPUs already spent.",
           "instead": "Checkpoint, then requeue to resume."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Eviction speed vs. preserved work",
+          "description": "Checkpoint-and-requeue saves a victim's 6 hours of training and lets it resume later, but it needs a bounded grace window, checkpoint plumbing, and storage-bandwidth-heavy I/O (tens of seconds for a 200GB checkpoint) before the GPU actually frees for the incoming prod job. Kill-and-restart frees the GPU almost instantly with no plumbing, but throws away all in-progress work and makes frequently-preempted long jobs effectively unschedulable.",
+          "chosen": "The design signals victims to checkpoint within a bounded grace window before SIGKILL, trading seconds of eviction latency for not burning GPU-hours of completed training."
+        }
       ]
     },
     {
@@ -3100,9 +3112,6 @@
         "sre-overload",
         "nvidia-dcgm-exporter",
         "philly-gpu-cluster"
-      ],
-      "patterns": [
-        "Reconciliation loop"
       ],
       "whyNow": [
         "Tying it back to durable state + reconciliation shows the whole control plane survives crashes — the reliability requirement."
@@ -3205,7 +3214,19 @@
           "mitigation": "Free only on authoritative agent status events + durable attempt state, guarded by allocation leases; metrics stays observe-only."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg",
+      "tradeoffs": [
+        {
+          "name": "Observed vs. authoritative state",
+          "description": "Freeing capacity from metrics signals would be reactive and require no extra event plumbing, but a slow or partitioned node then looks idle and its job gets double-run. Authoritative agent status events plus durable attempt records are more machinery, but they make capacity accounting correct even when the network lies.",
+          "chosen": "The design frees GPUs only on authoritative agent events and durable records, relegating metrics to observation, because double-running jobs on phantom-idle GPUs is unacceptable."
+        },
+        {
+          "name": "In-memory speed vs. crash recovery",
+          "description": "Keeping scheduling state in memory makes the loop fast and simple, but a scheduler crash with 500 running jobs would then lose track of everything. Structuring the scheduler as a reconciliation loop over a durable store means restart is a rebuild-and-re-reconcile, at the cost of leases, fencing epochs, and store round-trips on every allocation.",
+          "chosen": "The design keeps desired state durable and leases every allocation with a scheduler epoch, so a crashed scheduler recovers by reconciling rather than by guessing, and stale leaders are fenced out."
+        }
+      ]
     }
   ],
   "finalDesign": {

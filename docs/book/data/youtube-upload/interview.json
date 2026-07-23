@@ -1492,62 +1492,6 @@
       "makesIrrelevant": "Managed metrics, tracing, and log pipelines remove much of the custom collection and retention infrastructure."
     }
   ],
-  "patterns": [
-    {
-      "name": "Resumable chunked upload",
-      "what": "Upload in chunks tracked by offset so an interrupted upload resumes instead of restarting.",
-      "whenToUse": "Large files over unreliable networks.",
-      "steps": [
-        "upload"
-      ],
-      "group": "Resumable Chunked Upload"
-    },
-    {
-      "name": "Async processing pipeline",
-      "what": "Accept the upload, return fast, and do heavy work via a job queue and workers.",
-      "whenToUse": "Expensive processing (transcoding) that must not block the uploader.",
-      "steps": [
-        "pipeline"
-      ],
-      "group": "Decouple Processing with a Job Queue"
-    },
-    {
-      "name": "Transcode fanout",
-      "what": "Generate many renditions per video as independent parallel jobs.",
-      "whenToUse": "When each source needs multiple resolutions/codecs.",
-      "steps": [
-        "transcode"
-      ],
-      "group": "Transcode Fanout into Renditions"
-    },
-    {
-      "name": "Adaptive bitrate streaming",
-      "what": "Segment renditions and let the player switch quality to match bandwidth (HLS/DASH).",
-      "whenToUse": "Smooth playback across varying networks and devices.",
-      "steps": [
-        "stream"
-      ],
-      "group": "Adaptive Bitrate Streaming via CDN"
-    },
-    {
-      "name": "Metadata/blob/CDN split",
-      "what": "Keep small metadata transactional, large media in object storage, and serve via CDN.",
-      "whenToUse": "Media systems with huge blobs and global read fanout.",
-      "steps": [
-        "stream"
-      ],
-      "group": "Adaptive Bitrate Streaming via CDN"
-    },
-    {
-      "name": "Async approximate counting",
-      "what": "Count views via a dedup'd event pipeline rather than a synchronous counter.",
-      "whenToUse": "High-volume counters tolerant of slight lag.",
-      "steps": [
-        "views"
-      ],
-      "group": "View Counting at Scale"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1599,7 +1543,14 @@
           "instead": "Resumable chunked upload, async transcode into a rendition ladder, adaptive streaming, and CDN delivery."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. resilience and reach",
+          "description": "One-shot upload of the original file and serving that exact file back is the simplest possible pipeline, but a multi-GB upload restarts from zero on any network hiccup, one fixed resolution/codec misfits both the 3G phone and the fibre TV, and a single origin cannot serve the same huge file to millions of concurrent viewers.",
+          "chosen": "The design uses the naive one-shot flow as the baseline whose three failure modes motivate resumable upload, transcoding, and CDN delivery."
+        }
+      ]
     },
     {
       "id": "upload",
@@ -1643,6 +1594,14 @@
           "whyItMatters": "Avoids re-uploading gigabytes on every network hiccup.",
           "example": "Session records received_bytes=3.6GB; client resumes from there.",
           "group": "Resumable Chunked Upload"
+        },
+        {
+          "term": "Resumable chunked upload",
+          "description": "Upload in chunks tracked by offset so an interrupted upload resumes instead of restarting.",
+          "whyItMatters": "Large files over unreliable networks.",
+          "steps": [
+            "upload"
+          ]
         }
       ],
       "probeLinks": [
@@ -1651,9 +1610,6 @@
         "tus-protocol",
         "mux-direct-uploads",
         "cloudflare-stream-uploads"
-      ],
-      "patterns": [
-        "Resumable chunked upload"
       ],
       "whyNow": [
         "Reliable ingestion is the first requirement; getting the source durably stored is the precondition for everything downstream."
@@ -1670,7 +1626,14 @@
           "instead": "Chunked, resumable upload with an offset-tracked session."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-upload.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-upload.jpg",
+      "tradeoffs": [
+        {
+          "name": "Protocol complexity vs. restart cost",
+          "description": "A single-request upload needs no session state, but a failure at 90% of 4 GB throws away everything received. A resumable session — idempotency-keyed creation, fixed-size parts with offsets and checksums, a queryable server-side offset — adds a small state machine and reconciliation logic, but a dropped connection resumes from the last received part.",
+          "chosen": "The design accepts the session state machine so clients resume from the server's recorded offset instead of restarting, with re-sent identical parts as idempotent no-ops."
+        }
+      ]
     },
     {
       "id": "pipeline",
@@ -1701,9 +1664,6 @@
         ]
       },
       "decisionPrompt": "Why return '202 processing' instead of waiting for transcoding to finish?",
-      "patterns": [
-        "Async processing pipeline"
-      ],
       "probeLinks": [
         "kafka-design",
         "aws-vod-architecture",
@@ -1720,6 +1680,14 @@
           "whyItMatters": "Keeps the user-facing path fast and absorbs bursts.",
           "example": "Upload -> enqueue -> 202; workers transcode minutes later.",
           "group": "Decouple Processing with a Job Queue"
+        },
+        {
+          "term": "Async processing pipeline",
+          "description": "Accept the upload, return fast, and do heavy work via a job queue and workers.",
+          "whyItMatters": "Expensive processing (transcoding) that must not block the uploader.",
+          "steps": [
+            "pipeline"
+          ]
         }
       ],
       "recap": {
@@ -1727,7 +1695,14 @@
         "after": "Upload returns fast; processing scales behind a queue.",
         "newRisk": "Each video needs many renditions — the processing work multiplies."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-pipeline.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-pipeline.jpg",
+      "tradeoffs": [
+        {
+          "name": "Synchronous completion vs. async processing",
+          "description": "Holding the upload response open until transcoding finishes would give the creator a definitive done signal, but transcoding is slow and CPU/GPU-heavy, so the connection would hang for minutes and upload capacity would be hostage to processing capacity. Returning 202 with a 'processing' status frees the client immediately, but creators must poll or be notified as renditions become ready.",
+          "chosen": "The design returns 202 and enqueues a job only after the upload commits, letting queue depth absorb spikes and the worker fleet scale independently of ingestion."
+        }
+      ]
     },
     {
       "id": "transcode",
@@ -1903,9 +1878,6 @@
         "netflix-vmaf",
         "netflix-cosmos-pipeline"
       ],
-      "patterns": [
-        "Transcode fanout"
-      ],
       "whyNow": [
         "Transcode fanout is the compute heart of the case; segment-level parallelism is the staff-level optimization interviewers probe."
       ],
@@ -2074,6 +2046,18 @@
             "MetaSvc"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Parallelism vs. coordination complexity",
+          "description": "One worker per rendition is dead simple — no splitting or stitching — but wall-clock time is bounded by transcoding the full file once, so a 3-hour 4K source is slow and one failed worker restarts the whole rendition. Splitting on keyframe boundaries and fanning segments across workers cuts wall-clock time dramatically, but needs a coordinator to track segment tasks, detect stragglers, and stitch artifact-free output.",
+          "chosen": "The design splits, fans out, and stitches, paying the coordinator and durable rendition_tasks bookkeeping to make one large video fast and its failures fine-grained."
+        },
+        {
+          "name": "Time-to-watchable vs. quality-at-publish",
+          "description": "The tiered approach makes a video watchable in seconds by transcoding one low-res rendition first and filling the ladder later, but early viewers get low quality and metadata must track a two-phase ready-to-watch vs. fully-processed state. Processing the full ladder before publishing gives uniform quality but delays availability.",
+          "chosen": "The design's chunk-parallel default already compresses total wall-clock time and unlocks playback rendition-by-rendition, so it does not take on tiered two-phase state."
+        }
       ]
     },
     {
@@ -2239,6 +2223,22 @@
           "whyItMatters": "Smooth playback across varying networks without rebuffering.",
           "example": "Player drops from 1080p to 480p segments when throughput falls.",
           "group": "Adaptive Bitrate Streaming via CDN"
+        },
+        {
+          "term": "Adaptive bitrate streaming",
+          "description": "Segment renditions and let the player switch quality to match bandwidth (HLS/DASH).",
+          "whyItMatters": "Smooth playback across varying networks and devices.",
+          "steps": [
+            "stream"
+          ]
+        },
+        {
+          "term": "Metadata/blob/CDN split",
+          "description": "Keep small metadata transactional, large media in object storage, and serve via CDN.",
+          "whyItMatters": "Media systems with huge blobs and global read fanout.",
+          "steps": [
+            "stream"
+          ]
         }
       ],
       "probeLinks": [
@@ -2248,10 +2248,6 @@
         "media-cdn-overview",
         "media-cdn-signed-requests",
         "netflix-open-connect"
-      ],
-      "patterns": [
-        "Adaptive bitrate streaming",
-        "Metadata/blob/CDN split"
       ],
       "whyNow": [
         "Adaptive streaming + CDN is how serving scales to millions of viewers; it's the read-path payoff of the whole pipeline."
@@ -2347,6 +2343,18 @@
             "CDN",
             "PlaySvc"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Adaptivity vs. playback simplicity",
+          "description": "Progressive download of a single MP4 via byte ranges is the simplest playback path with no manifests or ladders, but there is no mid-stream quality switch — a bandwidth drop means rebuffering, and one fixed bitrate punishes either mobile or desktop. Segmented HLS/DASH with a rendition ladder lets the player step down a rung smoothly, at the cost of multiplied storage and fiddly manifest and cache-key correctness.",
+          "chosen": "The design ships adaptive bitrate over segmented renditions because smooth playback through bandwidth swings is the core requirement, accepting the storage multiplication."
+        },
+        {
+          "name": "Pull-through economy vs. pre-warm experience",
+          "description": "Proactively pushing predicted-hot videos to edges gives even the first viewer a cache hit and smooths premiere spikes, but it needs a popularity predictor, wastes pushes on the long tail that never gets watched, and evicts other hot content from finite edge storage. Pull-through caching serves the long tail economically but makes the first request of cold content pay an origin-pull stall.",
+          "chosen": "The design uses pull-through CDN caching, letting actual demand decide what occupies edge storage and accepting a first-view origin pull on cold content."
         }
       ]
     },
@@ -2494,9 +2502,6 @@
         }
       ],
       "decisionPrompt": "A video goes viral with 1M views/min. Why not increment a counter row per view?",
-      "patterns": [
-        "Async approximate counting"
-      ],
       "probeLinks": [
         "kafka-design",
         "dataflow-model",
@@ -2513,6 +2518,14 @@
           "whyItMatters": "Avoids a write hotspot on popular items and absorbs spikes.",
           "example": "View events -> dedup by session -> windowed count -> write back.",
           "group": "View Counting at Scale"
+        },
+        {
+          "term": "Async approximate counting",
+          "description": "Count views via a dedup'd event pipeline rather than a synchronous counter.",
+          "whyItMatters": "High-volume counters tolerant of slight lag.",
+          "steps": [
+            "views"
+          ]
         }
       ],
       "recap": {
@@ -2583,6 +2596,18 @@
             "ViewPipe"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Count freshness vs. write throughput",
+          "description": "Incrementing a counter row per view is trivially exact and current, but a viral video at 1M views/min turns that row into a write hotspot that serializes and melts down, and there is no room for dedup or bot filtering before the write. Stream-aggregating events and writing periodic deltas collapses the firehose into a few writes per minute, but the displayed count lags by the aggregation window.",
+          "chosen": "The design aggregates view events in a pipeline and batch-writes deltas, accepting a lagging public count in exchange for absorbing viral spikes and filtering before counting."
+        },
+        {
+          "name": "Counting anything vs. counting a view",
+          "description": "Counting every playback start is simple but inflates counts with autoplays, refreshes, and replays; defining a view as watched_seconds crossing a threshold, deduped per (video, session) window with idempotent ingest, yields honest counts at the cost of richer events, windowing, and late-arrival handling.",
+          "chosen": "The design defines a view by a watch-time threshold with session-window dedup, spending pipeline complexity to make the number mean something."
+        }
       ]
     },
     {
@@ -2643,7 +2668,14 @@
           "mitigation": "Cold-tier old content; lazily generate rare renditions on demand."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Storage cost vs. future flexibility",
+          "description": "Keeping the immutable source plus the full rendition ladder for every video preserves the ability to re-transcode when codecs change and to serve any quality instantly, but sources and renditions dominate storage cost, and most old content is rarely watched. Tiering cold content down and dropping rarely-used renditions cuts cost but makes a cold play slower or forces a re-transcode.",
+          "chosen": "The design keeps the immutable source for future re-transcodes, tiers old or rarely-watched content to colder storage, and considers dropping renditions the long tail never requests."
+        }
+      ]
     }
   ],
   "finalDesign": {

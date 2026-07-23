@@ -3290,100 +3290,6 @@
       "makesIrrelevant": "Managed telemetry backends remove most metric/log storage operations, but not the need to define per-tenant SLOs and alert ownership."
     }
   ],
-  "patterns": [
-    {
-      "name": "Async pipeline on a partitioned event bus",
-      "what": "Each pipeline stage is its own consumer group on a log partitioned by listing_id; stages scale and fail independently.",
-      "whenToUse": "Multi-stage processing where latency budget per write is seconds-to-minutes and stages have different cost/SLOs.",
-      "steps": [
-        "async-pipeline"
-      ]
-    },
-    {
-      "name": "Outbox + CDC",
-      "what": "Write the listing row and an outbox row in one transaction; a tail process publishes outbox rows to the event bus.",
-      "whenToUse": "When downstream projections (search index, analytics) must never miss a state change, even if a producer crashes.",
-      "steps": [
-        "search-indexing"
-      ]
-    },
-    {
-      "name": "Idempotency key + deterministic dedup table",
-      "what": "Per-owner unique (owner_id, external_listing_id) absorbs repeated imports of the same logical listing.",
-      "whenToUse": "When the same listing arrives over FTP today and API tomorrow, or producers retry on timeouts.",
-      "steps": [
-        "api-ingestion",
-        "dedup"
-      ]
-    },
-    {
-      "name": "Versioned events with source_version ordering",
-      "what": "Each lifecycle event carries (aggregate_id, sequence, event_version). Consumers reject stale updates by sequence; new schema versions land behind feature flags.",
-      "whenToUse": "Multi-channel ingestion (FTP + API + manual) where old and new updates can race.",
-      "steps": [
-        "api-ingestion",
-        "search-indexing"
-      ]
-    },
-    {
-      "name": "Blocking + ANN for fuzzy dedup",
-      "what": "Reduce O(N^2) comparisons by blocking on cheap keys (category + city + price band), then near-neighbor search in an embedding/MinHash index.",
-      "whenToUse": "Near-duplicate detection at 10M+ active listings.",
-      "steps": [
-        "dedup"
-      ]
-    },
-    {
-      "name": "Rules + ML fraud scoring with human-in-the-loop",
-      "what": "Hot-reloadable rule packs as a cheap filter; ML model contributes a probabilistic score; borderline → moderator queue; decisions feed back.",
-      "whenToUse": "When you need fast rule rollouts AND ML quality; pure ML is too slow to iterate on emerging abuse.",
-      "steps": [
-        "fraud"
-      ]
-    },
-    {
-      "name": "Source-of-truth + projected search index with tombstones",
-      "what": "Listing DB is authoritative; SearchIdx is a derived projection. Deletes propagate as explicit tombstones; reindex via blue/green alias swap.",
-      "whenToUse": "When search shape changes more often than the truth, or a bad indexer needs a clean recovery path.",
-      "steps": [
-        "search-indexing",
-        "scale"
-      ]
-    },
-    {
-      "name": "Media safety pipeline",
-      "what": "Fetch owner-provided URLs into immutable storage; virus-scan, EXIF-strip, transcode, classify (NSFW/reuse), thumbnail. Block-publish-or-partial policy per scan result.",
-      "whenToUse": "Whenever owners can supply external media URLs that become public.",
-      "steps": [
-        "async-pipeline"
-      ]
-    },
-    {
-      "name": "CDN + cache-aside read path",
-      "what": "Public search and detail responses are CDN-edge cached; misses go through a query cache, then the search index / DB. Stale-while-revalidate keeps reads up under index lag.",
-      "whenToUse": "When read traffic is orders of magnitude larger than writes and most queries are repeats.",
-      "steps": [
-        "seeker-read"
-      ]
-    },
-    {
-      "name": "Per-tenant partitioning + fair scheduling",
-      "what": "Partition the event bus by owner_id so one noisy owner can't starve others; a fair scheduler weights consumer capacity across tenants; hot-partition split on a dominant tenant.",
-      "whenToUse": "Multi-tenant write pipelines with skewed owner sizes.",
-      "steps": [
-        "scale"
-      ]
-    },
-    {
-      "name": "Webhook delivery as a distributed system",
-      "what": "Signed callbacks, exponential-backoff retry, attempt log, DLQ on permanent failure, replay UI for owners.",
-      "whenToUse": "Whenever the platform notifies external systems asynchronously.",
-      "steps": [
-        "api-ingestion",
-        "scale"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -3460,7 +3366,14 @@
         "after": "End-to-end create works, in one request.",
         "newRisk": "Latency, availability, throughput, AND lifecycle correctness all collapse the moment a downstream is slow, a file is large, or events race."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Synchronous simplicity vs. coupled availability",
+          "description": "Doing validation, enrichment, fraud, dedup, and indexing inline in one POST is easy to reason about, but it welds ingestion latency to the slowest dependency (an 800ms geocoder sets the request floor), makes an indexer outage a write outage, and leaves no path for bulk files or out-of-order updates.",
+          "chosen": "The design uses the naive baseline only to expose these couplings, then moves everything but acceptance off the synchronous path."
+        }
+      ]
     },
     {
       "id": "api-ingestion",
@@ -3502,11 +3415,6 @@
         "caption": "The API authenticates, validates, and idempotently publishes one versioned event per logical write. Rate-limit state in a fast counter store; webhook delivery is its own retried subsystem with a DLQ."
       },
       "decisionPrompt": "What's the smallest unit of work the API has to do synchronously, and how do you ensure a stale PATCH that arrives after a newer one doesn't overwrite it?",
-      "patterns": [
-        "Idempotency key + deterministic dedup table",
-        "Versioned events with source_version ordering",
-        "Webhook delivery as a distributed system"
-      ],
       "concepts": [
         {
           "term": "Idempotency key vs deduplication key",
@@ -3537,6 +3445,24 @@
           "term": "Media submitted by URL, never as bytes on this API",
           "definition": "Owners send media as URLs (HTTPS) in the listing payload — never raw image bytes through the create/update API. The actual fetch + scan + transcode happens asynchronously in step 4's media pipeline. The API validates URL shape, size hints (Content-Length probe), and reasonable count (e.g. ≤30 images/listing).",
           "whyItMatters": "Accepting binary uploads on the create endpoint couples the partner's request latency to media fetch + scan time, makes the request payload 1000x larger, and gives the API surface a malware-upload vector. URL submission keeps the create API tiny and pushes the heavy lifting to the right tier."
+        },
+        {
+          "term": "Idempotency key + deterministic dedup table",
+          "description": "Per-owner unique (owner_id, external_listing_id) absorbs repeated imports of the same logical listing.",
+          "whyItMatters": "When the same listing arrives over FTP today and API tomorrow, or producers retry on timeouts.",
+          "steps": [
+            "api-ingestion",
+            "dedup"
+          ]
+        },
+        {
+          "term": "Versioned events with source_version ordering",
+          "description": "Each lifecycle event carries (aggregate_id, sequence, event_version). Consumers reject stale updates by sequence; new schema versions land behind feature flags.",
+          "whyItMatters": "Multi-channel ingestion (FTP + API + manual) where old and new updates can race.",
+          "steps": [
+            "api-ingestion",
+            "search-indexing"
+          ]
         }
       ],
       "whyNow": [
@@ -3659,7 +3585,19 @@
         "after": "API accepts fast, idempotently, and with versioned events; processing happens behind the bus; webhook delivery is a real subsystem.",
         "newRisk": "The pipeline stages downstream of the bus now need to exist — and not lose messages or apply them out of order."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-api-ingestion.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-api-ingestion.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fast acknowledgement vs. confirmed outcome",
+          "description": "Returning 202 with a correlation id after just auth, rate-limiting, shape validation, and event publish keeps the API thin and fast for partners, but the partner no longer learns synchronously whether the listing actually published — outcomes arrive later, tracked by correlation id.",
+          "chosen": "The design accepts fast and defers the outcome, because keeping slow enrichment and fraud work out of the request is what makes ingestion latency and availability independent of downstream services."
+        },
+        {
+          "name": "Accepting retries vs. duplicate and stale writes",
+          "description": "Re-imports, client retries, and producer races mean the same or older data will arrive again; claiming an idempotency key at accept time and stamping each event with a per-listing monotonic sequence lets consumers reject stale events, at the cost of maintaining key claims and sequence state.",
+          "chosen": "The design pays for idempotency keys plus per-listing sequences so a stale PATCH arriving after a newer one is dropped rather than overwriting it."
+        }
+      ]
     },
     {
       "id": "ftp-ingestion",
@@ -3971,7 +3909,19 @@
         "before": "Only single-listing API writes.",
         "after": "Bulk FTP at any file size, full-snapshot vs incremental semantics explicit, per-owner concurrency capped — joining the same row-event pipeline as the API.",
         "newRisk": "Bus throughput now matters; downstream stages must absorb peaks from one 10M-row drop."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Streaming complexity vs. in-memory simplicity",
+          "description": "Loading a whole file and processing it in memory is the simplest parser, but a 4 GB, 10M-row CSV OOMs the worker and any failure retries the entire file; a streaming parser reading row-by-row from object storage keeps memory bounded regardless of file size, at the cost of more moving parts and per-row event overhead on small files.",
+          "chosen": "The design streams rows from object storage so a 10M-row file is the same shape as a 100-row file, feeding the same row events the API path uses."
+        },
+        {
+          "name": "Whole-file atomicity vs. per-row progress",
+          "description": "Failing the whole job on any bad row gives clean all-or-nothing semantics, but throws away 9,999,999 good rows when row 10M is malformed; routing bad rows to a DLQ with row number and raw bytes preserves progress while structurally broken files (bad header, broken archive) still fail whole.",
+          "chosen": "The design isolates row-level failures to a DLQ and reserves whole-job failure for malformed files, so one bad row never poisons a partner's entire import."
+        }
+      ]
     },
     {
       "id": "async-pipeline",
@@ -4026,10 +3976,6 @@
         "caption": "Three independent stages compose on the bus: normalize, enrich, and media. Each writes its own slice with provenance; AI authoring suggestions live in their own log and never auto-publish."
       },
       "decisionPrompt": "Geocoding takes 600ms p95, the ML category model takes 200ms, and media scanning a single image takes 2s. Do you run them in parallel, sequentially, or batch them — and which can block publication?",
-      "patterns": [
-        "Async pipeline on a partitioned event bus",
-        "Media safety pipeline"
-      ],
       "concepts": [
         {
           "term": "Pipeline stage as a consumer group",
@@ -4060,6 +4006,14 @@
           "term": "Event schema evolution + replay-safe consumers",
           "definition": "Each event has `event_version`; consumers handle multiple versions during rollout and replay; deprecated versions get a sunset window before removal.",
           "whyItMatters": "Adding a field to `listing.enriched` should never break the indexer two days into a replay."
+        },
+        {
+          "term": "Async pipeline on a partitioned event bus",
+          "description": "Each pipeline stage is its own consumer group on a log partitioned by listing_id; stages scale and fail independently.",
+          "whyItMatters": "Multi-stage processing where latency budget per write is seconds-to-minutes and stages have different cost/SLOs.",
+          "steps": [
+            "async-pipeline"
+          ]
         }
       ],
       "whyNow": [
@@ -4227,7 +4181,19 @@
         "before": "Row events with nothing acting on them.",
         "after": "A normalized + enriched listing row, safe-processed media refs, AI-suggestion log — all with provenance and a CDC outbox.",
         "newRisk": "Duplicates haven't been merged yet, and nothing has scored these for fraud."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Orchestration vs. choreography",
+          "description": "An enrichment orchestrator calling geocoding, classification, and scoring in parallel gives latency equal to the max (not the sum), a clear per-enricher failure policy, and a single completion signal — but it becomes a coordination hotspot. Letting each enricher subscribe independently scales freely but races N writers on the same listing row with no way to know when enrichment is done.",
+          "chosen": "The design uses an orchestrator with parallel sub-calls, accepting the coordination hotspot to get bounded latency and an explicit completion point."
+        },
+        {
+          "name": "Publication speed vs. enrichment completeness",
+          "description": "Blocking publication on every enricher (including 2s-per-image media scanning) yields the most complete, safest listing but delays time-to-publish; publishing with partial enrichment is fast but risks incomplete or unsafe content, so each enricher and the owner's media policy needs an explicit block-or-degrade decision.",
+          "chosen": "The design classifies failures per enricher and lets policy decide what blocks publication, rather than applying one blanket rule to fast geocoding and slow media scanning alike."
+        }
+      ]
     },
     {
       "id": "dedup",
@@ -4268,10 +4234,6 @@
         "caption": "Exact dedup is a hash lookup; fuzzy dedup combines text content hashes, embeddings, and PERCEPTUAL IMAGE HASHES (pHash from MediaScanner) in HashIdx with domain-specific blocking keys. Borderline matches route to a human queue; merges record a group, not a destructive merge."
       },
       "decisionPrompt": "How do you stop a 10M-listing fuzzy-dedup run from doing 10M × 10M comparisons, and how do you keep groupings correct as listings update and delete?",
-      "patterns": [
-        "Idempotency key + deterministic dedup table",
-        "Blocking + ANN for fuzzy dedup"
-      ],
       "concepts": [
         {
           "term": "Deterministic vs fuzzy dedup",
@@ -4297,6 +4259,14 @@
           "term": "Perceptual image hashing as a dedup signal",
           "definition": "MediaScanner computes a perceptual hash (pHash / dHash) of each image and stores it alongside the content/embedding signals in HashIdx. Two listings whose images all match perceptually are very likely the same underlying listing — even if the title and description are rewritten.",
           "whyItMatters": "Text dedup misses the most common cross-owner case: a scraper or scam reposts the same listing with rewritten copy. Image hashes catch it because rewriting the description is cheap but generating different real photos is expensive."
+        },
+        {
+          "term": "Blocking + ANN for fuzzy dedup",
+          "description": "Reduce O(N^2) comparisons by blocking on cheap keys (category + city + price band), then near-neighbor search in an embedding/MinHash index.",
+          "whyItMatters": "Near-duplicate detection at 10M+ active listings.",
+          "steps": [
+            "dedup"
+          ]
         }
       ],
       "whyNow": [
@@ -4464,7 +4434,19 @@
         "after": "Same-owner re-imports collapse for free; cross-owner near-duplicates are grouped with domain-aware blocking, with humans for borderline; updates and deletes maintain group integrity.",
         "newRisk": "Fraudulent listings still get through — dedup recognizes 'this is the same listing', not 'this is a scam'."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-dedup.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-dedup.jpg",
+      "tradeoffs": [
+        {
+          "name": "Cheap exact matching vs. expensive fuzzy coverage",
+          "description": "Exact dedup on (owner_id, external_listing_id) absorbs the common re-push case at unique-key lookup cost but misses cross-owner reposts and lightly edited clones; content hashes and ANN embedding search catch those at real compute and infrastructure cost.",
+          "chosen": "The design layers exact-first, fuzzy-second so the cheap check absorbs most volume and the expensive machinery only works on what slips through."
+        },
+        {
+          "name": "Blocking-key recall vs. quadratic comparison cost",
+          "description": "Comparing every listing to every other is 10M x 10M and impossible; domain-specific blocking keys (jobs on category and city, real estate on city, bedrooms, and price band) shrink candidate sets dramatically, but a true duplicate that falls outside its block — a mispriced or miscategorized clone — is never compared.",
+          "chosen": "The design accepts the small recall loss at block boundaries because blocking plus ANN is the only way fuzzy dedup stays tractable at 10M listings."
+        }
+      ]
     },
     {
       "id": "fraud",
@@ -4511,9 +4493,6 @@
         "caption": "Cheap rules first, expensive ML second, humans last. FraudSvc reads image-reuse + NSFW signals from MediaScanner (a stolen-photo repost is one of the strongest fraud features). Moderator decisions flow back through the bus as listing.approved/.rejected — same indexing code path as any other lifecycle event."
       },
       "decisionPrompt": "What do you do when the ML fraud service is unavailable? Block publication, or publish-and-flag?",
-      "patterns": [
-        "Rules + ML fraud scoring with human-in-the-loop"
-      ],
       "concepts": [
         {
           "term": "Rules vs ML signal",
@@ -4549,6 +4528,14 @@
           "term": "Image-reuse + NSFW signals from the media pipeline",
           "definition": "MediaScanner emits two fraud-relevant features per image: a reuse fingerprint (matches a global index of previously-seen images, weighted by whose listings they appeared on) and a content classifier score (NSFW, weapons, etc.). FraudSvc pulls these from MediaScanner (or from FeatureStore if pre-aggregated) and folds them into the risk score.",
           "whyItMatters": "Image-reuse is the highest-precision scam signal there is: a 'new' listing whose photos all appeared in a banned owner's listings last week is almost certainly the banned owner under a new account. Without media signals, fraud is missing its best feature."
+        },
+        {
+          "term": "Rules + ML fraud scoring with human-in-the-loop",
+          "description": "Hot-reloadable rule packs as a cheap filter; ML model contributes a probabilistic score; borderline → moderator queue; decisions feed back.",
+          "whyItMatters": "When you need fast rule rollouts AND ML quality; pure ML is too slow to iterate on emerging abuse.",
+          "steps": [
+            "fraud"
+          ]
         }
       ],
       "whyNow": [
@@ -4679,7 +4666,19 @@
         "before": "Deduped listings published unconditionally.",
         "after": "Every listing is scored; bad ones go to humans with explanations; moderator decisions are lifecycle events with SLAs. (Forward-ref: in step 8, fraud state also blocks any paid promotion on the listing — no paid amplification of held content.)",
         "newRisk": "Approved listings still need to reach the search index quickly, with deletes propagating correctly when listings are rejected, paused, or removed."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Seeker trust vs. time-to-publish",
+          "description": "Holding mid-band listings for moderator review minimizes published scams and gives an auditable per-listing decision, but slows publication for legitimate owners and costs moderator time; permissive publish-with-retroactive-takedown gives instant listings but exposes seekers to scams until takedown catches up.",
+          "chosen": "For high-stakes verticals like jobs and real estate the design defaults to conservative hold and review, treating seeker trust as harder to rebuild than owner patience."
+        },
+        {
+          "name": "Fail closed vs. fail open on ML outage",
+          "description": "When the ML fraud scorer is unavailable, blocking publication protects seekers but stalls every legitimate listing behind an infrastructure failure; publish-and-flag keeps the pipeline moving but knowingly ships unscored inventory.",
+          "chosen": "The design leans on the cheap, always-available rules engine as the first gate so an ML outage degrades scoring precision rather than becoming a binary block-or-expose choice."
+        }
+      ]
     },
     {
       "id": "search-indexing",
@@ -4718,11 +4717,6 @@
         "caption": "Listing DB is the truth; Outbox + CDC guarantees nothing is lost; the indexer projects DB state into a sharded search index with version-conditional upsert and explicit tombstones for deletes/unpublishes."
       },
       "decisionPrompt": "A `listing.updated` event with version=8 arrives at the indexer after version=10 has already been applied. What does the indexer do — and how does the SearchDoc reflect a listing that is held by a moderator?",
-      "patterns": [
-        "Outbox + CDC",
-        "Source-of-truth + projected search index with tombstones",
-        "Versioned events with source_version ordering"
-      ],
       "concepts": [
         {
           "term": "Transactional outbox",
@@ -4748,6 +4742,23 @@
           "term": "Cache invalidation on lifecycle",
           "definition": "On `listing.updated`/`.deleted`, the indexer purges affected URLs from `QueryCache` and tags CDN entries for stale-while-revalidate refresh.",
           "whyItMatters": "Without explicit invalidation, deleted listings keep returning from cache long after they're gone from the index."
+        },
+        {
+          "term": "Outbox + CDC",
+          "description": "Write the listing row and an outbox row in one transaction; a tail process publishes outbox rows to the event bus.",
+          "whyItMatters": "When downstream projections (search index, analytics) must never miss a state change, even if a producer crashes.",
+          "steps": [
+            "search-indexing"
+          ]
+        },
+        {
+          "term": "Source-of-truth + projected search index with tombstones",
+          "description": "Listing DB is authoritative; SearchIdx is a derived projection. Deletes propagate as explicit tombstones; reindex via blue/green alias swap.",
+          "whyItMatters": "When search shape changes more often than the truth, or a bad indexer needs a clean recovery path.",
+          "steps": [
+            "search-indexing",
+            "scale"
+          ]
         }
       ],
       "whyNow": [
@@ -4980,7 +4991,19 @@
         "before": "Approved listings only existed in the DB.",
         "after": "Approved listings flow into search with bounded lag, ordered by version, with explicit tombstones for deletes — reindexing is routine.",
         "newRisk": "Search now reflects truth — but the ranker is purely organic. Owners will (rightly) ask whether they can pay to show up higher; that monetization layer is next, and it has to fit inside the ranker without breaking seeker trust."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Outbox reliability vs. dual-write simplicity",
+          "description": "Having the API write the DB and the search index synchronously needs no outbox or tail process, but a crash between the two writes silently drifts the index from the source of truth and couples API latency to the search cluster; the transactional outbox cannot lose events even on producer crash, at the cost of an outbox table to trim and a tail process to operate.",
+          "chosen": "The design chooses outbox plus CDC-style tailing because index-vs-DB drift is a silent correctness bug, while an outbox trim job is just routine operations."
+        },
+        {
+          "name": "Ordered application vs. out-of-order tolerance",
+          "description": "Events can arrive at the indexer out of order (version 8 after version 10); demanding strict ordered delivery would serialize the pipeline, while version-conditioned idempotent upserts let events arrive in any order and simply drop stale ones.",
+          "chosen": "The design makes the indexer conditional on version — stale events are dropped, not applied — trading strict delivery ordering for a much looser, more scalable pipeline."
+        }
+      ]
     },
     {
       "id": "promotion",
@@ -5030,9 +5053,6 @@
         "caption": "Owner buys promotion → BillingSvc writes listing_promotions → outbox event → indexer projects boost onto SearchDoc. Impressions/clicks flow through Analytics back to BillingSvc, which exhausts/expires the promotion. FraudSvc can block at any point."
       },
       "decisionPrompt": "How do you let an owner pay to rank higher without seekers losing trust — and what stops a scammer from buying their way to the top?",
-      "patterns": [
-        "Source-of-truth + projected search index with tombstones"
-      ],
       "concepts": [
         {
           "term": "Promotion as a capped ranking signal",
@@ -5452,7 +5472,24 @@
         "before": "Search ranks organically by relevance / freshness / quality / owner reputation.",
         "after": "Owners can pay for a capped boost as one ranking term; promoted results are labeled and capped per page; billing + pacing run async; fraud always wins.",
         "newRisk": "Revenue and seeker trust are now linked metrics — both must be measured (organic CTR, time-to-first-relevant-click, revenue per query) and changes to the boost cap need explicit A/B. The next step (seeker read path) has to surface the 'Sponsored' label clearly and never cache personalized promoted results at the CDN."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Revenue vs. seeker trust",
+          "description": "The more promotion can move a listing up, the more owners will pay — but an off-query boosted listing that outranks relevant results burns seeker trust, which is the platform's real asset. A capped multiplicative boost with ranking-floor filters keeps relevance dominant; a guaranteed top slot maximizes what one owner will pay while destroying trust fastest.",
+          "chosen": "The design makes boost one capped term in the ranking formula so a relevant unpromoted listing still beats a badly off-query promoted one."
+        },
+        {
+          "name": "Owner predictability vs. ranking integrity",
+          "description": "Owners want to know what a promotion buys — a fixed top slot is perfectly predictable and easy to price — but predictable placement means placement detached from relevance; a blended boost preserves ranking integrity while leaving owners unable to predict their slot from the boost number alone.",
+          "chosen": "The design accepts fuzzier owner expectations, selling influence on rank rather than a guaranteed position."
+        },
+        {
+          "name": "Auction revenue vs. read-path cost",
+          "description": "A real-time query-time auction extracts maximum revenue per search and floats price with demand, but it inserts an auction service into a 50M-search/day read path — adding latency, availability risk, and operational complexity to the surface that must stay cheapest and most reliable.",
+          "chosen": "The design keeps promotion resolution at index time (boost projected onto the SearchDoc) so the query path stays a plain ranked search."
+        }
+      ]
     },
     {
       "id": "seeker-read",
@@ -5507,9 +5544,6 @@
         "caption": "CDN absorbs most search/detail traffic; BFF composes search + detail; QueryCache absorbs the long tail. Media is served via a SEPARATE Media CDN on its own cookie-less origin (immutable long-TTL cache). Saved-search alerts ride the same event bus as the indexer. Read path has zero synchronous dependency on the write pipeline."
       },
       "decisionPrompt": "What's the worst thing that can happen on the seeker read path if the ingestion pipeline is completely down? And how does a seeker get an email when a new listing matches their saved search?",
-      "patterns": [
-        "CDN + cache-aside read path"
-      ],
       "concepts": [
         {
           "term": "Read/write isolation (stale-but-served)",
@@ -5545,6 +5579,14 @@
           "term": "Separate media origin (cookie-less, immutable-cached)",
           "definition": "Media (originals + thumbnails) is served from its own CDN on a distinct hostname pointing at `MediaStore`, cookie-less and with immutable long-TTL caching (content-hashed keys). The API origin and the media origin share nothing operationally.",
           "whyItMatters": "Same-origin serving forces one cache policy on two very different traffic shapes: API responses (short TTL, auth cookies) vs media (immutable, anonymous). Splitting them lets each be sized, cached, and operated correctly — and a media-CDN incident no longer takes down search."
+        },
+        {
+          "term": "CDN + cache-aside read path",
+          "description": "Public search and detail responses are CDN-edge cached; misses go through a query cache, then the search index / DB. Stale-while-revalidate keeps reads up under index lag.",
+          "whyItMatters": "When read traffic is orders of magnitude larger than writes and most queries are repeats.",
+          "steps": [
+            "seeker-read"
+          ]
         }
       ],
       "whyNow": [
@@ -5688,7 +5730,19 @@
         "before": "Listings indexed but no scalable read path; product features were UI-only promises.",
         "after": "50M searches/day absorbed by CDN + query cache; index outages are stale-not-5xx; saved/alerts/reports are real systems.",
         "newRisk": "All this works at average load; tail-latency events and noisy tenants in the write pipeline still need handling."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Cache staleness vs. origin resilience",
+          "description": "CDN-caching search responses and detail pages means seekers can see slightly stale results within the TTL and listing updates require careful invalidation, but it also means an indexer or cluster degradation shows stale results instead of 5xx — and most traffic never reaches the search cluster at all.",
+          "chosen": "The design layers CDN, query cache, and BFF caching, accepting short-TTL staleness because on the public read surface stale beats down."
+        },
+        {
+          "name": "Layered architecture vs. topology simplicity",
+          "description": "Hitting the search index directly from a public API is the simplest topology, but then cluster capacity dictates seeker capacity and there is no buffer when it degrades; the CDN + BFF + query-cache stack absorbs load and lets web and mobile evolve independently, at the cost of more components to monitor and invalidate.",
+          "chosen": "The design pays the operational cost of the layered stack because an always-available read surface cannot be a thin proxy on one cluster's health."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -5741,10 +5795,6 @@
         "caption": "Per-owner partitioning + fair scheduling + per-stage autoscaling + first-class DLQ operations + versioned events for replay-safety. The whole system fails partially, not totally."
       },
       "decisionPrompt": "One partner pushes a corrupt 10M-row file at the same time another partner does their normal weekly drop. How do you keep both moving — and how do you handle the partner who is 10x bigger than everyone else?",
-      "patterns": [
-        "Per-tenant partitioning + fair scheduling",
-        "Webhook delivery as a distributed system"
-      ],
       "concepts": [
         {
           "term": "Per-tenant partitioning",
@@ -5780,6 +5830,14 @@
           "term": "Reprocessing as a first-class workflow",
           "definition": "Tooling that re-emits a cohort (date range, owner, model version) into a pipeline stage, idempotent against current state.",
           "whyItMatters": "Bad enrichment, bad fraud rules, schema changes — all need fast, safe reprocessing without disturbing live writes."
+        },
+        {
+          "term": "Per-tenant partitioning + fair scheduling",
+          "description": "Partition the event bus by owner_id so one noisy owner can't starve others; a fair scheduler weights consumer capacity across tenants; hot-partition split on a dominant tenant.",
+          "whyItMatters": "Multi-tenant write pipelines with skewed owner sizes.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "whyNow": [
@@ -5860,7 +5918,19 @@
         "after": "Per-tenant isolation + hot-partition mitigation, autoscaled stages, DLQ + replay as ops workflows, versioned events, search reads always-on, named RPO/RTO.",
         "newRisk": "More partitions and lanes to operate; routing keys, hot-partition rebalancing, and per-stage SLOs become explicit owners' responsibilities."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/10-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/10-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Tenant isolation vs. shared efficiency",
+          "description": "Partitioning the event bus by owner and weighting worker capacity with a fair scheduler stops one partner's 10M-row drop from head-of-line-blocking everyone else, but reserving fairness means the big partner's backlog drains slower than raw shared capacity would allow.",
+          "chosen": "The design partitions by owner_id with fair scheduling and per-owner rate limits at the API, prioritizing that every tenant keeps moving over maximum throughput for the biggest one."
+        },
+        {
+          "name": "Serving the whale vs. protecting the platform",
+          "description": "An owner 10x bigger than everyone else creates hot partitions no fair scheduler fully fixes; sub-partitioning their key across N partitions and dedicating drain capacity serves them well but adds routing complexity, while temporarily throttling them protects platform SLOs at the price of degrading your largest partner.",
+          "chosen": "The design sub-partitions and dedicates worker capacity for hot owners first, holding throttling as the backstop that protects SLOs while operators respond."
+        }
+      ]
     }
   ],
   "finalDesign": {

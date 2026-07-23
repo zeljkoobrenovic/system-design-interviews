@@ -1541,108 +1541,6 @@
       "makesIrrelevant": "A managed KMS removes custom key custody and rotation jobs for ledger exports and settlement callback secrets."
     }
   ],
-  "patterns": [
-    {
-      "name": "Double-entry bookkeeping",
-      "what": "Every transaction posts equal debits and credits so the books always balance.",
-      "whenToUse": "Any money movement that must be provably conserved and auditable.",
-      "steps": [
-        "double-entry"
-      ],
-      "group": "Model Money as a Double-Entry Ledger"
-    },
-    {
-      "name": "Immutable append-only ledger",
-      "what": "Never mutate or delete a posting; corrections are new compensating entries.",
-      "whenToUse": "Auditability and the ability to always reconstruct a balance.",
-      "steps": [
-        "double-entry",
-        "audit"
-      ],
-      "group": "Model Money as a Double-Entry Ledger"
-    },
-    {
-      "name": "Idempotency key",
-      "what": "A client-supplied key the server dedups so a retry doesn't post twice.",
-      "whenToUse": "Money-moving APIs over unreliable networks (at-least-once clients).",
-      "steps": [
-        "idempotency"
-      ],
-      "group": "Idempotent Transfers"
-    },
-    {
-      "name": "Materialized balance view",
-      "what": "Maintain a derived per-account balance for O(1) reads instead of summing the journal.",
-      "whenToUse": "Read-heavy balance access over a large journal.",
-      "steps": [
-        "balances"
-      ],
-      "group": "Materialized Balances for Fast Reads"
-    },
-    {
-      "name": "Optimistic concurrency control",
-      "what": "Version the balance row and reject conflicting concurrent updates so two transfers can't lose an update.",
-      "whenToUse": "Concurrent balance changes that must not race.",
-      "steps": [
-        "concurrency"
-      ],
-      "group": "Concurrency Control on Balances"
-    },
-    {
-      "name": "Transactional outbox",
-      "what": "Write a downstream event into an outbox table in the same transaction as the postings; a relay tails and publishes it at-least-once.",
-      "whenToUse": "Reliably emitting events for a state change without a dual-write that can diverge on a crash.",
-      "steps": [
-        "events"
-      ],
-      "group": "Reliable Downstream Events (Outbox)"
-    },
-    {
-      "name": "Clearing account",
-      "what": "A per-shard in-transit account that temporarily holds value so each shard-local leg of a cross-shard transfer balances on its own.",
-      "whenToUse": "Moving money between accounts on different shards without a distributed transaction.",
-      "steps": [
-        "cross-shard"
-      ],
-      "group": "Concurrency Control on Balances"
-    },
-    {
-      "name": "Saga with compensation",
-      "what": "Split a multi-step operation into locally-atomic steps driven by a coordinator that compensates earlier steps if a later one fails.",
-      "whenToUse": "Cross-shard or cross-service operations that can't share one transaction but must stay consistent.",
-      "steps": [
-        "cross-shard"
-      ],
-      "group": "Concurrency Control on Balances"
-    },
-    {
-      "name": "Hold / reservation",
-      "what": "Reserve funds against available balance without posting, then capture, release, expire, or reverse the hold.",
-      "whenToUse": "Withdrawals and authorizations that wait on an asynchronous external rail before becoming final.",
-      "steps": [
-        "audit"
-      ],
-      "group": "Reconciliation, Audit, and Settlement"
-    },
-    {
-      "name": "Settlement state machine",
-      "what": "Model an external movement's lifecycle (pending_external -> settled / failed / reversed) so internal and provider finality stay distinct and reconcilable.",
-      "whenToUse": "Funding/withdrawals through a bank or PSP that settle asynchronously.",
-      "steps": [
-        "audit"
-      ],
-      "group": "Reconciliation, Audit, and Settlement"
-    },
-    {
-      "name": "Reconciliation",
-      "what": "Periodically recompute balances from the journal and assert invariants.",
-      "whenToUse": "Detecting and correcting any drift between derived state and the source of truth.",
-      "steps": [
-        "audit"
-      ],
-      "group": "Reconciliation, Audit, and Settlement"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1694,7 +1592,14 @@
           "instead": "Append immutable double-entry postings; derive and reconcile balances from the journal."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. auditability",
+          "description": "A single mutable balance column makes transfers and reads trivially simple and fast, but it stores only the current number: there is no history to explain a balance, concurrent transfers can silently lose updates, and a corrupted value can never be proven wrong or rebuilt.",
+          "chosen": "The design presents the mutable-balance model only as the baseline whose three failures — no audit trail, lost updates, nothing to reconcile against — motivate the ledger that replaces it."
+        }
+      ]
     },
     {
       "id": "double-entry",
@@ -1733,6 +1638,23 @@
           "whyItMatters": "The sum of all entries is always zero, so money is provably conserved and every balance is explainable.",
           "example": "Transfer $10: debit a_1 $10, credit a_2 $10 in one transaction.",
           "group": "Model Money as a Double-Entry Ledger"
+        },
+        {
+          "term": "Double-entry bookkeeping",
+          "description": "Every transaction posts equal debits and credits so the books always balance.",
+          "whyItMatters": "Any money movement that must be provably conserved and auditable.",
+          "steps": [
+            "double-entry"
+          ]
+        },
+        {
+          "term": "Immutable append-only ledger",
+          "description": "Never mutate or delete a posting; corrections are new compensating entries.",
+          "whyItMatters": "Auditability and the ability to always reconstruct a balance.",
+          "steps": [
+            "double-entry",
+            "audit"
+          ]
         }
       ],
       "probeLinks": [
@@ -1744,10 +1666,6 @@
         "tigerbeetle-financial-accounting",
         "tigerbeetle-transfer",
         "spanner-paper"
-      ],
-      "patterns": [
-        "Double-entry bookkeeping",
-        "Immutable append-only ledger"
       ],
       "whyNow": [
         "The data model is the whole correctness story; leading with an immutable double-entry journal is what a money system requires."
@@ -1830,7 +1748,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-double-entry.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-double-entry.jpg",
+      "tradeoffs": [
+        {
+          "name": "Write simplicity vs. provability",
+          "description": "Incrementing a balance is one cheap update; recording every movement as balanced debit/credit postings under an immutable append-only journal costs more rows and forbids convenient edits — corrections must be new compensating entries. In exchange, every balance is the sum of explainable movements, the invariant debits == credits always holds system-wide, and any number can be re-derived and audited.",
+          "chosen": "The design stores money as double-entry postings with a transaction header giving each movement business meaning, because for money an explainable, rebuildable history outweighs write convenience."
+        }
+      ]
     },
     {
       "id": "idempotency",
@@ -1957,9 +1882,6 @@
         "tigerbeetle-transfer",
         "debezium-outbox"
       ],
-      "patterns": [
-        "Idempotency key"
-      ],
       "whyNow": [
         "Idempotency is the second non-negotiable for money; doing it transactionally with the posting is the correctness nuance."
       ],
@@ -1973,6 +1895,18 @@
           "scenario": "API crashes after appending the journal but before returning.",
           "expectedBehavior": "Client retries with the same key; the idempotency record (written in the same txn) makes the server return the original result.",
           "mitigation": "Write idempotency key + postings in one atomic transaction."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Generality vs. schema-level enforcement",
+          "description": "A unique constraint on a natural business key lets the database itself reject duplicates with no separate store, but requires every transfer to carry a genuinely unique, client-stable key — which not all do — and couples dedup to the journal schema. A dedicated idempotency table works for any operation shape but adds a write and lookup to every hot-path transfer and needs TTL cleanup.",
+          "chosen": "The design uses an idempotency table recorded in the same transaction as the postings, because it covers transfers with no natural key and stays crash-safe by committing dedup record and postings together."
+        },
+        {
+          "name": "Safe retries vs. silent replays",
+          "description": "Merely returning the cached result for a repeated key makes retries cheap, but a key reused with a different amount or recipient would silently succeed with the wrong outcome; hashing the request body and rejecting mismatched replays catches that at the cost of storing and comparing the hash.",
+          "chosen": "The design stores a request-body hash with each key so an identical retry returns the original result while a conflicting reuse is rejected outright."
         }
       ]
     },
@@ -2132,9 +2066,6 @@
         }
       ],
       "decisionPrompt": "If balances are derived, why update them transactionally with the journal instead of asynchronously?",
-      "patterns": [
-        "Materialized balance view"
-      ],
       "probeLinks": [
         "modern-treasury-guarantees",
         "modern-treasury-concurrency",
@@ -2151,13 +2082,33 @@
           "whyItMatters": "O(1) reads while staying verifiable against the source of truth.",
           "example": "balance=42.00, last_entry_id=9981 -> recompute from entries > 9981 to verify.",
           "group": "Materialized Balances for Fast Reads"
+        },
+        {
+          "term": "Materialized balance view",
+          "description": "Maintain a derived per-account balance for O(1) reads instead of summing the journal.",
+          "whyItMatters": "Read-heavy balance access over a large journal.",
+          "steps": [
+            "balances"
+          ]
         }
       ],
       "recap": {
         "before": "Balance = scan the whole journal.",
         "after": "O(1) balance reads; still recomputable from the journal.",
         "newRisk": "Two concurrent transfers on the same account can both read-modify-write the balance and lose an update."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Read cost vs. write contention",
+          "description": "Computing a balance by summing the journal on every read needs no derived state and is exactly correct by definition, but gets slower as history grows and makes every overdraft check an expensive scan. Maintaining a materialized balance row gives O(1) reads, but every posting now also writes that row, concentrating contention on the hottest accounts.",
+          "chosen": "The design materializes balances updated transactionally with the postings, taking hot-row contention as the price of fast reads and cheap overdraft checks."
+        },
+        {
+          "name": "Consistency vs. write latency",
+          "description": "Updating the balance asynchronously off the hot path makes postings commit faster and contend less, but a read right after a transfer can show a stale number and an overdraft check against a lagging balance is unsafe. Updating it in the same transaction couples write latency to the balance row but guarantees reads never disagree with the journal.",
+          "chosen": "The design updates the balance synchronously in the posting's transaction, with a watermark so the derived row can always be recomputed and verified against the journal."
+        }
+      ]
     },
     {
       "id": "concurrency",
@@ -2317,6 +2268,14 @@
           "whyItMatters": "Prevents lost updates without holding locks under low contention.",
           "example": "UPDATE balances SET balance=40, version=8 WHERE id=a_1 AND version=7.",
           "group": "Concurrency Control on Balances"
+        },
+        {
+          "term": "Optimistic concurrency control",
+          "description": "Version the balance row and reject conflicting concurrent updates so two transfers can't lose an update.",
+          "whyItMatters": "Concurrent balance changes that must not race.",
+          "steps": [
+            "concurrency"
+          ]
         }
       ],
       "probeLinks": [
@@ -2327,9 +2286,6 @@
         "postgres-explicit-locking",
         "spanner-paper",
         "kafka-design"
-      ],
-      "patterns": [
-        "Optimistic concurrency control"
       ],
       "whyNow": [
         "Concurrency is where a 'correct on paper' ledger actually stays correct under load; naming lost-update + the overdraft invariant is the senior signal."
@@ -2428,6 +2384,18 @@
             "BalanceView"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Optimistic throughput vs. pessimistic predictability",
+          "description": "Versioned compare-and-set holds no locks, so under low contention most transfers commit first try; under a hot account, though, writers waste work retrying and can livelock. Row locks via SELECT ... FOR UPDATE serialize writers predictably — they queue instead of retrying — but holding locks caps hot-account throughput and locking two accounts risks deadlock without a consistent order.",
+          "chosen": "The design uses optimistic versioned CAS, betting that most accounts see low contention, with the conditional update enforcing check-and-decrement atomically to prevent overdraft."
+        },
+        {
+          "name": "Application logic vs. database arbitration",
+          "description": "Serializable isolation delegates correctness to the engine — no hand-written locks or versions, and it catches subtle anomalies like write skew — but it carries the highest overhead, still forces retries on serialization failures, and behaves differently across engines. Hand-rolled CAS keeps the logic explicit and portable at the cost of implementing retry-on-conflict correctly.",
+          "chosen": "The design keeps concurrency control explicit in the application via versioned CAS rather than paying serializable isolation's cost and engine variability."
+        }
       ]
     },
     {
@@ -2472,6 +2440,22 @@
           "whyItMatters": "Turns one cross-shard transfer into two locally-atomic double-entry postings the coordinator can drive, resume, and compensate — no account is writable on both shards.",
           "example": "Shard A: debit a_1, credit A.clearing (pending). Shard B: debit B.clearing, credit a_2 (posted).",
           "group": "Concurrency Control on Balances"
+        },
+        {
+          "term": "Clearing account",
+          "description": "A per-shard in-transit account that temporarily holds value so each shard-local leg of a cross-shard transfer balances on its own.",
+          "whyItMatters": "Moving money between accounts on different shards without a distributed transaction.",
+          "steps": [
+            "cross-shard"
+          ]
+        },
+        {
+          "term": "Saga with compensation",
+          "description": "Split a multi-step operation into locally-atomic steps driven by a coordinator that compensates earlier steps if a later one fails.",
+          "whyItMatters": "Cross-shard or cross-service operations that can't share one transaction but must stay consistent.",
+          "steps": [
+            "cross-shard"
+          ]
         }
       ],
       "probeLinks": [
@@ -2483,10 +2467,6 @@
       ],
       "whyNow": [
         "A wallet transfer naturally touches two accounts; once accounts are sharded, choosing the cross-shard model (saga + clearing account vs 2PC) is the highest-signal staff-level decision in this design."
-      ],
-      "patterns": [
-        "Clearing account",
-        "Saga with compensation"
       ],
       "recap": {
         "before": "Both accounts assumed colocated in one shard.",
@@ -2512,7 +2492,14 @@
           "mitigation": "Drive every saga from the durable coordinator table; make each leg idempotent on transfer_id; reconcile clearing-account balances to flag any transfer stuck pending past its window."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-cross-shard.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-cross-shard.jpg",
+      "tradeoffs": [
+        {
+          "name": "Atomicity vs. scalability",
+          "description": "Keeping every account pair in one shard preserves the single local transaction that makes a transfer trivially atomic, but caps the ledger at one shard's capacity. Sharding by account id scales writes but splits a transfer into two legs with no transaction spanning them, so atomicity must be rebuilt as a coordinator-driven saga through per-shard clearing accounts, with durable state, retries, and terminal handling.",
+          "chosen": "The design shards by account and runs a saga of two locally-atomic legs through clearing accounts, accepting a transient in-flight state in exchange for never creating or losing a cent."
+        }
+      ]
     },
     {
       "id": "events",
@@ -2677,9 +2664,6 @@
         "modern-treasury-ledgers",
         "stripe-idempotency"
       ],
-      "patterns": [
-        "Transactional outbox"
-      ],
       "whyNow": [
         "Money systems must never have an event without a posting or vice versa; the outbox is the standard guarantee and reuses the ledger's atomicity."
       ],
@@ -2687,7 +2671,19 @@
         "before": "Events published separately could diverge from the ledger.",
         "after": "Events are emitted atomically with postings, delivered at-least-once.",
         "newRisk": "Derived state (balances, exports) can still drift due to bugs — need a backstop check."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Dual-write safety vs. pipeline simplicity",
+          "description": "Publishing to Kafka right after commit is the simplest wiring with the lowest steady-state latency, but a crash between commit and publish silently loses the event — a posting exists that downstream never hears about, with no clean recovery. The transactional outbox makes the event row exist if and only if the posting committed, at the cost of an outbox table, a relay process, and row pruning.",
+          "chosen": "The design uses the transactional outbox because for money every posting must produce exactly one downstream event, and a divergent dual write is unacceptable."
+        },
+        {
+          "name": "Explicit events vs. schema coupling",
+          "description": "Change data capture derives events from the database's own commit log with no extra in-transaction write and perfect fidelity to what committed, but it couples downstream event shape to the physical table schema — brittle across migrations — and requires operating a CDC connector. An outbox row is an extra write but carries a deliberately shaped domain event.",
+          "chosen": "The design prefers explicitly shaped outbox events over CDC so consumers see stable domain events rather than raw table changes."
+        }
+      ]
     },
     {
       "id": "audit",
@@ -2733,12 +2729,23 @@
           "whyItMatters": "Catches drift and corruption early; the journal is always the authority for correction.",
           "example": "Nightly: sum(entries) per account == account_balances; global debits == credits.",
           "group": "Reconciliation, Audit, and Settlement"
+        },
+        {
+          "term": "Hold / reservation",
+          "description": "Reserve funds against available balance without posting, then capture, release, expire, or reverse the hold.",
+          "whyItMatters": "Withdrawals and authorizations that wait on an asynchronous external rail before becoming final.",
+          "steps": [
+            "audit"
+          ]
+        },
+        {
+          "term": "Settlement state machine",
+          "description": "Model an external movement's lifecycle (pending_external -> settled / failed / reversed) so internal and provider finality stay distinct and reconcilable.",
+          "whyItMatters": "Funding/withdrawals through a bank or PSP that settle asynchronously.",
+          "steps": [
+            "audit"
+          ]
         }
-      ],
-      "patterns": [
-        "Reconciliation",
-        "Settlement state machine",
-        "Hold / reservation"
       ],
       "probeLinks": [
         "square-books",
@@ -2847,7 +2854,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/08-audit.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-audit.jpg",
+      "tradeoffs": [
+        {
+          "name": "Detection cost vs. detection latency",
+          "description": "Recomputing every balance from the journal and matching external provider reports catches everything but is expensive, so it can only run on a schedule; cheap continuous invariant checks (system-wide debits == credits, materialized balance == journal sum through its watermark) run constantly but only catch what those invariants cover.",
+          "chosen": "The design reconciles at two cadences — continuous cheap invariant checks plus scheduled full recomputation — so drift is caught quickly without paying full-replay cost all the time."
+        }
+      ]
     }
   ],
   "finalDesign": {

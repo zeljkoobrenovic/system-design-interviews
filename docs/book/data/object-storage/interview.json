@@ -892,72 +892,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Metadata/data plane split",
-      "what": "A scalable metadata service maps keys to locations; data nodes store the bytes.",
-      "whenToUse": "Blob stores where metadata and bulk data scale and behave differently.",
-      "steps": [
-        "split"
-      ],
-      "group": "Split Metadata from Data"
-    },
-    {
-      "name": "Replication for durability",
-      "what": "Store N copies across failure domains so any node loss is survivable.",
-      "whenToUse": "Simplicity and fast reads; higher storage overhead.",
-      "steps": [
-        "durability"
-      ],
-      "group": "Durability: Replication vs Erasure Coding"
-    },
-    {
-      "name": "Erasure coding",
-      "what": "Split data into k data + m parity fragments; any k reconstruct it — durability at far lower overhead.",
-      "whenToUse": "Cost-efficient durability for large/cold objects.",
-      "steps": [
-        "durability"
-      ],
-      "group": "Durability: Replication vs Erasure Coding"
-    },
-    {
-      "name": "Tiered redundancy by object class",
-      "what": "Replicate hot/small objects (fast, cheap repair) and erasure-code cold/large ones (low overhead), migrating between tiers via a lifecycle policy as objects cool.",
-      "whenToUse": "The chosen durability policy: it keeps exabyte storage near 1.4× while keeping hot reads/repair fast.",
-      "steps": [
-        "durability",
-        "replication-vs-ec"
-      ],
-      "group": "Durability: Replication vs Erasure Coding"
-    },
-    {
-      "name": "Commit-metadata-last",
-      "what": "Write data durably first, then commit metadata, so readers never see an object whose data is missing.",
-      "whenToUse": "Two-plane stores needing read-after-write correctness.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Read-After-Write via Commit Ordering"
-    },
-    {
-      "name": "Multipart upload",
-      "what": "Upload a large object as independent parts, then atomically complete.",
-      "whenToUse": "Huge objects and resumable, parallel uploads.",
-      "steps": [
-        "multipart"
-      ],
-      "group": "Multipart Upload for Large Objects"
-    },
-    {
-      "name": "Scrub + repair + GC",
-      "what": "Continuously verify checksums, rebuild lost shards, and reclaim deleted/abandoned space.",
-      "whenToUse": "Maintaining durability and cost over time on failing hardware.",
-      "steps": [
-        "maintenance"
-      ],
-      "group": "Scrubbing, Repair, and Garbage Collection"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1004,7 +938,14 @@
           "instead": "Split metadata from data and store each object redundantly across independent failure domains."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One-box simplicity vs. durability and scale",
+          "description": "A single fileserver mapping bucket/key to a local file is a complete, correct object store for a handful of objects — but one disk holds the only copy, so a routine disk failure loses data outright, and one machine's disk, filesystem, and NIC each cap total bytes, object count, and throughput far below exabytes, trillions of objects, and millions of requests per second.",
+          "chosen": "The design rejects the single box because durability and scale are the two headline requirements, and one server clears neither ceiling."
+        }
+      ]
     },
     {
       "id": "split",
@@ -1050,9 +991,6 @@
           "group": "Split Metadata from Data"
         }
       ],
-      "patterns": [
-        "Metadata/data plane split"
-      ],
       "whyNow": [
         "The plane split is the architectural backbone; durability, multipart, and listing all build on this separation."
       ],
@@ -1071,7 +1009,14 @@
         "after": "Key->location metadata separate from opaque byte storage.",
         "newRisk": "A single copy of the bytes on one node isn't durable — disks and nodes fail."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-split.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-split.jpg",
+      "tradeoffs": [
+        {
+          "name": "Separate planes vs. unified store",
+          "description": "Splitting the tiny queryable key-to-location mapping from the bulk bytes lets each plane scale on its own axis and makes metadata the single point of control for existence, authorization, and quotas — but every request must now resolve metadata first before touching bytes, and raw data on a node means nothing without a committed pointer to it.",
+          "chosen": "The design separates a sharded transactional metadata service from dumb data nodes, because the two workloads are so different that one system serving both would do each badly."
+        }
+      ]
     },
     {
       "id": "durability",
@@ -1237,6 +1182,23 @@
           "whyItMatters": "Same/better durability at much lower storage overhead.",
           "example": "10+4: 1.4× storage, tolerates any 4 fragment losses.",
           "group": "Durability: Replication vs Erasure Coding"
+        },
+        {
+          "term": "Replication for durability",
+          "description": "Store N copies across failure domains so any node loss is survivable.",
+          "whyItMatters": "Simplicity and fast reads; higher storage overhead.",
+          "steps": [
+            "durability"
+          ]
+        },
+        {
+          "term": "Tiered redundancy by object class",
+          "description": "Replicate hot/small objects (fast, cheap repair) and erasure-code cold/large ones (low overhead), migrating between tiers via a lifecycle policy as objects cool.",
+          "whyItMatters": "The chosen durability policy: it keeps exabyte storage near 1.4× while keeping hot reads/repair fast.",
+          "steps": [
+            "durability",
+            "replication-vs-ec"
+          ]
         }
       ],
       "probeLinks": [
@@ -1248,11 +1210,6 @@
         "ceph-erasure",
         "minio-erasure",
         "backblaze-vaults"
-      ],
-      "patterns": [
-        "Replication for durability",
-        "Erasure coding",
-        "Tiered redundancy by object class"
       ],
       "whyNow": [
         "Durability is the headline requirement; the replication-vs-EC tradeoff (and cross-domain placement) is the central senior decision."
@@ -1267,6 +1224,18 @@
           "trap": "Placing replicas/fragments without failure-domain awareness.",
           "why": "Two copies on the same rack die together; the math of 11 nines assumes independent failures.",
           "instead": "Spread copies/fragments across racks/zones explicitly."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Storage cost vs. scheme uniformity",
+          "description": "One blanket redundancy scheme is simple to build and operate, but at 1 EB logical the difference between 3x replication and 10+4 erasure coding (~1.4x) is measured in exabytes of raw disk. Tiering — replicate hot/small, erasure-code cold/large — makes storage cost track the access pattern, at the price of two redundancy code paths and a lifecycle classifier to build and test.",
+          "chosen": "The design tiers by object class because the large/cold bytes that dominate the bill get EC economics while hot/small objects keep replication's fast reads and cheap repair."
+        },
+        {
+          "name": "Tier migration vs. background bandwidth",
+          "description": "Transitioning objects from replicas to erasure coding as they cool keeps the exabyte tier near 1.4x, but each transition moves bytes and rewrites redundancy, consuming background IO that must be throttled and isolated from serving traffic on its own work queue.",
+          "chosen": "The design runs lifecycle migrations as throttled background work with a separate IO budget, so cost optimization never degrades foreground reads and writes."
         }
       ]
     },
@@ -1326,7 +1295,19 @@
         "after": "Replication vs EC chosen per object class with failure-domain placement.",
         "newRisk": "EC repair amplification and gather-on-read latency — bounded by class assignment + repair throttling."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/04-replication-vs-ec.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-replication-vs-ec.jpg",
+      "tradeoffs": [
+        {
+          "name": "Read latency vs. storage overhead",
+          "description": "Replication serves any read from one whole copy with no reconstruction — lowest latency, ideal for small hot objects — but pays Nx storage. Erasure coding hits the same durability at ~1.4x overhead, but a read may need to gather k fragments and decode, which is awkward and slow for tiny hot objects.",
+          "chosen": "The design uses replication where read latency matters (small/hot) and erasure coding where storage cost dominates (large/cold), placing fragments across failure domains in both."
+        },
+        {
+          "name": "Cheap repair vs. repair amplification",
+          "description": "Repairing a lost replica is a single copy from a survivor, while repairing one lost erasure-coded fragment requires reading many surviving fragments to reconstruct it — repair amplification that costs cluster bandwidth exactly when failures are already stressing the system.",
+          "chosen": "The design accepts EC's repair amplification on the cold tier where failures per object are rarer, keeping replication's cheap repair for the hot tier where objects churn."
+        }
+      ]
     },
     {
       "id": "consistency",
@@ -1492,9 +1473,6 @@
         "spanner-paper",
         "swift-erasure"
       ],
-      "patterns": [
-        "Commit-metadata-last"
-      ],
       "whyNow": [
         "Read-after-write is a stated requirement; commit ordering is the precise mechanism and the subtle two-plane correctness point."
       ],
@@ -1624,6 +1602,18 @@
             "DataNodes"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Orphaned data vs. dangling pointers",
+          "description": "Committing metadata last means a crash mid-PUT leaves only orphan bytes with no pointer — invisible to readers and reclaimable by GC. Committing metadata first registers the key immediately and never orphans data, but a reader can then resolve a pointer to bytes that are not durable yet, surfacing corruption as a 404 on the data and breaking read-after-write.",
+          "chosen": "The design writes data durably first and commits metadata last, choosing garbage that GC quietly cleans over corruption that readers can see."
+        },
+        {
+          "name": "Write visibility latency vs. read-after-write",
+          "description": "Waiting for durable placement receipts from the data nodes before the final metadata commit means perceived PUT latency includes both phases plus a confirmation round, but it is exactly what makes a successful PUT mean the object is durable and immediately GETtable, with write-intent rows and idempotency records covering retries after client timeouts.",
+          "chosen": "The design pays the two-phase write latency because read-after-write is the stated consistency contract, with the coordinator owning retries."
+        }
       ]
     },
     {
@@ -1674,9 +1664,6 @@
         "s3-incomplete-mpu-lifecycle",
         "s3-lifecycle",
         "swift-erasure"
-      ],
-      "patterns": [
-        "Multipart upload"
       ],
       "whyNow": [
         "Multipart is the standard mechanism for large objects and reuses the commit-last visibility rule at part granularity — a natural extension."
@@ -1758,7 +1745,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-multipart.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-multipart.jpg",
+      "tradeoffs": [
+        {
+          "name": "Part granularity vs. single-request atomicity",
+          "description": "Uploading a 5 TB object as one streamed request is conceptually atomic but a failure at 80% wastes everything and ties up a connection for hours. Independent parts are parallel, resumable, and idempotent at part granularity (re-uploading a part number replaces it), but the system must track part records and validate the full part list — numbers, etags, minimum sizes — before Complete atomically commits the assembled object exactly once.",
+          "chosen": "The design uses multipart upload with strict validation at Complete, trading bookkeeping for resumability and parallelism on huge objects."
+        }
+      ]
     },
     {
       "id": "maintenance",
@@ -1808,10 +1802,15 @@
           "whyItMatters": "Lets GC free space aggressively without ever racing a concurrent PUT into deleting live bytes.",
           "example": "Mark placement P (epoch 7) -> concurrent PUT re-references P at epoch 8 -> sweep sees epoch mismatch -> skip P.",
           "group": "Scrubbing, Repair, and Garbage Collection"
+        },
+        {
+          "term": "Scrub + repair + GC",
+          "description": "Continuously verify checksums, rebuild lost shards, and reclaim deleted/abandoned space.",
+          "whyItMatters": "Maintaining durability and cost over time on failing hardware.",
+          "steps": [
+            "maintenance"
+          ]
         }
-      ],
-      "patterns": [
-        "Scrub + repair + GC"
       ],
       "whyNow": [
         "Ongoing repair/GC is what keeps durability and cost true over time; without it the 11-nines claim decays — this is the operational heart of the case."
@@ -1936,7 +1935,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-maintenance.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-maintenance.jpg",
+      "tradeoffs": [
+        {
+          "name": "Scrub cadence vs. verification cost",
+          "description": "Continuously re-reading and re-checksumming every shard catches silent disk rot before it is served or counted as live redundancy, but scrubbing is a constant background IO tax; a slower cadence is cheaper but widens the window in which a corrupt copy silently masquerades as a healthy one.",
+          "chosen": "The design scrubs every shard on a bounded cycle (about two weeks) and quarantines failures immediately, treating verification IO as part of the durability budget."
+        },
+        {
+          "name": "Repair speed vs. serving interference",
+          "description": "The durability math assumes lost redundancy is rebuilt before further failures stack up, so when a node with millions of shards dies, repair must be fast and massively parallel — but aggressive repair competes with foreground traffic for disk and network bandwidth.",
+          "chosen": "The design prioritizes objects closest to losing their last redundancy and parallelizes repair across the fleet, throttled so rebuilding never starves live requests."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -2090,6 +2101,18 @@
         {
           "issue": "Background repair/index/lifecycle work can starve foreground requests.",
           "mitigation": "Run repair/GC/tier-transition off a separate durable work queue with its own bandwidth/IO budget, isolated from PUT/GET."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Hash sharding vs. ordered listing",
+          "description": "Hash-sharding object rows by (bucket, key) spreads trillions of objects and point PUT/GET lookups evenly, but destroys key order — a prefix listing would scatter-gather across every shard and merge. A derived key-ordered bucket index makes 'list keys under foo/' a cheap range scan with delimiter queries, but it is a second structure to maintain and hot buckets concentrate listing load on one index range.",
+          "chosen": "The design keeps hash-sharded object rows for point access and adds a per-bucket ordered index for listings, mitigating hot ranges with caching and splitting."
+        },
+        {
+          "name": "List consistency vs. write-path work",
+          "description": "Updating the bucket index in the same metadata commit transaction that flips the latest pointer makes listings strongly consistent with PUT/DELETE, but the commit now spans the object's hash shard and the bucket's index partition, making the write path do more coordinated work; maintaining the index asynchronously would lighten writes but let listings lag reality.",
+          "chosen": "The design couples the index update into the metadata commit because strong list-after-write is worth the heavier transaction."
         }
       ]
     }

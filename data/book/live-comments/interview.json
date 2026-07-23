@@ -610,62 +610,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Per-room broadcast bus",
-      "what": "Publish a room's comments to one ordered stream; gateways subscribe and push to their viewers.",
-      "whenToUse": "One-to-many broadcast to many subscribers of the same channel.",
-      "steps": [
-        "pipeline"
-      ],
-      "group": "Ingest and the Per-Room Broadcast Bus"
-    },
-    {
-      "name": "Gateway fanout tier",
-      "what": "Hold viewer connections on gateways and fan a single room message to all of them, not to each viewer individually upstream.",
-      "whenToUse": "Massive concurrent viewers per room.",
-      "steps": [
-        "fanout"
-      ],
-      "group": "Massive Fanout via Gateway Tier"
-    },
-    {
-      "name": "Sampling / rate capping",
-      "what": "When comment volume exceeds what's readable, show a representative sample rather than everything.",
-      "whenToUse": "Firehose rooms where full delivery is pointless and expensive.",
-      "steps": [
-        "sampling"
-      ],
-      "group": "Taming the Firehose: Sampling"
-    },
-    {
-      "name": "Approximate aggregated counts",
-      "what": "Aggregate reactions and viewer counts into approximate tallies pushed periodically.",
-      "whenToUse": "High-volume counters where exactness isn't needed.",
-      "steps": [
-        "presence"
-      ],
-      "group": "Presence and Reaction Counts (Approximate)"
-    },
-    {
-      "name": "Best-effort delivery + backpressure",
-      "what": "Drop/coalesce under load and protect clients/servers instead of guaranteeing every message.",
-      "whenToUse": "Live feeds tolerant of loss.",
-      "steps": [
-        "backpressure"
-      ],
-      "group": "Backpressure and Graceful Degradation"
-    },
-    {
-      "name": "Moderation gate (before broadcast)",
-      "what": "Synchronously allow/drop each comment before it reaches the bus; quarantine rejects and fail closed for low-trust users when moderation is slow.",
-      "whenToUse": "Public live comments where unscreened content must never broadcast.",
-      "steps": [
-        "pipeline"
-      ],
-      "group": "Ingest and the Per-Room Broadcast Bus"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -715,7 +659,14 @@
           "instead": "Publish each room's comments to a broadcast bus and fan out through a gateway tier that pushes once per gateway and multiplies locally."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Polling simplicity vs. read amplification",
+          "description": "Letting every viewer poll a comments table is trivial to build, but 5M viewers polling every 2s is ~2.5M reads/sec — almost all returning the same handful of rows — and comments still arrive up to a poll interval late; simplicity is bought with ruinous, redundant read load and lag.",
+          "chosen": "The design rejects poll-driven broadcast because delivering one comment to millions needs push-based fanout, not millions of near-identical reads."
+        }
+      ]
     },
     {
       "id": "pipeline",
@@ -759,6 +710,14 @@
           "whyItMatters": "Decouples cheap posting from expensive fanout and gives consistent room ordering.",
           "example": "Comment -> moderate (allow) -> publish to room R's stream -> fanout reads it; reject -> quarantine.",
           "group": "Ingest and the Per-Room Broadcast Bus"
+        },
+        {
+          "term": "Moderation gate (before broadcast)",
+          "description": "Synchronously allow/drop each comment before it reaches the bus; quarantine rejects and fail closed for low-trust users when moderation is slow.",
+          "whyItMatters": "Public live comments where unscreened content must never broadcast.",
+          "steps": [
+            "pipeline"
+          ]
         }
       ],
       "probeLinks": [
@@ -766,10 +725,6 @@
         "kafka-design",
         "redis-streams",
         "tail-at-scale"
-      ],
-      "patterns": [
-        "Per-room broadcast bus",
-        "Moderation gate (before broadcast)"
       ],
       "whyNow": [
         "Decoupling ingest from delivery via the bus is the structural foundation; the fanout problem is solved against this stream."
@@ -844,7 +799,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-pipeline.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-pipeline.jpg",
+      "tradeoffs": [
+        {
+          "name": "Safety vs. posting latency",
+          "description": "Making moderation a real gate — a comment only reaches the broadcast bus on an allow — enforces the safety requirement, but puts a scoring model with a ~150ms budget in every comment's path; screening asynchronously while publishing anyway would be faster but ships harmful comments to millions before review.",
+          "chosen": "The design gates broadcast on moderation and fails closed for new and low-trust users when the model is slow, so a moderation outage degrades reach rather than safety."
+        },
+        {
+          "name": "Direct delivery vs. bus decoupling",
+          "description": "Delivering comments straight from the ingest service would be the shortest path, but it entangles posting with the delivery fleet's health; publishing to a per-room broadcast bus separates the write path (auth, dedup by clientMessageId, rate limits, moderation) from the massive read-side fanout.",
+          "chosen": "The design publishes allowed comments to a per-room bus so ingest and fanout scale and fail independently."
+        }
+      ]
     },
     {
       "id": "fanout",
@@ -1014,6 +981,14 @@
           "whyItMatters": "Reduces upstream fanout from O(viewers) to O(gateways); local multiplication scales.",
           "example": "5M viewers across 5,000 gateways -> 5,000 upstream pushes, each gateway fans to ~1,000.",
           "group": "Massive Fanout via Gateway Tier"
+        },
+        {
+          "term": "Gateway fanout tier",
+          "description": "Hold viewer connections on gateways and fan a single room message to all of them, not to each viewer individually upstream.",
+          "whyItMatters": "Massive concurrent viewers per room.",
+          "steps": [
+            "fanout"
+          ]
         }
       ],
       "probeLinks": [
@@ -1021,9 +996,6 @@
         "kafka-design",
         "redis-streams",
         "sre-overload"
-      ],
-      "patterns": [
-        "Gateway fanout tier"
       ],
       "whyNow": [
         "Hierarchical fanout is the central scaling idea; recognizing the gateway-as-local-multiplier is what makes millions-of-viewers tractable."
@@ -1090,6 +1062,18 @@
             "Fanout",
             "Gateway"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Upstream cost vs. gateway statefulness",
+          "description": "Hierarchical fanout pushes each comment once per gateway — O(gateways), not O(viewers) — and lets gateways do the local multiplication over persistent WebSockets; the price is a stateful gateway tier holding millions of connections, plus a room registry that must stay current as viewers churn and gateways die.",
+          "chosen": "The design chooses gateway-tier fanout because O(viewers) upstream delivery (direct per-viewer pub/sub) is unsustainable at 5M viewers per room."
+        },
+        {
+          "name": "Push freshness vs. pull scalability",
+          "description": "A stateless pull tier where clients read a room log from a cursor is easy to scale, cacheable, and survives client churn, but comments arrive a poll interval late and 5M pollers re-create the read amplification the design exists to avoid; pushed WebSockets give sub-second delivery at the cost of held connections and failover work.",
+          "chosen": "The design keeps push delivery over persistent connections, accepting connection-placement and failover complexity because sub-second latency is the point of a live feed."
         }
       ]
     },
@@ -1249,6 +1233,14 @@
           "whyItMatters": "Keeps the feed usable and the system affordable in firehose rooms.",
           "example": "Cap to ~20 comments/sec shown; sample/prioritize from the flood.",
           "group": "Taming the Firehose: Sampling"
+        },
+        {
+          "term": "Sampling / rate capping",
+          "description": "When comment volume exceeds what's readable, show a representative sample rather than everything.",
+          "whyItMatters": "Firehose rooms where full delivery is pointless and expensive.",
+          "steps": [
+            "sampling"
+          ]
         }
       ],
       "probeLinks": [
@@ -1257,9 +1249,6 @@
         "redis-streams",
         "sre-overload"
       ],
-      "patterns": [
-        "Sampling / rate capping"
-      ],
       "whyNow": [
         "Sampling is the firehose-specific insight that distinguishes live comments from chat: you deliberately don't deliver everything."
       ],
@@ -1267,7 +1256,19 @@
         "before": "Deliver every comment.",
         "after": "Rate-capped, representative sampling per room.",
         "newRisk": "Viewers also want counts (who's watching, reactions) — high-volume signals of their own."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Completeness vs. readability",
+          "description": "Delivering all 5,000 comments/sec to every viewer preserves every message but floods clients no human can read and makes fanout cost scale with the raw firehose; capping delivery at a readable ~20/sec keeps the feed lively and turns 25M upstream pushes/sec into ~100K/sec, at the cost of dropping most comments.",
+          "chosen": "The design rate-caps delivery with sampling because beyond human reading speed extra comments add cost without adding value."
+        },
+        {
+          "name": "Random fairness vs. ranked relevance",
+          "description": "Uniform random sampling is cheap, stateless, and statistically representative of the room, but drops good comments by chance and ignores who a viewer follows; quality-ranked or personalized sampling improves perceived feed quality but adds scoring CPU on the firehose path and per-viewer samples that multiply fanout work.",
+          "chosen": "The design uses random rate-capped sampling on the hot path, keeping the sampler stateless and one shared sample per room."
+        }
+      ]
     },
     {
       "id": "presence",
@@ -1433,9 +1434,6 @@
         "websocket-rfc",
         "redis-pubsub"
       ],
-      "patterns": [
-        "Approximate aggregated counts"
-      ],
       "whyNow": [
         "Counts are a second high-volume fanout; aggregating-then-broadcasting (not per-event) is the parallel insight to comment sampling."
       ],
@@ -1498,6 +1496,18 @@
             "Presence"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Exactness vs. aggregation cost",
+          "description": "Broadcasting each of a million heart taps gives instant, exact counts but is precisely the O(viewers) blowup the design avoids elsewhere; aggregating reactions into a windowed count delta pushed every ~2s makes cost independent of reaction volume, at the price of counts that lag and are never exactly right at any instant.",
+          "chosen": "The design broadcasts aggregated approximate counts because hearts and viewer tallies need to feel live, not be precise."
+        },
+        {
+          "name": "Connection counts vs. unique viewers",
+          "description": "Summing per-gateway connection counts from the room registry is nearly free but measures concurrent connections, double-counting reconnects and multi-device viewers; a HyperLogLog sketch bounded by a session window estimates true unique viewers in kilobytes, but adds sketch-and-merge machinery and a few percent error.",
+          "chosen": "The design uses registry connection sums for the live count and reserves an HLL sketch for when a genuine unique-viewer estimate is required."
+        }
       ]
     },
     {
@@ -1533,9 +1543,6 @@
         ]
       },
       "decisionPrompt": "A viewer on a bad connection can't keep up with the feed. What happens to their stream and the gateway?",
-      "patterns": [
-        "Best-effort delivery + backpressure"
-      ],
       "probeLinks": [
         "sre-overload",
         "kafka-design",
@@ -1552,6 +1559,14 @@
           "whyItMatters": "Protects the system and other viewers from one slow consumer or a spike.",
           "example": "Per-connection buffer caps; drop-oldest comments for a lagging client.",
           "group": "Backpressure and Graceful Degradation"
+        },
+        {
+          "term": "Best-effort delivery + backpressure",
+          "description": "Drop/coalesce under load and protect clients/servers instead of guaranteeing every message.",
+          "whyItMatters": "Live feeds tolerant of loss.",
+          "steps": [
+            "backpressure"
+          ]
         }
       ],
       "recap": {
@@ -1559,7 +1574,14 @@
         "after": "Bounded, drop-on-overload, graceful degradation.",
         "newRisk": "Gateways and rooms must scale and survive failures at event scale."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-backpressure.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-backpressure.jpg",
+      "tradeoffs": [
+        {
+          "name": "Delivery completeness vs. gateway stability",
+          "description": "Buffering everything for a slow client would eventually deliver every message but lets one bad connection consume unbounded gateway memory; a bounded per-connection buffer (~256 messages) with drop-oldest for comments and coalescing for counts keeps gateways healthy while that viewer misses some comments.",
+          "chosen": "The design treats delivery as best-effort and drops or coalesces at bounded buffers, because on a live feed the newest content matters more than a complete backlog."
+        }
+      ]
     },
     {
       "id": "scale",
@@ -1672,7 +1694,19 @@
           "mitigation": "Latency budget + fail-closed + quarantine; alert on quarantine backlog growth."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single room bus vs. sliced fanout",
+          "description": "Treating a 10M-viewer mega-room as one unit concentrates its bus and fanout on capacity no single lane has; partitioning it into (room_id, slice_id) slices with their own fanout workers scales horizontally, at the cost of a partitioner, per-slice registry ownership, and rolling reaction tallies up to a room total.",
+          "chosen": "The design slices mega-rooms and replicates the single sampled stream to every slice — feasible precisely because sampling already capped the stream every slice must carry."
+        },
+        {
+          "name": "Registry authority vs. rebuildability",
+          "description": "A strongly authoritative room registry would always know exactly which gateways hold a room but becomes a fragile critical dependency; lease/TTL entries that gateways refresh mean the registry can briefly route to a dead gateway until its lease expires, but the whole registry is rebuildable from gateways re-registering.",
+          "chosen": "The design accepts short-lived staleness after a gateway death because a self-healing, rebuildable registry beats a perfectly consistent one that becomes a single point of failure."
+        }
+      ]
     }
   ],
   "finalDesign": {

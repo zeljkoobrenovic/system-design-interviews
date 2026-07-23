@@ -827,62 +827,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Central feature registry",
-      "what": "Define each feature once with a source + transform; everything references the definition.",
-      "whenToUse": "Sharing/governing features across teams and avoiding duplicate logic.",
-      "steps": [
-        "registry"
-      ],
-      "group": "Define Features Once (Registry)"
-    },
-    {
-      "name": "Dual offline/online stores",
-      "what": "An offline store (historical, for training) and an online store (latest, for serving), fed from the same definitions.",
-      "whenToUse": "Features needed for both bulk training and low-latency inference.",
-      "steps": [
-        "stores"
-      ],
-      "group": "Dual Offline and Online Stores"
-    },
-    {
-      "name": "Point-in-time correctness",
-      "what": "Join feature values as-of each training event's timestamp, never future values.",
-      "whenToUse": "Building training data without label leakage.",
-      "steps": [
-        "training"
-      ],
-      "group": "Point-in-Time-Correct Training Data"
-    },
-    {
-      "name": "Train/serve consistency",
-      "what": "Use identical feature logic offline and online so the model sees the same inputs.",
-      "whenToUse": "Any production ML system (skew silently degrades quality).",
-      "steps": [
-        "serving"
-      ],
-      "group": "Online Serving and Train/Serve Consistency"
-    },
-    {
-      "name": "Materialization + freshness",
-      "what": "Materialize computed features into the online store; streaming for fresh, batch for the rest.",
-      "whenToUse": "Keeping serving features current at acceptable cost.",
-      "steps": [
-        "freshness"
-      ],
-      "group": "Materialization and Freshness"
-    },
-    {
-      "name": "Feature monitoring (drift/skew)",
-      "what": "Monitor freshness, distribution drift, and online/offline skew.",
-      "whenToUse": "Detecting silent ML degradation.",
-      "steps": [
-        "freshness"
-      ],
-      "group": "Materialization and Freshness"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -928,7 +872,14 @@
           "instead": "Define each feature once in a central registry that drives both offline and online computation."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Team autonomy vs. train/serve correctness",
+          "description": "Letting each model compute features in its own training SQL and its own serving code is fast to start and needs no shared infrastructure, but the two implementations of 'the same' feature like user_7d_clicks inevitably drift, and the model silently degrades because it sees different inputs at serving than it trained on. Nothing guarantees the two code paths agree, and every team re-derives popular features slightly differently.",
+          "chosen": "The design treats ad hoc per-model features as the baseline to move away from, because duplicated, divergent implementations are the root cause of train/serve skew."
+        }
+      ]
     },
     {
       "id": "registry",
@@ -1098,6 +1049,14 @@
           "whyItMatters": "Lets feature definitions evolve without silently changing the inputs of already-trained models, preserving train/serve consistency over time.",
           "example": "Redefining user_7d_clicks mints v4; the ranker stays pinned to v3 until retrained.",
           "group": "Define Features Once (Registry)"
+        },
+        {
+          "term": "Central feature registry",
+          "description": "Define each feature once with a source + transform; everything references the definition.",
+          "whyItMatters": "Sharing/governing features across teams and avoiding duplicate logic.",
+          "steps": [
+            "registry"
+          ]
         }
       ],
       "probeLinks": [
@@ -1108,9 +1067,6 @@
         "sagemaker-feature-store-docs",
         "vertex-feature-store-docs"
       ],
-      "patterns": [
-        "Central feature registry"
-      ],
       "whyNow": [
         "The registry is the foundation; defining features once is precisely what makes train/serve consistency achievable downstream."
       ],
@@ -1118,7 +1074,19 @@
         "before": "Nothing.",
         "after": "Features defined once, centrally, reusable.",
         "newRisk": "Training needs bulk history; serving needs ms reads — one store can't do both well."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Central governance vs. transform expressiveness",
+          "description": "A declarative registry makes one definition drive both batch and stream compute and adds discovery, ownership, lineage, and lifecycle control — but its transform DSL must be expressive enough for every feature, or teams escape it and skew returns. A shared code library gives full language power and familiar review flows, but a team pinning an old library version on one side silently reintroduces skew, and nothing central enforces governance.",
+          "chosen": "The design picks the central declarative registry so the definition literally cannot diverge across train and serve, accepting the DSL-expressiveness risk and the adoption cost."
+        },
+        {
+          "name": "Versioned contracts vs. authoring friction",
+          "description": "Treating each feature as a versioned contract with a lifecycle (draft, reviewed, active, deprecated, retired) and compatibility checks protects models that pinned old versions, but every definition change now goes through process, and a registry outage or bad migration can block all feature authoring. Loose definitions are frictionless but let a change break trained models downstream.",
+          "chosen": "The design accepts the process overhead: versions are pinned by models and changes are lifecycle-gated, because breaking a production model silently is worse than slower authoring."
+        }
+      ]
     },
     {
       "id": "stores",
@@ -1284,6 +1252,14 @@
           "whyItMatters": "Each is tuned to its access pattern while staying logically consistent.",
           "example": "Warehouse holds 2 years of values; KV holds the latest per user for serving.",
           "group": "Dual Offline and Online Stores"
+        },
+        {
+          "term": "Dual offline/online stores",
+          "description": "An offline store (historical, for training) and an online store (latest, for serving), fed from the same definitions.",
+          "whyItMatters": "Features needed for both bulk training and low-latency inference.",
+          "steps": [
+            "stores"
+          ]
         }
       ],
       "probeLinks": [
@@ -1295,9 +1271,6 @@
         "uber-michelangelo",
         "airbnb-bighead"
       ],
-      "patterns": [
-        "Dual offline/online stores"
-      ],
       "whyNow": [
         "The dual store is the defining structure; everything (training correctness, serving latency, freshness) is shaped by it."
       ],
@@ -1305,7 +1278,19 @@
         "before": "One store.",
         "after": "Offline (historical) + online (latest), both from the registry.",
         "newRisk": "Building training data naively from history can leak future information."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Workload specialization vs. operational simplicity",
+          "description": "One store is simpler to build and keeps each feature in exactly one place, but no single engine serves both bulk historical scans and millisecond single-entity lookups well, and training scans can starve latency-sensitive inference traffic. Two stores tune each side to its access pattern at the cost of a materialization pipeline that must reliably keep them in sync.",
+          "chosen": "The design runs dual offline and online stores fed from the same registry definitions, accepting two systems to operate so neither workload compromises the other."
+        },
+        {
+          "name": "Derived-cache safety vs. freshness",
+          "description": "Making the offline warehouse the sole source of truth with the online store as a derived cache means cache loss is just a rebuild, never data loss, and authoring stays simple. But fast-changing features then wait on batch materialization, so seconds-fresh signals are impossible without adding a stream path anyway.",
+          "chosen": "The design keeps both stores as first-class materializations of the registry rather than a pure cache-over-warehouse, so a stream path can serve fresh features directly."
+        }
+      ]
     },
     {
       "id": "training",
@@ -1476,6 +1461,14 @@
           "whyItMatters": "A 1B-row PIT join is too big to return synchronously, and the manifest makes the dataset reproducible, auditable, and idempotent on retry.",
           "example": "POST /v1/training-datasets -> tdj_123; poll until succeeded, then read the output URI plus {user_7d_clicks: v3}.",
           "group": "Point-in-Time-Correct Training Data"
+        },
+        {
+          "term": "Point-in-time correctness",
+          "description": "Join feature values as-of each training event's timestamp, never future values.",
+          "whyItMatters": "Building training data without label leakage.",
+          "steps": [
+            "training"
+          ]
         }
       ],
       "probeLinks": [
@@ -1484,9 +1477,6 @@
         "netflix-time-travel",
         "pinterest-feature-backfill",
         "hopsworks-feature-store-paper"
-      ],
-      "patterns": [
-        "Point-in-time correctness"
       ],
       "whyNow": [
         "Point-in-time correctness is the non-obvious correctness crux of training data; naming leakage and as-of joins is the staff-level signal."
@@ -1621,6 +1611,18 @@
             "Offline"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Point-in-time correctness vs. compute and storage cost",
+          "description": "Joining each labeled event to the feature's current value is trivial and cheap, but it leaks future information into past events — offline metrics inflate and the model fails in production. The as-of join against timestamped history is correct, but the offline store must retain full history and point-in-time joins over that history are expensive.",
+          "chosen": "The design pays for the as-of join in the training API, because silent leakage is the worst failure mode and centralizing the join stops engineers hand-rolling leaky ones."
+        },
+        {
+          "name": "Backfill ability vs. logged-vector fidelity",
+          "description": "Logging the exact feature vector at serving time makes train and serve match by construction and removes the join entirely, but you can only train on features that were already shipping — a new feature has no history until it serves, and every inference's inputs must be durably logged. The as-of join lets a brand-new feature be backfilled over historical events at the cost of recomputing its history.",
+          "chosen": "The design builds on the timestamped offline store and as-of joins so new features can be backfilled, rather than being limited to what serving happened to log."
+        }
       ]
     },
     {
@@ -1677,9 +1679,6 @@
         "uber-michelangelo",
         "hopsworks-feature-store-paper",
         "doordash-riviera"
-      ],
-      "patterns": [
-        "Train/serve consistency"
       ],
       "whyNow": [
         "Consistency is the whole point of a feature store; it's what the registry + dual store exist to deliver, and the most common ML-systems pitfall."
@@ -1803,7 +1802,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/05-serving.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-serving.jpg",
+      "tradeoffs": [
+        {
+          "name": "Version pinning vs. latest definitions",
+          "description": "Letting serving always read the newest feature logic picks up improvements immediately, but a model then sees inputs computed differently than what it trained on — exactly the skew the store exists to kill. Pinning feature versions per model feature set guarantees the model reads what it trained on, at the cost of carrying multiple live versions until models retrain.",
+          "chosen": "The design has each request pin feature versions from the shared registry definition, so the serving-time user_7d_clicks provably matches the training-time one."
+        }
+      ]
     },
     {
       "id": "freshness",
@@ -1966,6 +1972,22 @@
           "whyItMatters": "Detects silent ML degradation from stale/skewed features.",
           "example": "Alert when online user_7d_clicks skew delta vs offline recompute exceeds threshold, or stream lag breaches the freshness SLO.",
           "group": "Materialization and Freshness"
+        },
+        {
+          "term": "Materialization + freshness",
+          "description": "Materialize computed features into the online store; streaming for fresh, batch for the rest.",
+          "whyItMatters": "Keeping serving features current at acceptable cost.",
+          "steps": [
+            "freshness"
+          ]
+        },
+        {
+          "term": "Feature monitoring (drift/skew)",
+          "description": "Monitor freshness, distribution drift, and online/offline skew.",
+          "whyItMatters": "Detecting silent ML degradation.",
+          "steps": [
+            "freshness"
+          ]
         }
       ],
       "probeLinks": [
@@ -1976,10 +1998,6 @@
         "kafka-design",
         "evidently-data-drift",
         "prometheus-docs"
-      ],
-      "patterns": [
-        "Materialization + freshness",
-        "Feature monitoring (drift/skew)"
       ],
       "whyNow": [
         "Freshness + monitoring make the online store trustworthy; per-feature materialization is the cost/freshness lever and the operational reality."
@@ -2050,6 +2068,18 @@
           "scenario": "A large backfill competes with live stream materialization for compute and write bandwidth.",
           "expectedBehavior": "Without backpressure the backfill saturates the online store's write path, stream consumer lag climbs, and fast features (e.g. clicks-in-last-5-min) breach their freshness SLO while the backfill runs — silent staleness on the features that need freshness most. With admission control the control plane caps/isolates the backfill so the streaming path keeps its bandwidth; the backfill simply takes longer, tracked by progress, and freshness SLOs hold.",
           "mitigation": "Admission control + separate resource pool / rate caps for backfills; prioritize stream materialization; alert on consumer lag vs SLO; pause or slow a backfill automatically when live freshness is threatened."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. compute cost",
+          "description": "Batch-only materialization is cheap and simple but leaves online values as stale as the schedule, making 'clicks in the last 5 minutes' impossible; stream-everything is uniformly fresh but wastes always-on compute on features like lifetime totals that barely change and still needs batch backfill for history. Per-feature choice spends stream compute only where freshness actually matters.",
+          "chosen": "The design routes each feature to batch or stream based on its declared freshness need, accepting two compute paths in exchange for paying for freshness only where it matters."
+        },
+        {
+          "name": "Two compute paths vs. semantic drift",
+          "description": "Running both a batch and a stream implementation of materialization doubles the surface that must stay semantically identical — the same transform computed two ways can quietly diverge. A single paradigm avoids that drift but forces either staleness (batch-only) or waste (stream-only) on features that don't fit it.",
+          "chosen": "The design keeps both paths but derives them from the one registry definition and monitors per-feature freshness and online/offline skew to catch drift before models degrade."
         }
       ]
     },
@@ -2144,7 +2174,19 @@
           "mitigation": "Entity-keyed deletion that fans out to offline partitions and online keys; retention/TTL policy that ages out history anyway; status tracking so an incomplete deletion is visible and retried."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Definition evolution vs. model stability",
+          "description": "At thousands of features and about a hundred teams, engineers need to change and improve definitions, but every active model trained against some historical version of each feature it reads. Free-form edits would break trained models; freezing definitions would fossilize the platform.",
+          "chosen": "The design governs change through ownership, approval, version pinning, and three-way lineage, so definitions evolve while models keep reading the versions they trained on."
+        },
+        {
+          "name": "Feature reuse vs. blast radius",
+          "description": "Computing a popular feature once and serving many models is the store's core economy — it eliminates duplicated pipelines and divergent logic. But shared features concentrate risk: one bad definition change, materialization failure, or access misconfiguration now touches every consuming model, and sensitive user attributes are read by many teams.",
+          "chosen": "The design embraces reuse and counters the blast radius with lineage tracking, access control, and change approval on shared definitions."
+        }
+      ]
     }
   ],
   "finalDesign": {

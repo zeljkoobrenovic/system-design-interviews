@@ -2852,7 +2852,14 @@
           "Admin",
           "Internal"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Service boundaries vs. simplicity",
+          "description": "A gateway routing to per-domain services gives clear endpoint ownership, edge-level auth and rate limiting, and a separated admin boundary, but demands routing and operational discipline from day one. A single monolithic web application is far simpler for a small chain with fewer distributed failure modes, but booking, catalog, and admin code risk becoming tightly coupled and hard to scale independently.",
+          "chosen": "The design starts with a CDN and API gateway in front of per-domain services, paying early operational cost so ownership, auth, and the staff/guest boundary are explicit from the start."
+        }
+      ]
     },
     {
       "id": "hotel-catalog-and-rate-read-model",
@@ -3152,7 +3159,14 @@
           "RateSvc",
           "RateDB"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Independent scaling vs. call fanout",
+          "description": "Splitting static hotel metadata from date-varying rates lets each scale to its own read pattern and update cadence, and rate churn cannot disturb catalog page reads. The price is that the booking flow must call more than one service and maintain quote-consistency discipline, whereas a single catalog service could join room-type and rate data in one query.",
+          "chosen": "The design separates a Hotel Service from a Rate Service over a room_type_rate table, accepting extra calls in checkout because the two datasets have fundamentally different change rates and owners."
+        }
+      ]
     },
     {
       "id": "room-type-inventory-model",
@@ -3430,7 +3444,14 @@
           "Room",
           "DailyJob"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Domain fit vs. row bookkeeping",
+          "description": "Tracking inventory as counters per hotel, room type, and date matches how hotels actually sell — rooms are assigned at check-in — and keeps availability checks bounded, but requires one row per future date and multi-night bookings that update several rows atomically. Reserving a specific physical room is a simpler mental model but is the wrong abstraction for hotels and fragments availability across equivalent rooms.",
+          "chosen": "The design books room types against per-date counter rows, taking on multi-row atomic updates because the model mirrors real hotel selling and supports per-date holds and overbooking policy."
+        }
+      ]
     },
     {
       "id": "reservation-order-and-idempotency",
@@ -3734,7 +3755,14 @@
           "Order",
           "Reservation"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Server control vs. client autonomy",
+          "description": "A server-issued reservation_id used as the idempotency key works even with unreliable clients, is enforced with a simple primary-key uniqueness check, and ties naturally to a reviewed quote page — but it requires temporary order state with expiration and the client must carry the id through checkout. A client-generated key avoids the pre-created order and suits offline-friendly retries, but depends on client correctness and is harder to bind to a reviewed quote.",
+          "chosen": "The design has the Reservation Service issue a globally unique reservation_id up front and reuses it as the idempotency key on final submit, so double clicks and retries collapse to one reservation."
+        }
+      ]
     },
     {
       "id": "inventory-transaction-and-concurrency",
@@ -4074,7 +4102,19 @@
           "Constraint",
           "Reservation"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Optimistic retries vs. lock serialization",
+          "description": "Optimistic locking holds no database locks and fits the modest average reservation TPS, but hot hotels can generate conflict retries the application must turn into clean retry or sold-out responses. SELECT FOR UPDATE serializes hot room types with a straightforward correctness story, but locks block other transactions and bring deadlock and timeout handling into the booking path.",
+          "chosen": "The design commits with optimistic version-checked updates and retries on conflict, betting that contention is rare enough that avoiding held locks beats serializing every hot booking."
+        },
+        {
+          "name": "Application logic vs. database guardrails",
+          "description": "Enforcing the capacity check in application code is portable and version-controlled, but a database check constraint keeps the final oversell guard right next to the source-of-truth data. The constraint must encode the overbooking factor (a naive total_reserved <= total_inventory would forbid the required 10% oversell), varies in portability across databases, and still does not prevent user-visible failures after stale availability reads.",
+          "chosen": "The design relies on the versioned application-level transaction as the primary mechanism, treating a check constraint as at most a supplementary last-line guard rather than the concurrency strategy."
+        }
+      ]
     },
     {
       "id": "overbooking-policy",
@@ -4316,7 +4356,14 @@
         "highlight": [
           "Policy"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Revenue vs. walk risk",
+          "description": "Selling only to 100% of physical capacity guarantees no confirmed guest is ever walked, but leaves rooms empty whenever guests cancel or no-show and fails the stated 10% overbooking requirement. A configurable factor recaptures that lost revenue and can be tuned per hotel, room type, and date to match cancellation behavior, but setting it too high risks walking confirmed guests, and the factor needs somewhere to live and be resolved.",
+          "chosen": "The design keeps the step-5 transaction unchanged and swaps only the comparison to total_reserved + rooms <= overbooking_factor x total_inventory with a 110% default, matching the business requirement while keeping the factor tunable and guarded."
+        }
+      ]
     },
     {
       "id": "payment-and-reservation-state",
@@ -4618,7 +4665,14 @@
           "Canceled",
           "Refunded"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Result clarity vs. booking latency",
+          "description": "Charging the provider synchronously inside the booking flow gives the guest an immediate paid-or-rejected answer and lets inventory be released at once on failure, but booking latency is hostage to the payment provider and a success-then-store-failure needs careful recovery. Async confirmation responds faster and reconciles via webhook, but the guest sits in a pending state and unpaid reservations need timeout and inventory-release policy.",
+          "chosen": "The design charges synchronously between two short transactions — pending reservation first, then record paid or rejected — keeping the provider call outside any database transaction so the two failure domains stay explicitly recoverable."
+        }
+      ]
     },
     {
       "id": "cancellation-and-inventory-release",
@@ -4920,7 +4974,14 @@
           "Inventory",
           "PaySvc"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Inventory speed vs. refund finality",
+          "description": "Releasing inventory synchronously and settling the refund asynchronously puts rooms back on sale immediately and lets refund retries proceed without blocking confirmation, but the guest sees a cancellation confirmed before the money is back and support must handle pending-refund cases. A fully synchronous flow shows one final outcome, but cancellation latency then depends on the provider and a provider outage can block cancellations entirely.",
+          "chosen": "The design confirms cancellation and releases all stay-date rows synchronously (all dates or none), then queues the refund to settle in the background with visible refund status."
+        }
+      ]
     },
     {
       "id": "admin-management-and-cache-invalidation",
@@ -5230,7 +5291,14 @@
           "Cache",
           "Audit"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Governance vs. build speed",
+          "description": "Routing staff edits through a Management Service that authorizes, delegates to owning services, invalidates caches, and writes an audit trail preserves domain ownership but makes admin workflows depend on multiple services and needs clear feedback on partial failure. Writing straight to a shared database is fast to build for an internal tool, but bypasses domain validation and cache invalidation and is hard to audit.",
+          "chosen": "The design delegates admin writes through a Management Service to the owning domain services, accepting a slower build so cached reads get invalidated and every staff change is auditable."
+        }
+      ]
     },
     {
       "id": "inventory-cache-and-sharding",
@@ -5524,7 +5592,14 @@
           "ShardN",
           "CDC"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Read speed vs. staleness",
+          "description": "A Redis cache refreshed asynchronously via CDC makes common availability checks fast and cheap at travel-site scale, but the cache can lag the database and show rooms that are gone by commit time, producing disappointing sold-out failures and requiring reconciliation metrics. A single replicated database is simpler with a clean ACID story and suffices at hotel-chain scale, but hot hotels can overload one primary and there is little headroom for marketplace traffic.",
+          "chosen": "The design shards the relational database as the source of truth and fronts availability reads with a CDC-refreshed Redis cache, always revalidating the final commit at the database so staleness costs only a retry, never an oversell."
+        }
+      ]
     },
     {
       "id": "service-consistency-and-observability",
@@ -5858,7 +5933,14 @@
           "Recon",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "ACID boundary vs. service purity",
+          "description": "Keeping reservation and inventory in one relational database lets the core booking invariant commit in a single transaction with a simple rollback story, but it means the Reservation Service owns more than one conceptual capability, which purist microservice designs reject. Splitting each into its own database with saga coordination gives clean scaling and deployment boundaries, but eventually consistent booking state multiplies compensating actions and reconciliation cases.",
+          "chosen": "The design draws a hybrid boundary — reservation and inventory share one ACID database while payment and admin events rely on idempotency and reconciliation — avoiding saga complexity for the invariant that matters most."
+        }
+      ]
     }
   ],
   "finalDesign": {

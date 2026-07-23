@@ -964,80 +964,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The Conversation Agent's real-time turn loop runs on this harness; the latency budget and in-loop action gate are layered on top of it.",
-      "steps": [
-        "live-loop"
-      ]
-    },
-    {
-      "name": "Agentic loop (ReAct)",
-      "what": "A real-time understand -> retrieve -> decide -> respond loop per conversational turn.",
-      "whenToUse": "Live, open-ended conversations.",
-      "steps": [
-        "live-loop"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "High-risk actions need a human agent's approval mid-conversation.",
-      "whenToUse": "Before a hard-to-reverse action on the customer's account.",
-      "steps": [
-        "action-gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "The agent converses and acts freely but a reversibility-tiered gate fences the action.",
-      "whenToUse": "Live action-taking with a risk boundary inside the loop.",
-      "steps": [
-        "action-gate"
-      ]
-    },
-    {
-      "name": "Durable execution / checkpointing (resume after crash)",
-      "what": "Provider-scoped idempotency with reconciliation and compensating actions so a mid-action failure resumes effectively-once (manual repair for unknown outcomes).",
-      "whenToUse": "Any refund/cancel/reschedule side effect.",
-      "steps": [
-        "txn-safety"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Scoped, delegated authority to act on the customer's behalf; approval tied to a human agent.",
-      "whenToUse": "Acting on the customer's account.",
-      "steps": [
-        "action-gate"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground replies in product/policy docs and the customer's scoped record.",
-      "whenToUse": "Every grounded answer or action.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat customer messages as untrusted; partition from account-action authority.",
-      "whenToUse": "Customer input drives the loop.",
-      "steps": [
-        "txn-safety"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate resolution quality and action correctness, not just CSAT.",
-      "whenToUse": "Measuring live support quality.",
-      "steps": [
-        "compliance-eval"
-      ]
-    }
-  ],
   "technologyChoices": [
     {
       "concern": "Channel, contact-center, and realtime messaging integration",
@@ -2125,9 +2051,6 @@
         "caption": "A bot answers but dead-ends every real task to a human — the deflection-only baseline."
       },
       "decisionPrompt": "What's different about the gate when the risky action happens live, mid-conversation?",
-      "patterns": [
-        "Agentic loop (ReAct)"
-      ],
       "probeLinks": [
         "cota-support",
         "tau-bench",
@@ -2148,7 +2071,14 @@
           "instead": "Let the agent act in the loop, but gate actions by reversibility and risk."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Deflection vs. resolution",
+          "description": "A bot that only answers FAQs is safe but dead-ends every real task to a human queue — it deflects without resolving, frustrating customers and offloading the work that matters. The opposite extreme, an agent that freely refunds and cancels, is worse: the dangerous action happens live, mid-conversation, on the customer's money and orders, with no auth, scope, or gate.",
+          "chosen": "The design rejects both extremes and builds toward an agent that can act — but only on a scoped account, within a latency budget, and behind an in-loop gate."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -2176,9 +2106,6 @@
         "caption": "Replies are grounded in product/policy docs and the customer's own scoped account/order record."
       },
       "decisionPrompt": "Why must an answer be grounded in BOTH the policy and this customer's order?",
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "rag-paper",
         "self-rag",
@@ -2190,6 +2117,14 @@
           "definition": "Grounding a reply in both the applicable policy and the customer's specific account/order state.",
           "whyItMatters": "A policy-correct answer can still be wrong for this order (out of window, already refunded).",
           "example": "Refund policy allows 30 days, but this order shipped 45 days ago -> not eligible."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground replies in product/policy docs and the customer's scoped record.",
+          "whyItMatters": "Every grounded answer or action.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -2212,7 +2147,14 @@
         "after": "Replies are grounded in policy and the customer's record.",
         "newRisk": "Grounded answers in a live chat must still come back within a conversational latency budget."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-grounding.jpg",
+      "tradeoffs": [
+        {
+          "name": "Policy truth vs. account truth",
+          "description": "Grounding a reply in policy documents alone tells you what is allowed in general but not what is true for this customer; grounding in the account alone tells you the order status but not whether the refund is permitted. Carrying both — with KB version, source document IDs, and account snapshot version as evidence — costs a two-sided retrieval on every turn but makes each reply and action traceable to exactly what it was grounded in.",
+          "chosen": "The design grounds every answer in both the versioned policy corpus and the customer's scoped account snapshot, with the gateway resolving scope before any read and customer messages treated as untrusted input, never authority."
+        }
+      ]
     },
     {
       "id": "live-loop",
@@ -2246,9 +2188,6 @@
         "caption": "A real-time turn loop (understand, retrieve, reason, respond) runs within a latency budget, with durable session state."
       },
       "decisionPrompt": "How do you keep a turn within budget when it may need retrieval, reasoning, and an action?",
-      "patterns": [
-        "Agentic loop (ReAct)"
-      ],
       "probeLinks": [
         "openai-realtime-agents",
         "openai-latency-optimization",
@@ -2266,6 +2205,22 @@
           "definition": "A per-turn time limit the agent must respond within to keep a conversation natural.",
           "whyItMatters": "Async verticals optimize throughput; live support optimizes per-turn latency — a different design pressure.",
           "example": "Retrieval + reasoning are bounded so a reply lands in a couple of seconds, streaming partials if needed."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The Conversation Agent's real-time turn loop runs on this harness; the latency budget and in-loop action gate are layered on top of it.",
+          "steps": [
+            "live-loop"
+          ]
+        },
+        {
+          "term": "Agentic loop (ReAct)",
+          "description": "A real-time understand -> retrieve -> decide -> respond loop per conversational turn.",
+          "whyItMatters": "Live, open-ended conversations.",
+          "steps": [
+            "live-loop"
+          ]
         }
       ],
       "whyNow": [
@@ -2424,7 +2379,14 @@
         "after": "Each turn responds within a latency budget over durable session state, degrading gracefully when reads are slow.",
         "newRisk": "Within that live loop, the agent now needs to take real account actions safely."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-live-loop.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-live-loop.jpg",
+      "tradeoffs": [
+        {
+          "name": "Turn latency vs. turn thoroughness",
+          "description": "Each conversational turn must fit a turn-taking latency budget, but a good turn may need retrieval, reasoning, and possibly an action — each of which costs time. Spending more per turn improves answer quality and action safety; spending less keeps the conversation feeling live. This is the axis the rest of the series does not have: latency as a first-class constraint on an acting agent.",
+          "chosen": "The design runs the foundations agent harness under an explicit real-time latency budget per turn, with session state kept live and durably logged so coherence survives restarts without re-deriving context each turn."
+        }
+      ]
     },
     {
       "id": "action-gate",
@@ -2537,11 +2499,6 @@
         }
       ],
       "decisionPrompt": "Which actions can the agent auto-execute live, and which must pause for human approval?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)",
-        "Delegation not impersonation (OAuth token exchange, act claim)"
-      ],
       "probeLinks": [
         "openai-hitl",
         "openai-handoffs",
@@ -2555,6 +2512,30 @@
           "definition": "An in-loop classifier that decides auto-execute vs human-approve vs escalate based on how reversible and risky the action is.",
           "whyItMatters": "It lets the agent resolve common cases instantly while pausing the dangerous, hard-to-reverse ones.",
           "example": "Resend receipt -> auto; refund $1,500 -> human approval; close account -> escalate."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "High-risk actions need a human agent's approval mid-conversation.",
+          "whyItMatters": "Before a hard-to-reverse action on the customer's account.",
+          "steps": [
+            "action-gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "The agent converses and acts freely but a reversibility-tiered gate fences the action.",
+          "whyItMatters": "Live action-taking with a risk boundary inside the loop.",
+          "steps": [
+            "action-gate"
+          ]
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Scoped, delegated authority to act on the customer's behalf; approval tied to a human agent.",
+          "whyItMatters": "Acting on the customer's account.",
+          "steps": [
+            "action-gate"
+          ]
         }
       ],
       "whyNow": [
@@ -2696,6 +2677,18 @@
           "why": "Customer text is untrusted; a social-engineering or injected message can request a payout it isn't entitled to.",
           "instead": "Keep authority in policy + approval; the message is data, never a grant. Fraud signals only ever lower autonomy."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Rule auditability vs. learned nuance",
+          "description": "A deterministic policy engine mapping action kind, resource, amount, and reversibility to auto, approve, or escalate tiers is auditable, cannot be talked past by an injected message, and rolls back cleanly — but coarse tiers can mis-classify novel or borderline actions and rule maintenance grows with action types. A learned risk classifier catches nuance and adapts, but is less explainable, can regress, and adds a model dependency inside the latency budget.",
+          "chosen": "The design leads with deterministic policy-rule tiers and hard guardrails the agent cannot override, because every gate decision must trace to a versioned rule; a learned scorer can later lower autonomy but never raise it past policy."
+        },
+        {
+          "name": "Live autonomy vs. mid-conversation approval",
+          "description": "Auto-executing actions keeps resolution instant, but a large refund or account change executed wrongly is hard to reverse; pausing for a human's approval mid-conversation protects the customer but injects a human's response time into a live loop. Classifying by reversibility and risk lets low-risk reversible actions run free while only the dangerous tail waits.",
+          "chosen": "The design auto-executes low-risk reversible actions and requires human approval mid-conversation for high-risk or hard-to-reverse ones, binding each approval to the action ID, resource, amount, policy version, and approver identity."
+        }
       ]
     },
     {
@@ -2820,10 +2813,6 @@
         }
       ],
       "decisionPrompt": "A refund succeeds but the connection drops before confirmation and the customer retries — what prevents a double refund?",
-      "patterns": [
-        "Durable execution / checkpointing (resume after crash)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "stripe-idempotency",
         "temporal-workflows",
@@ -2836,6 +2825,22 @@
           "definition": "A reversing operation (re-charge, re-book) that undoes a committed side effect when a later step fails.",
           "whyItMatters": "Live transactions can't be wrapped in a single DB transaction; rollback is by compensation.",
           "example": "A refund is issued but the cancel fails -> compensate by reversing the refund."
+        },
+        {
+          "term": "Durable execution / checkpointing (resume after crash)",
+          "description": "Provider-scoped idempotency with reconciliation and compensating actions so a mid-action failure resumes effectively-once (manual repair for unknown outcomes).",
+          "whyItMatters": "Any refund/cancel/reschedule side effect.",
+          "steps": [
+            "txn-safety"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat customer messages as untrusted; partition from account-action authority.",
+          "whyItMatters": "Customer input drives the loop.",
+          "steps": [
+            "txn-safety"
+          ]
         }
       ],
       "whyNow": [
@@ -2958,7 +2963,19 @@
         "before": "A failed or retried action could double-apply.",
         "after": "Actions use provider-scoped idempotency with reconciliation; reversal is by compensation where possible and manual repair where not.",
         "newRisk": "Some conversations still need a human — handoff must be smooth and contextful."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Provider dedupe vs. local outbox",
+          "description": "Leaning on provider-scoped idempotency keys with reconciliation lookup gives the strongest exactly-once guarantee available for an external side effect and matches how payment APIs behave, but it is only as good as the provider's idempotency support and leaves a residual unknown-outcome tail for a manual-repair queue. A local outbox survives a crash between deciding and calling the provider and decouples the turn from provider latency, but adds a worker to operate and shows the customer an in-progress state instead of instant confirmation.",
+          "chosen": "The design sends every attempt with a provider-scoped idempotency key and reconciles ambiguous timeouts via lookup or webhook before retrying, falling to a manual-repair queue only when the external outcome stays unknown."
+        },
+        {
+          "name": "Retryability vs. reversibility",
+          "description": "Idempotency makes an action safe to retry, but that says nothing about whether it can be undone — a refund can be effectively-once and still irreversible in practice. Treating reversibility as a per-action policy attribute (reversible, compensatable, irreversible) costs classification work, but keeps the gate from confusing a safely-retried action with an undoable one.",
+          "chosen": "The design separates idempotency (a delivery guarantee) from reversibility (a policy attribute per action), reserving saga-style compensation for the genuinely multi-step resolutions where each forward step needs an explicit compensating step."
+        }
+      ]
     },
     {
       "id": "escalation",
@@ -3075,9 +3092,6 @@
         }
       ],
       "decisionPrompt": "When should the agent stop trying and hand off, and what must the human receive?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)"
-      ],
       "probeLinks": [
         "openai-handoffs",
         "twilio-taskrouter",
@@ -3212,7 +3226,19 @@
         "before": "The agent either resolved or dead-ended.",
         "after": "It deflects what it should and escalates the rest with a full context package, going read-only after handoff.",
         "newRisk": "Quality, compliance, and reputation must be measured across live conversations."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Full transfer vs. lightweight approval",
+          "description": "Transferring conversation ownership to a queue-routed human gives full context, clear ownership, and a clean authority boundary — the agent goes read-only — but it is heavier than needed when the human only had to approve one action, and queue depth becomes a hard constraint on resolution time. Approval-without-transfer is lightweight but does not fit cases where the customer genuinely needs a human, and thin packages invite rubber-stamping.",
+          "chosen": "The design routes handoffs to a skill and priority queue with full ownership transfer and a complete context package, because ambiguity about who is acting is more dangerous than the extra weight of a full transfer."
+        },
+        {
+          "name": "Resolution rate vs. safe abstention",
+          "description": "Pushing the agent to resolve everything maximizes deflection metrics, but low confidence, out-of-scope requests, explicit asks for a human, and rejected high-risk actions are exactly the cases where continuing does harm; treating escalation as a first-class outcome trades a lower autonomous-resolution rate for fewer wrong actions on customers' accounts.",
+          "chosen": "The design makes deflect-vs-escalate an explicit decision with escalation as a legitimate outcome, like abstention in the healthcare vertical, rather than a failure to be minimized."
+        }
+      ]
     },
     {
       "id": "compliance-eval",
@@ -3311,9 +3337,6 @@
         }
       ],
       "decisionPrompt": "Why is CSAT alone a weak quality metric for an agent that takes real actions?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "openai-agent-evals",
         "journeybench",
@@ -3326,6 +3349,14 @@
           "definition": "Measuring whether the actions the agent took were correct and policy-compliant, not just whether the customer was satisfied.",
           "whyItMatters": "A happy customer who got a refund they weren't owed is still a failure; CSAT misses it.",
           "example": "Track wrong-action rate and missed-escalation rate alongside CSAT and latency."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate resolution quality and action correctness, not just CSAT.",
+          "whyItMatters": "Measuring live support quality.",
+          "steps": [
+            "compliance-eval"
+          ]
         }
       ],
       "whyNow": [
@@ -3363,7 +3394,14 @@
         "before": "Only CSAT was measured.",
         "after": "Resolution quality, action correctness, latency, and deflection are evaluated and audited, with PII redaction and per-tenant retention.",
         "newRisk": "Policy, model, and provider changes can silently shift action correctness, so evals must gate every gate-policy rollout and trigger rollback when correctness drops."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Risk-weighted vs. uniform QA",
+          "description": "Random QA sampling is trivial and unbiased for trend monitoring, but it under-samples the rare, catastrophic high-value actions and is slow to catch a regression concentrated in one action kind or tenant. Risk-tiered sampling spends QA effort where the damage is and pairs with incident-triggered quarantine that automatically lowers autonomy, at the cost of a labeled risk taxonomy and carefully tuned thresholds that avoid flapping.",
+          "chosen": "The design samples heavily from high-risk action tiers and auto-quarantines an offending policy or model version on a metric spike, because bounding blast radius on real actions matters more than uniform coverage — and CSAT alone can hide a wrong refund."
+        }
+      ]
     }
   ],
   "finalDesign": {

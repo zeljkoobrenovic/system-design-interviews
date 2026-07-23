@@ -969,82 +969,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Agentic loop (ReAct)",
-      "what": "The model alternates reasoning with actions: propose a tool call, observe the result, decide the next move, until it emits a final answer.",
-      "whenToUse": "Any task where the model must gather information or act on an environment it can't see all at once.",
-      "steps": [
-        "agent-loop"
-      ]
-    },
-    {
-      "name": "Tool use / function calling",
-      "what": "The model returns structured tool invocations; the harness executes them and feeds results back. The model decides what to do, the harness does it.",
-      "whenToUse": "Bridging an LLM to any external system — filesystems, shells, APIs.",
-      "steps": [
-        "agent-loop",
-        "extensibility"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval",
-      "what": "Irreversible or risky actions pause for explicit user consent, with remembered allow-rules to keep prompts rare.",
-      "whenToUse": "When an automated actor's mistakes are expensive and a human is present to gate them.",
-      "steps": [
-        "safety"
-      ]
-    },
-    {
-      "name": "Least privilege / sandboxing",
-      "what": "Execute untrusted actions inside an OS-level boundary: scoped filesystem, no default network egress, ephemeral environment.",
-      "whenToUse": "Whenever generated commands run on real machines — interactive or headless.",
-      "steps": [
-        "safety",
-        "cloud"
-      ]
-    },
-    {
-      "name": "Context compaction",
-      "what": "Summarize older conversation turns into a compact digest when the window fills, keeping the system prompt, project memory, and recent turns verbatim.",
-      "whenToUse": "Long-running agent sessions whose transcripts outgrow the context window.",
-      "steps": [
-        "compaction"
-      ]
-    },
-    {
-      "name": "Prefix (prompt) caching",
-      "what": "Cache the model's KV state for a prompt prefix and reuse it when the next request shares it — append-only transcripts make hits the common case.",
-      "whenToUse": "Multi-turn workloads that resend a growing shared prefix every call.",
-      "steps": [
-        "inference"
-      ]
-    },
-    {
-      "name": "Scatter-gather (subagents)",
-      "what": "Fan a task out to child agents with fresh context windows; each returns a compact summary, so the parent pays summary tokens instead of raw exploration.",
-      "whenToUse": "Wide searches, reviews, or parallel edits that would blow the parent's window.",
-      "steps": [
-        "verify"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling",
-      "what": "Buffer submitted tasks in a durable queue so a bounded sandbox fleet drains them at its own pace; re-lease on worker death.",
-      "whenToUse": "Bursty task submission against expensive, capacity-bound workers.",
-      "steps": [
-        "cloud"
-      ]
-    },
-    {
-      "name": "Progressive disclosure",
-      "what": "Keep only names and one-line descriptions of available capabilities in standing context; load full instructions, schemas, or scripts only when invoked.",
-      "whenToUse": "Any capability catalog that grows with adoption — skills, commands, MCP tool schemas — where standing prompt cost must stay flat.",
-      "steps": [
-        "extensibility"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1124,7 +1048,14 @@
           "Treats the LLM as a magic box with no window or cost constraints."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. sight, feedback, and safety",
+          "description": "A one-shot prompt-to-patch pipeline is the simplest thing that works and genuinely handles toy edits, but it fails on three axes at once: the model only sees pasted files so it hallucinates paths and conventions, nothing verifies the output compiles or passes tests, and files are overwritten with no diff, approval, or undo. Each fix adds real machinery — a loop, a verifier, a permission layer.",
+          "chosen": "The design keeps one-shot only as a deliberately scoped mode for tiny edits with the diff shown and never auto-applied, and builds the tool-use loop as the real architecture."
+        }
+      ]
     },
     {
       "id": "agent-loop",
@@ -1160,10 +1091,6 @@
         ]
       },
       "decisionPrompt": "What belongs in the tool catalog — and what should deliberately NOT get a dedicated tool?",
-      "patterns": [
-        "Agentic loop (ReAct)",
-        "Tool use / function calling"
-      ],
       "whyNow": [
         "The loop is the system's engine; context management, permissions, and verification are all policies layered onto it.",
         "Adding it first keeps later steps honest: each one constrains or feeds this loop."
@@ -1180,6 +1107,14 @@
           "definition": "The deterministic program around the model: it owns the transcript, executes tools, enforces budgets, and renders output.",
           "whyItMatters": "Reliability lives in the harness, not the model — same model, different harness, wildly different product.",
           "example": "The harness, not the model, decides that turn 50 is the cap and asks the model to wrap up."
+        },
+        {
+          "term": "Agentic loop (ReAct)",
+          "description": "The model alternates reasoning with actions: propose a tool call, observe the result, decide the next move, until it emits a final answer.",
+          "whyItMatters": "Any task where the model must gather information or act on an environment it can't see all at once.",
+          "steps": [
+            "agent-loop"
+          ]
         }
       ],
       "probeLinks": [
@@ -1360,7 +1295,19 @@
           "No termination story — assumes the model always converges."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-agent-loop.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-agent-loop.jpg",
+      "tradeoffs": [
+        {
+          "name": "Few orthogonal tools vs. many bespoke tools",
+          "description": "Dozens of task-specific tools promise precision, but every tool description consumes context and the model composes a handful of orthogonal primitives — read, grep, glob, edit, run a command — more reliably than it selects among many overlapping bespoke ones. Fewer primitives push more work into the model's planning, but keep the catalog learnable and the transcript debuggable.",
+          "chosen": "The design gives the harness a small catalog of orthogonal primitives and lets the model compose them, because tool design matters more than tool count."
+        },
+        {
+          "name": "Model decides vs. harness executes",
+          "description": "Letting the model plan every next action makes the loop adaptive — it can find the failing test, read what matters, edit, and rerun — but the harness must execute each call and report results honestly, spending a model round-trip per action. The split costs latency and tokens per step but keeps a clean boundary: the model chooses, the harness acts.",
+          "chosen": "The design adopts the tool-use loop where the model replies with a tool call or a final answer and the harness executes and appends results, because iteration against real output is what fixes the one-shot baseline's blindness."
+        }
+      ]
     },
     {
       "id": "context",
@@ -1629,7 +1576,14 @@
           "Reflexively reaches for embeddings without considering search tools.",
           "No story for what persists across sessions."
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Fresh search vs. indexed recall",
+          "description": "Agentic on-demand grep and read is always fresh — it searches the working tree as it is mid-edit — needs zero index infrastructure, keeps code on the machine, and leaves a visible, debuggable search trail; but it spends tokens and loop turns before the first edit and lexical search misses semantically related code with no shared vocabulary. A pre-built embedding index gives one-hop semantic recall and fewer turns, but brings freshness problems on every edit, code or embeddings leaving the machine, and opaque retrieval failures — the calculus shifts toward it at 20M-line monorepo scale.",
+          "chosen": "The design defaults to agentic search with a project memory file and session resume carrying knowledge across sessions, because freshness, zero infrastructure, and privacy beat saved search turns for most repos."
+        }
+      ]
     },
     {
       "id": "compaction",
@@ -1660,9 +1614,6 @@
         ]
       },
       "decisionPrompt": "When the window is 90% full mid-task, what must survive compaction verbatim, and what is safe to lose?",
-      "patterns": [
-        "Context compaction"
-      ],
       "whyNow": [
         "It completes the context story: step 3 controls what enters the window; compaction controls what stays."
       ],
@@ -1672,6 +1623,14 @@
           "definition": "Replacing older transcript turns with a model-written summary when the window nears its limit, preserving pinned content verbatim.",
           "whyItMatters": "It is the difference between a 20-minute tool and one that works through an afternoon-long migration.",
           "example": "120K tokens of exploration become a 3K digest: task, decisions, files touched, current state."
+        },
+        {
+          "term": "Context compaction",
+          "description": "Summarize older conversation turns into a compact digest when the window fills, keeping the system prompt, project memory, and recent turns verbatim.",
+          "whyItMatters": "Long-running agent sessions whose transcripts outgrow the context window.",
+          "steps": [
+            "compaction"
+          ]
         }
       ],
       "probeLinks": [
@@ -1767,7 +1726,14 @@
         "after": "Sessions run indefinitely: lossy in-window history, full-fidelity history in the session store.",
         "newRisk": "The agent can now find and touch anything for hours — and it runs shell commands. One bad or injected command is a disaster without guardrails."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/04-compaction.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-compaction.jpg",
+      "tradeoffs": [
+        {
+          "name": "Context headroom vs. transcript fidelity",
+          "description": "Letting the transcript grow preserves every detail but eventually exhausts the window mid-task; compaction summarizes older turns to reclaim headroom but is lossy by design, so what survives must be chosen deliberately — the task and constraints, decisions made, files touched, and current state, not the blow-by-blow of every grep. Losing the wrong detail silently corrupts the agent's understanding of its own task.",
+          "chosen": "The design compacts old turns into a digest while keeping the system prompt, project memory, original task, and recent turns verbatim, with the full-fidelity transcript retained in the session store for resume and audit."
+        }
+      ]
     },
     {
       "id": "safety",
@@ -1802,10 +1768,6 @@
         ]
       },
       "decisionPrompt": "Per-action approval prompts or a hard OS sandbox with autonomy inside it — which do you lead with, and what does the other still cover?",
-      "patterns": [
-        "Human-in-the-loop approval",
-        "Least privilege / sandboxing"
-      ],
       "probeLinks": [
         "codex-sandboxing",
         "claude-permission-modes",
@@ -1907,6 +1869,23 @@
           "definition": "Grant the minimum capability each action needs: path scopes, no default egress, short-lived credentials.",
           "whyItMatters": "The agent is an untrusted principal acting with the user's identity — privilege it like one.",
           "example": "The sandbox can write ./ but not ~/.ssh; network is deny-by-default with an allowlist for the package registry."
+        },
+        {
+          "term": "Human-in-the-loop approval",
+          "description": "Irreversible or risky actions pause for explicit user consent, with remembered allow-rules to keep prompts rare.",
+          "whyItMatters": "When an automated actor's mistakes are expensive and a human is present to gate them.",
+          "steps": [
+            "safety"
+          ]
+        },
+        {
+          "term": "Least privilege / sandboxing",
+          "description": "Execute untrusted actions inside an OS-level boundary: scoped filesystem, no default network egress, ephemeral environment.",
+          "whyItMatters": "Whenever generated commands run on real machines — interactive or headless.",
+          "steps": [
+            "safety",
+            "cloud"
+          ]
         }
       ],
       "flows": [
@@ -2059,7 +2038,19 @@
           "'The user approves everything' as the whole safety story.",
           "Sandbox with open egress, or autonomy levels decoupled from isolation."
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Human approval vs. hard boundary",
+          "description": "Ask-by-default with accumulating allowlists gives explicit human control over every novel mutating action, works on any machine with no sandbox engineering, and gets quieter over time — but approval fatigue hollows out the control, prompts describe a command rather than its full consequences, and interruptions break autonomous flow. An OS sandbox is a guarantee that holds even when the model is fooled and is the only sane basis for headless execution, but costs real per-OS engineering and still needs an escalation path for legitimate boundary crossings.",
+          "chosen": "The design leads with ask-by-default permission rules and allowlists because it ships on day one with an audit trail, treating the OS sandbox as the complementary layer that bounds what happens when an approved action goes wrong."
+        },
+        {
+          "name": "Blast radius vs. friction",
+          "description": "Gating every tool equally would be safest but unbearable; splitting by blast radius lets read-only tools run freely while only mutating ones pass the permission engine, trading a small residual risk from free reads for a loop that is not interrupted on every grep. Returning denials to the model as tool results, not exceptions, keeps the loop adaptive rather than brittle.",
+          "chosen": "The design runs read-only tools freely and routes edit, write, and bash through explicit rules with approval prompts for the remainder, so friction concentrates where damage is possible."
+        }
+      ]
     },
     {
       "id": "extensibility",
@@ -2095,10 +2086,6 @@
         ]
       },
       "decisionPrompt": "A team wants the agent to file Jira tickets, query the staging DB, and follow their release checklist. Which mechanism fits each — a command, a skill, or an MCP server — and why?",
-      "patterns": [
-        "Progressive disclosure",
-        "Tool use / function calling"
-      ],
       "whyNow": [
         "The loop, context budget, and permission machinery from steps 2-4 are exactly what extensions plug into: new tools join the catalog, new prompts join the context, and policy already gates what they may do.",
         "Deciding the extension surface now keeps it from being bolted on later with its own, weaker security model."
@@ -2121,6 +2108,14 @@
           "definition": "An open client-server protocol where servers expose tools, resources, and prompts over stdio or HTTP, and any agent acting as an MCP client can discover and call them.",
           "whyItMatters": "Turns integrations from N x M bespoke plugins into N servers usable by M agents — and standardizes where the trust boundary sits.",
           "example": "One GitHub MCP server gives every MCP-capable agent create_pr, list_issues, and review tools."
+        },
+        {
+          "term": "Progressive disclosure",
+          "description": "Keep only names and one-line descriptions of available capabilities in standing context; load full instructions, schemas, or scripts only when invoked.",
+          "whyItMatters": "Any capability catalog that grows with adoption — skills, commands, MCP tool schemas — where standing prompt cost must stay flat.",
+          "steps": [
+            "extensibility"
+          ]
         }
       ],
       "probeLinks": [
@@ -2300,7 +2295,19 @@
           "Connects arbitrary MCP servers with no trust or token-cost analysis."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/06-extensibility.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-extensibility.jpg",
+      "tradeoffs": [
+        {
+          "name": "Vendor-shipped vs. user-extended capability",
+          "description": "Baking every integration into the product keeps quality controlled but cannot cover each team's issue tracker, staging database, and release checklist; an extension surface lets teams grow capabilities themselves, but at three distinct power levels — commands are just named prompt templates, skills package instructions and scripts, MCP servers add genuinely new tool capability — each level adding more power and more trust surface.",
+          "chosen": "The design offers all three mechanisms matched to the job: commands for repeatable prompts like a release checklist, skills for packaged expertise, and MCP servers for new capabilities like Jira or a staging DB."
+        },
+        {
+          "name": "Capability breadth vs. context and trust cost",
+          "description": "Every installed extension pays rent: tool and skill descriptions eat context window whether or not they are used, and third-party servers execute with real access, widening the trust boundary. Fewer extensions keep the window lean and the attack surface small; more make the agent broadly capable.",
+          "chosen": "The design treats catalog size as a budgeted resource and third-party extensions as a trust boundary to police, rather than installing everything by default."
+        }
+      ]
     },
     {
       "id": "inference",
@@ -2334,9 +2341,6 @@
         ]
       },
       "decisionPrompt": "An agent session resends a growing prefix on every turn. What does that imply for your cache design, your router, and how the harness must construct prompts?",
-      "patterns": [
-        "Prefix (prompt) caching"
-      ],
       "whyNow": [
         "The loop multiplies API-call volume ~40x versus a chatbot turn, so cost and latency problems arrive with the loop, not after it.",
         "Caching constraints reach back into harness design (append-only prompts) — better to know that before more features pile on."
@@ -2365,6 +2369,14 @@
           "definition": "Designing an operation so that running it twice has the same effect as once — the precondition for safe retries anywhere a call can die mid-flight.",
           "whyItMatters": "This loop retries constantly: broken streams, 429s, preempted sandboxes. Idempotent operations turn 'retry' from a risk into the default recovery move — the cloud tier (step 8) leans on it for task re-leases and branch-per-task output.",
           "example": "A resumed stream replays events by ID without re-executing tool calls; a re-run cloud task force-pushes the same task branch instead of opening a second PR."
+        },
+        {
+          "term": "Prefix (prompt) caching",
+          "description": "Cache the model's KV state for a prompt prefix and reuse it when the next request shares it — append-only transcripts make hits the common case.",
+          "whyItMatters": "Multi-turn workloads that resend a growing shared prefix every call.",
+          "steps": [
+            "inference"
+          ]
         }
       ],
       "probeLinks": [
@@ -2547,7 +2559,19 @@
           "No retry/backoff story for a loop that makes 40 calls per session."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-inference.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-inference.jpg",
+      "tradeoffs": [
+        {
+          "name": "Cache locality vs. flexible routing",
+          "description": "Agent sessions resend a growing prefix every turn, so prefix caching is existential: routing a session's turns to the machine holding its KV cache avoids re-prefilling the whole transcript, but constrains the router's freedom to balance load across the fleet. It also disciplines the harness — prompts must keep the shared prefix byte-stable, since any early edit invalidates the cache for everything after it.",
+          "chosen": "The design builds around prefix caching with cache-affinity routing and prompt construction that only appends, because re-reading a 40-turn transcript 40 times without caching is economically untenable at agent scale."
+        },
+        {
+          "name": "Streaming complexity vs. perceived latency",
+          "description": "A blocking completion call is simpler to build and reason about, but a 30-second turn with no output feels broken; streaming text deltas and tool-call events over SSE adds protocol and error-handling complexity across gateway, router, and fleet, but makes long turns feel alive.",
+          "chosen": "The design streams every loop turn end to end, accepting the added plumbing because perceived responsiveness is what makes long agentic turns usable."
+        }
+      ]
     },
     {
       "id": "verify",
@@ -2587,9 +2611,6 @@
         "caption": "The verifier sits between the loop and the sandbox: it runs the project's checks, compares against the recorded baseline, and hands back structured pass/fail results."
       },
       "decisionPrompt": "What counts as 'done' for an agent's change — and who is allowed to declare it?",
-      "patterns": [
-        "Scatter-gather (subagents)"
-      ],
       "whyNow": [
         "Verification is what turns a fast, safe, cheap loop into one whose output you can merge.",
         "Subagents depend on everything before them: the loop (2), context budgets (3), sandboxing (4), and cheap calls (6)."
@@ -2612,6 +2633,14 @@
           "definition": "Each parallel editing agent works in its own git worktree (same repo, separate checkout), merged after review.",
           "whyItMatters": "Two agents editing one working tree corrupt each other's diffs; worktrees make parallel edits composable.",
           "example": "Subagent A migrates src/api in worktree-a while B migrates src/web in worktree-b."
+        },
+        {
+          "term": "Scatter-gather (subagents)",
+          "description": "Fan a task out to child agents with fresh context windows; each returns a compact summary, so the parent pays summary tokens instead of raw exploration.",
+          "whyItMatters": "Wide searches, reviews, or parallel edits that would blow the parent's window.",
+          "steps": [
+            "verify"
+          ]
         }
       ],
       "probeLinks": [
@@ -2775,7 +2804,19 @@
           "Parallel agents in one working tree with no isolation story."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/08-verify.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-verify.jpg",
+      "tradeoffs": [
+        {
+          "name": "Self-report vs. ground truth",
+          "description": "Trusting the model's claim that it changed the code correctly is free but worthless as a completion signal; running the project's own tests, typechecker, linter, and build against a recorded baseline costs time and compute per iteration, and needs its own budgets so a stubborn failure does not loop forever. Ground truth turns 'I changed the code' into 'the change passes the suite, here is the output'.",
+          "chosen": "The design makes verification a first-class subsystem — a check runner with baselines, budgets, and structured records — and lets its results, not the model's self-assessment, declare the change done."
+        },
+        {
+          "name": "Subagent isolation vs. token cost",
+          "description": "Spawning subagents for exploration or review keeps the main transcript clean and parallelizes work, but each subagent re-pays context setup and burns tokens; doing everything in the main loop is cheaper per step but pollutes the window with exploration noise that compaction must later discard.",
+          "chosen": "The design uses subagents where isolation pays for itself — broad searches and independent verification — while keeping the main loop for the work whose full history matters, with git as the undo net beneath all of it."
+        }
+      ]
     },
     {
       "id": "cloud",
@@ -2816,10 +2857,6 @@
         ]
       },
       "decisionPrompt": "With no human present to approve anything, which of the interactive design's safeguards must get stronger — and what replaces the approval prompt?",
-      "patterns": [
-        "Queue-based load leveling",
-        "Least privilege / sandboxing"
-      ],
       "whyNow": [
         "Only now is headless execution sane: the loop (2) verified by tests (7), inside a hard sandbox (4), at a viable cost (6).",
         "Scale and operations concerns — evals, metering, abuse — arrive exactly when execution moves off the laptop."
@@ -2842,6 +2879,14 @@
           "definition": "A versioned suite of real coding tasks run against every model or harness change, scored by tests passing. (This is the offline eval harness that scores quality — distinct from the agent harness, the runtime loop the CLI runs to make edits; an 'eval-harness' run exercises that agent harness against the suite.)",
           "whyItMatters": "Agent quality is emergent from model x prompts x tools; only end-to-end evals catch the regressions users feel.",
           "example": "A new model snapshot drops the SWE-suite pass rate 8% — the rollout halts before users see it."
+        },
+        {
+          "term": "Queue-based load leveling",
+          "description": "Buffer submitted tasks in a durable queue so a bounded sandbox fleet drains them at its own pace; re-lease on worker death.",
+          "whyItMatters": "Bursty task submission against expensive, capacity-bound workers.",
+          "steps": [
+            "cloud"
+          ]
         }
       ],
       "probeLinks": [
@@ -3033,7 +3078,19 @@
           "No answer for who reviews the output at fleet scale."
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/09-cloud.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/09-cloud.jpg",
+      "tradeoffs": [
+        {
+          "name": "Interactive control vs. headless delegation",
+          "description": "Interactive use keeps a human present to approve each risky action but chains the developer to the session; headless cloud execution lets them close the laptop, but nobody is there to approve anything, so the safeguards must harden — a mandatory sandbox with deny-by-default egress, short-lived single-repo tokens, and PR review replacing the approval prompt as the human gate.",
+          "chosen": "The design runs cloud tasks in ephemeral sandboxes with scoped credentials and delivers a branch plus a pull request, moving the human gate from per-action prompts to PR review."
+        },
+        {
+          "name": "Elastic demand vs. bounded fleet",
+          "description": "Task submission is bursty while sandbox containers are expensive and bounded; running tasks synchronously would either over-provision the fleet or reject bursts. A queue with leases and heartbeats absorbs bursts and survives sandbox deaths, at the cost of queueing latency and the machinery to make retries idempotent via task-specific branches.",
+          "chosen": "The design decouples submission from execution with a leased queue, re-issuing leases when a sandbox dies and pushing to task-specific branches so retried work is idempotent."
+        }
+      ]
     }
   ],
   "finalDesign": {

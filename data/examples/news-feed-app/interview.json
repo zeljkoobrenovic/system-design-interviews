@@ -318,7 +318,14 @@
           "PostAPI",
           "InteractionAPI"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Contract simplicity vs. offline scope",
+          "description": "REST over JSON is the natural fit because the core interactions — fetch feed, fetch post, create post, record interactions — are request/response, keeping the client-server contract simple. The tension is in scoping: every action promised to work offline (not just online) commits the client to local persistence and replay machinery later, so the contract must be explicit about which actions carry that guarantee.",
+          "chosen": "The design starts with plain REST/JSON endpoints for the core interactions and draws the online/offline line up front so later offline machinery has a clear contract to serve."
+        }
+      ]
     },
     {
       "id": "feed-pagination-read-path",
@@ -542,6 +549,13 @@
               "PostStore"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Paging stability vs. navigability",
+          "description": "Opaque cursors keep a stable continuation point as new posts arrive at the head of the feed — no duplicates or skips between fetches — and hide server internals so ranking and storage can evolve. Offset paging maps directly to jump-to-page and total-count UIs and is trivial to implement, but a shifting feed causes duplicated and skipped items and deep offsets get slower as rows are scanned and discarded.",
+          "chosen": "The design pages with opaque cursors encoding position and sort key, giving up page-number jumps that an infinite-scroll mobile feed never needed anyway."
         }
       ]
     },
@@ -767,6 +781,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Server bandwidth vs. client complexity",
+          "description": "Direct-to-storage upload via signed URLs keeps app servers out of the byte path so they scale with request rate rather than media volume, but the client owns a two-phase flow (mint URL, upload, create post) and the backend must handle orphaned uploads and signed-URL expiry. Proxying through app servers is one simple request with server-side validation, but every video byte then consumes app-tier bandwidth and long uploads tie up connections.",
+          "chosen": "The design mints signed URLs and has clients upload media straight to object storage, with the post record referencing completed assets, accepting orphan-cleanup bookkeeping to keep the app tier lightweight."
+        }
       ]
     },
     {
@@ -831,7 +852,14 @@
           "LocalDB",
           "MediaCache"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Offline coverage vs. device footprint",
+          "description": "Caching more on device — posts, media metadata, thumbnails — makes the feed genuinely readable without network, but storage, battery, and staleness costs grow with everything cached, and stale cached content must be invalidated when connectivity returns. Caching too little keeps the footprint small but leaves the offline feed empty or broken.",
+          "chosen": "The design caches recently loaded posts, lightweight media metadata, and selected thumbnails in a local database — enough for a readable offline feed without hoarding full media on the device."
+        }
+      ]
     },
     {
       "id": "offline-action-sync",
@@ -1097,6 +1125,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Action durability vs. client simplicity",
+          "description": "An outbox of pending operations replayed by a sync worker means likes, shares, and even posts made offline are never lost, but the client must own a durable queue with replay, backoff, and idempotency keys, and long offline gaps grow the divergence to reconcile. Simply re-fetching server state on reconnect needs none of that machinery, but silently drops everything the user did offline, violating the requirement outright.",
+          "chosen": "The design persists offline actions in a local outbox with idempotency keys and replays them in order on reconnect, so retries never double-apply and no user action vanishes."
+        },
+        {
+          "name": "Explicit replay vs. automatic merge",
+          "description": "CRDT-style mergeable state would make offline and concurrent-device edits converge deterministically with no conflict handling, but it demands per-action merge metadata on both client and server and forces the server data model to speak mergeable types — heavyweight for actions like a like or a new post that are mostly independent. The outbox keeps the server model unchanged but leaves rare cross-device conflicts to be resolved at replay time.",
+          "chosen": "The design chooses the simpler outbox replay over CRDTs because most feed actions are independent, and handles the rare replay conflict explicitly rather than re-architecting the data model."
+        }
       ]
     },
     {
@@ -1159,7 +1199,14 @@
           "InteractionStore",
           "CommentSummary"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Feed payload vs. detail round trips",
+          "description": "Packing rich text, full media metadata, comment summaries, and viewer state into every feed card makes detail views instant but bloats the scroll payload users pay for on every fetch, most of which is never opened. Keeping cards to summary data makes scrolling cheap and fast, at the cost of an extra fetch when a post detail screen opens.",
+          "chosen": "The design keeps feed cards to just enough summary data for smooth scrolling and hydrates richer text, media metadata, comments, and interaction state only when the detail screen opens."
+        }
+      ]
     },
     {
       "id": "global-media-delivery-and-data-efficiency",
@@ -1298,6 +1345,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Precompute vs. on-demand transforms",
+          "description": "Pre-generating device-appropriate variants at upload means the CDN serves ready renditions globally and feed scroll never waits on a transform, but storage and processing are spent on renditions nobody may request and new device profiles mean reprocessing the back catalog. On-the-fly edge resizing stores only originals and adapts to new profiles for free, but every first request pays cache-miss transform latency and per-request transform cost is significant for video.",
+          "chosen": "The design transcodes variants once at upload and serves them through the CDN, spending storage up front so a media-heavy feed scrolls smoothly on every network."
+        }
       ]
     },
     {
@@ -1366,7 +1420,14 @@
           "Alerts",
           "Reconcile"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Retry persistence vs. backend load",
+          "description": "Aggressive client retries hide transient failures and keep the feed feeling reliable, but unbounded retries from a mobile fleet can amplify an outage into a thundering herd; timeouts and local error states give up sooner but keep the user informed and the backend protected. Meanwhile, telemetry for scroll performance and sync failures adds client overhead but is the only way to know the offline outbox and feed are actually healthy in the field.",
+          "chosen": "The design pairs bounded retries with backoff, API timeouts, and local error states, and instruments both server metrics and client telemetry so scroll smoothness and sync failures are measurable rather than guessed."
+        }
+      ]
     }
   ],
   "satisfies": {

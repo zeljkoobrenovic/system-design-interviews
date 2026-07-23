@@ -1825,80 +1825,6 @@
       "makesIrrelevant": "A managed metrics and tracing stack removes time-series operations, but not domain-specific SLOs for reputation, suppression correctness, and handoff quality."
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The SDR Orchestrator and its scoped sub-agents (research, enrichment, drafting) run on this harness in a hybrid mode — hierarchical multi-agent dispatch with human send/approval gates layered on top.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Orchestrator-workers / scatter-gather subagents",
-      "what": "A supervisor runs research -> personalize -> sequence as a hierarchical multi-agent flow.",
-      "whenToUse": "Multi-step SDR work across many prospects.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A rep approves outreach before it sends in the company's name.",
-      "whenToUse": "Before any send.",
-      "steps": [
-        "send-gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "Agents research and draft freely but a deterministic send gate fences delivery.",
-      "whenToUse": "High-volume outreach with a reputation/compliance boundary.",
-      "steps": [
-        "send-gate"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground personalization in enriched, deduped CRM data, the system of record.",
-      "whenToUse": "Personalizing from authoritative prospect data.",
-      "steps": [
-        "enrichment"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "The agent acts via scoped, short-lived OAuth tokens (CRM write, send) carrying an act/approved-by claim naming the rep — not the rep's own credentials. Approval binds a specific rep to a specific draft version, so every send is attributable.",
-      "whenToUse": "Writing the CRM and sending on the company's behalf.",
-      "steps": [
-        "send-gate"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Enriched and scraped web text is untrusted data, never instructions: it can inform a draft but cannot carry tool calls or bypass the send gate. A quarantined/Dual-LLM split keeps content the agent reads out of the privileged path that approves and sends.",
-      "whenToUse": "Enrichment pulls attacker-reachable content.",
-      "steps": [
-        "enrichment"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "Level outreach against per-inbox reputation caps, not just API limits.",
-      "whenToUse": "Throttling sends to protect deliverability.",
-      "steps": [
-        "deliverability"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate reply quality and qualification, and watch deliverability metrics.",
-      "whenToUse": "Measuring outreach quality and reputation.",
-      "steps": [
-        "handoff"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1926,9 +1852,6 @@
         "caption": "An agent blasts mail from one domain — the reputation-destroying baseline."
       },
       "decisionPrompt": "What scarce resource does naive mass-sending destroy, and how fast does it recover?",
-      "patterns": [
-        "Orchestrator-workers / scatter-gather subagents"
-      ],
       "whyNow": [
         "The naive blast makes deliverability and suppression the central requirements."
       ],
@@ -1938,6 +1861,22 @@
           "definition": "The deterministic runtime that wraps the model and drives the agent loop — context assembly, tool-call parsing/execution, and budget/stop-condition enforcement. Distinct from an eval harness (offline scoring).",
           "whyItMatters": "The SDR Orchestrator and its sub-agents ride this harness, and the human send/approval gates are tool calls the harness routes — not loop logic the platform reimplements.",
           "example": "An outreach task enters the harness, which assembles account/contact context, runs the scoped SDR agent, and routes any outbound send through human approval."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The SDR Orchestrator and its scoped sub-agents (research, enrichment, drafting) run on this harness in a hybrid mode — hierarchical multi-agent dispatch with human send/approval gates layered on top.",
+          "steps": [
+            "naive"
+          ]
+        },
+        {
+          "term": "Orchestrator-workers / scatter-gather subagents",
+          "description": "A supervisor runs research -> personalize -> sequence as a hierarchical multi-agent flow.",
+          "whyItMatters": "Multi-step SDR work across many prospects.",
+          "steps": [
+            "naive"
+          ]
         }
       ],
       "probeLinks": [
@@ -1957,7 +1896,14 @@
           "instead": "Ground, gate, and rate-limit sends against reputation, with rotation and warmup."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Volume vs. sender reputation",
+          "description": "Blasting drafted emails from one domain as fast as possible maximizes short-term outreach volume, but deliverability is the scarce resource: unverified, un-personalized mass mail spikes bounces and spam complaints, tanks sender reputation, and lands future mail in spam — and a burned domain takes weeks to recover, if it recovers at all. It also ignores opt-outs and compliance entirely.",
+          "chosen": "The design rejects the blast baseline because it destroys the very asset outbound depends on; the rest of the interview adds grounding, a send gate, and deliverability infrastructure to protect it."
+        }
+      ]
     },
     {
       "id": "enrichment",
@@ -2056,16 +2002,28 @@
           "aiVisual": "assets/generated/ai-visuals/steps/02-enrichment-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "concepts": [
         {
           "term": "waterfall enrichment",
           "definition": "Querying data providers in sequence (primary -> fallback) per field, with gap detection and cost control.",
           "whyItMatters": "No single provider has full coverage; a waterfall reaches much higher coverage at controlled cost.",
           "example": "Email from provider A; if missing, try B, then C — stop at the first hit per field."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground personalization in enriched, deduped CRM data, the system of record.",
+          "whyItMatters": "Personalizing from authoritative prospect data.",
+          "steps": [
+            "enrichment"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Enriched and scraped web text is untrusted data, never instructions: it can inform a draft but cannot carry tool calls or bypass the send gate. A quarantined/Dual-LLM split keeps content the agent reads out of the privileged path that approves and sends.",
+          "whyItMatters": "Enrichment pulls attacker-reachable content.",
+          "steps": [
+            "enrichment"
+          ]
         }
       ],
       "whyNow": [
@@ -2093,6 +2051,18 @@
           "trap": "Feeding scraped/enriched web text straight into the prompt as instructions.",
           "why": "Attacker-reachable content can carry prompt-injection that tries to bypass the send gate or exfiltrate data.",
           "instead": "Treat enriched text as untrusted data, not instructions — screen it at the guardrail and keep it out of tool/send authority (Dual-LLM / CaMeL)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. pipeline resilience",
+          "description": "Enriching synchronously inline gives the freshest data at draft time and the simplest control flow, but provider latency and outages stall the whole pipeline, budget burns even on low-priority prospects, and at roughly 35 QPS average of provider calls it does not fit per-provider QPS caps. An async enrichment queue absorbs provider outages, smooths bursts under the caps, and lets caching and freshness rules cut spend, at the cost of more moving parts and slightly stale data at draft time.",
+          "chosen": "The design uses an async enrichment queue with caching and freshness policy, because absorbing provider latency and staying under per-provider QPS caps matters more than perfectly fresh fields at draft time."
+        },
+        {
+          "name": "Provider cost vs. data completeness",
+          "description": "Querying every provider for every field maximizes profile completeness but multiplies per-prospect cost; the waterfall queries providers in sequence, stopping at the first hit per field, trading some completeness and latency for controlled spend, with gap detection catching fields no provider filled.",
+          "chosen": "The design runs a waterfall — primary provider then fallbacks, first hit wins per field — with dedup and identity resolution against the CRM, because it bounds enrichment cost while still filling most gaps."
         }
       ]
     },
@@ -2204,17 +2174,36 @@
           "aiVisual": "assets/generated/ai-visuals/steps/03-send-gate-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)",
-        "Delegation not impersonation (OAuth token exchange, act claim)"
-      ],
       "concepts": [
         {
           "term": "global identity-resolved suppression",
           "definition": "A do-not-contact / opt-out list keyed to a resolved identity and a scope (tenant or platform), enforced across all sending domains and inboxes. The gate blocks a send if a platform-scope row exists for the identity, OR a tenant-scope row exists for that identity and the sending tenant.",
           "whyItMatters": "Opt-outs are legal obligations and reputation-critical; per-inbox lists leak. Scope makes ‘this tenant only’ vs ‘the whole platform’ enforceable and queryable.",
           "example": "An unsubscribe on domain A suppresses the same person on domains B and C; a platform-scope abuse block suppresses them for every tenant."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A rep approves outreach before it sends in the company's name.",
+          "whyItMatters": "Before any send.",
+          "steps": [
+            "send-gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "Agents research and draft freely but a deterministic send gate fences delivery.",
+          "whyItMatters": "High-volume outreach with a reputation/compliance boundary.",
+          "steps": [
+            "send-gate"
+          ]
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "The agent acts via scoped, short-lived OAuth tokens (CRM write, send) carrying an act/approved-by claim naming the rep — not the rep's own credentials. Approval binds a specific rep to a specific draft version, so every send is attributable.",
+          "whyItMatters": "Writing the CRM and sending on the company's behalf.",
+          "steps": [
+            "send-gate"
+          ]
         }
       ],
       "whyNow": [
@@ -2361,6 +2350,13 @@
           "why": "A provider timeout after it accepted the message double-sends on retry, and duplicate webhooks double-count.",
           "instead": "Idempotency keys on approve/send and event-id dedup on provider callbacks."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Approve-time vs. send-time checking",
+          "description": "Treating rep approval as the send decision gives the fewest states and the lowest approve-to-inbox latency, but it loses the race: a prospect can opt out between approval and the queued send, a reputation drop cannot pause already-queued work, and audit cannot distinguish approval from delivery. Re-running suppression and compliance at send time adds states and a send-attempt store, but makes the suppression list authoritative at the moment the message actually leaves.",
+          "chosen": "The design snapshots the approval immutably and re-checks suppression, compliance, and reputation at send time, because a late opt-out must block a queued send even at the cost of extra states and slightly higher latency."
+        }
       ]
     },
     {
@@ -2468,15 +2464,20 @@
           "aiVisual": "assets/generated/ai-visuals/steps/04-deliverability-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Queue-based load leveling; admission control"
-      ],
       "concepts": [
         {
           "term": "reputation-driven rate limiting",
           "definition": "Send caps derived from inbox warmup state and live bounce/spam rates, not from provider API quotas.",
           "whyItMatters": "Exceeding them silently lands future mail in spam; it's the real constraint on volume.",
           "example": "A new inbox starts at a low daily cap and ramps as it warms with clean engagement."
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "Level outreach against per-inbox reputation caps, not just API limits.",
+          "whyItMatters": "Throttling sends to protect deliverability.",
+          "steps": [
+            "deliverability"
+          ]
         }
       ],
       "whyNow": [
@@ -2586,6 +2587,13 @@
           "why": "When reputation drops fast, you need to stop in-flight and queued sends immediately, not wait for the next campaign edit.",
           "instead": "A pause/quarantine command that transitions queued attempts to blocked and holds the durable queue."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "API quota vs. reputation limits",
+          "description": "Throttling to the provider's API limits is trivial and never gets 429'd, but API quota has nothing to do with inbox reputation — a fleet can sit well under quota and still burn a domain, with no warmup ramp for cold inboxes and no reaction to bounce or spam-complaint thresholds. A reputation-aware per-inbox scheduler tracks the real constraint but requires a control loop ingesting bounce, complaint, and reply signals, and deliberately caps peak throughput per inbox.",
+          "chosen": "The design schedules sends against reputation-driven per-inbox caps — warmup ramps, hard bounce and complaint thresholds, auto-pause and quarantine — because reputation, not API quota, is what actually bounds how fast the fleet may send."
+        }
       ]
     },
     {
@@ -2622,15 +2630,20 @@
         "caption": "Inbound replies hit the orchestrator as a webhook and are classified first; qualified ones hand off to the owning rep, the CRM updates, and every action is appended to an immutable audit. Replies never bypass classification straight to a rep."
       },
       "decisionPrompt": "When should the agent stop and hand a conversation to a human?",
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "concepts": [
         {
           "term": "human handoff",
           "definition": "Routing a qualified or out-of-scope conversation from the agent to a human rep.",
           "whyItMatters": "Agents open and qualify; humans close — the handoff point is a design decision.",
           "example": "A prospect asks for pricing detail -> hand to the owning rep with context."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate reply quality and qualification, and watch deliverability metrics.",
+          "whyItMatters": "Measuring outreach quality and reputation.",
+          "steps": [
+            "handoff"
+          ]
         }
       ],
       "whyNow": [
@@ -2772,7 +2785,19 @@
           "instead": "Write through the CRM conflict-resolution path (external version check); append context, don't overwrite curated fields."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/05-handoff.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-handoff.jpg",
+      "tradeoffs": [
+        {
+          "name": "Automation reach vs. human judgment",
+          "description": "Letting the agent keep driving every reply maximizes automation, but routing inbound replies straight to a rep — or worse, letting the agent answer everything — mishandles the moments that matter: unsubscribe or angry intent must suppress and stop the sequence immediately, while qualified replies and out-of-scope objections need the CRM's owning rep. Classifying first costs a classification step and risks misrouting, but keeps compliance-critical intents from slipping through.",
+          "chosen": "The design classifies every inbound reply before routing — suppress on unsubscribe or anger, hand qualified and out-of-scope replies to the owning rep with the CRM updated — because the handoff boundary is where automation must yield to a human."
+        },
+        {
+          "name": "Send volume vs. measured quality",
+          "description": "Optimizing for sends is easy to measure and inflate, but a high send volume can hide a reputation slide or weak targeting; evaluating reply quality and qualification accuracy with trajectory eval alongside deliverability metrics costs measurement machinery but keeps the system honest about outcomes rather than activity.",
+          "chosen": "The design evaluates reply quality, qualification accuracy, and deliverability together over an append-only audit of every enrichment, draft, check, approval, and send, so volume never masks declining outcomes."
+        }
+      ]
     }
   ],
   "finalDesign": {

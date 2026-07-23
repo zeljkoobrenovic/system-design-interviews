@@ -574,63 +574,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Consistent hashing",
-      "what": "Map keys to nodes on a hash ring so adding/removing a node moves only a fraction of keys.",
-      "whenToUse": "Any horizontally-partitioned store that must scale incrementally.",
-      "steps": [
-        "partitioning"
-      ],
-      "group": "Partition the Keyspace with Consistent Hashing"
-    },
-    {
-      "name": "Virtual nodes",
-      "what": "Give each physical node many ring positions to even out load and speed rebalancing.",
-      "whenToUse": "When physical nodes are few or heterogeneous and naive hashing causes hotspots.",
-      "steps": [
-        "partitioning"
-      ],
-      "group": "Partition the Keyspace with Consistent Hashing"
-    },
-    {
-      "name": "Quorum consistency (N/W/R)",
-      "what": "Require W write acks and R read responses; W+R>N gives strong-ish reads.",
-      "whenToUse": "When you want a per-operation knob between availability and consistency.",
-      "steps": [
-        "replication",
-        "quorum"
-      ],
-      "group": "Replicate Each Key to N Nodes"
-    },
-    {
-      "name": "Vector clocks",
-      "what": "Per-key causal version vectors to detect concurrent (conflicting) writes.",
-      "whenToUse": "Multi-writer systems where last-write-wins would silently drop data.",
-      "steps": [
-        "conflicts"
-      ],
-      "group": "Detect and Reconcile Conflicting Writes"
-    },
-    {
-      "name": "Hinted handoff",
-      "what": "Store a write meant for a down replica elsewhere and replay it on recovery.",
-      "whenToUse": "To keep accepting writes (preserve W) during transient node failure.",
-      "steps": [
-        "failures"
-      ],
-      "group": "Tolerate Failures: Hinted Handoff & Anti-Entropy"
-    },
-    {
-      "name": "Merkle-tree anti-entropy",
-      "what": "Compare replica data via hash trees and repair only the differing ranges.",
-      "whenToUse": "Background reconciliation of replicas that diverged during failures.",
-      "steps": [
-        "failures"
-      ],
-      "group": "Tolerate Failures: Hinted Handoff & Anti-Entropy"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -681,7 +624,14 @@
           "instead": "Partition keys across many nodes for capacity and replicate each key for survival."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. capacity and availability",
+          "description": "One node with a local storage engine is correct, fast, and trivial to reason about, but its single disk caps how many keys fit and its single machine is a total point of failure. The moment either requirement bites, you are forced into partitioning and replication and all the coordination they bring.",
+          "chosen": "The design accepts the single node only as a baseline to motivate the rest: it must be abandoned because billions of keys don't fit on one machine and one crash makes every key unavailable."
+        }
+      ]
     },
     {
       "id": "partitioning",
@@ -902,10 +852,6 @@
         "redis-cluster",
         "dynamodb-split-for-heat"
       ],
-      "patterns": [
-        "Consistent hashing",
-        "Virtual nodes"
-      ],
       "whyNow": [
         "Partitioning is the foundation — every later decision (replication, quorum, repair) is defined relative to a key's position on the ring."
       ],
@@ -919,6 +865,18 @@
           "trap": "Hashing keys with key % numNodes.",
           "why": "Changing node count remaps almost every key, causing a storm of data movement.",
           "instead": "Hash onto a ring with virtual nodes so only neighbors' ranges shift."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Even distribution vs. range scans",
+          "description": "Hashing keys onto a ring scatters them deliberately, which balances load across nodes but destroys key ordering, so scans like 'all keys a..c' become impossible. Range partitioning keeps adjacent keys together for cheap ordered iteration, but sequential keys (timestamps, monotonic IDs) then hammer one range owner.",
+          "chosen": "The design picks consistent hashing and gives up range scans, since an opaque-value KV store doesn't need ordering and even distribution is the harder property to retrofit."
+        },
+        {
+          "name": "Incremental rebalancing vs. implementation simplicity",
+          "description": "Modulo hashing is trivial for a fixed cluster, but changing the node count remaps almost every key, causing a cluster-wide data storm. Consistent hashing with virtual nodes moves only about 1/N of keys per membership change, at the cost of maintaining a ring view that is only eventually consistent.",
+          "chosen": "The design chooses consistent hashing with vnodes because incremental scaling is a core requirement, accepting the occasional extra hop from a stale ring view."
         }
       ]
     },
@@ -957,9 +915,6 @@
         ]
       },
       "decisionPrompt": "How do you choose the N replicas so a single zone outage can't take all copies of a key?",
-      "patterns": [
-        "Quorum consistency (N/W/R)"
-      ],
       "probeLinks": [
         "dynamo-paper",
         "raft-paper",
@@ -1056,7 +1011,30 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-replication.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-replication.jpg",
+      "concepts": [
+        {
+          "term": "Quorum consistency (N/W/R)",
+          "description": "Require W write acks and R read responses; W+R>N gives strong-ish reads.",
+          "whyItMatters": "When you want a per-operation knob between availability and consistency.",
+          "steps": [
+            "replication",
+            "quorum"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Zone diversity vs. placement simplicity",
+          "description": "Walking the ring for the next N vnodes is simple, but naive placement can put multiple copies on the same physical node or in the same zone, so one rack or zone outage takes every replica of a key. Skipping duplicate physical nodes and preferring distinct zones costs a more complex preference-list computation.",
+          "chosen": "The design builds the preference list from N distinct physical nodes spread across zones (N=3 across 3 zones), paying placement complexity to make a single zone outage survivable."
+        },
+        {
+          "name": "Durable acks vs. write latency",
+          "description": "Counting a replica's ack as soon as it receives the write in memory is faster, but a crash right after the ack silently loses an 'accepted' write. Requiring the write to be committed to the commit log or on-disk store before acking adds latency to every replica response.",
+          "chosen": "The design requires an ack to mean durably recorded, because replication exists precisely so accepted writes survive a node loss."
+        }
+      ]
     },
     {
       "id": "quorum",
@@ -1233,9 +1211,6 @@
         "cassandra-read-repair",
         "dynamodb-global-tables"
       ],
-      "patterns": [
-        "Quorum consistency (N/W/R)"
-      ],
       "whyNow": [
         "This is the heart of a Dynamo-style store — articulating the W+R>N tradeoff is what the interviewer is listening for."
       ],
@@ -1309,6 +1284,18 @@
           "why": "Concurrent writes and sloppy quorums (hinted handoff) can still produce conflicting versions.",
           "instead": "Say W+R>N gives strong-ish read-your-writes, and pair it with version reconciliation."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Consistency vs. availability",
+          "description": "A leader per key orders all writes and gives clean linearizable reads, but leader failure means an election window with no writes, and a partition can make the key unwritable — against the always-writable goal. Leaderless quorums let any node coordinate any operation with no failover step, but concurrent writes produce divergent versions and you only get overlap-based read-your-writes, not linearizability.",
+          "chosen": "The design picks the leaderless tunable quorum because AP behavior during partitions and no single point of failure outrank linearizability for this store."
+        },
+        {
+          "name": "Per-operation flexibility vs. foolproof guarantees",
+          "description": "Exposing W and R as a per-operation dial lets each caller trade latency for consistency exactly where it matters, but a caller who picks a wrong (W,R) pair silently weakens their guarantees. A fixed cluster-wide setting would be safer to hold but couldn't serve both latency-critical writes and strong reads.",
+          "chosen": "The design keeps the knob per operation, accepting that callers must understand W+R>N in exchange for tuning each workload independently."
+        }
       ]
     },
     {
@@ -1367,7 +1354,14 @@
         "after": "N/W/R chosen per workload with the W+R>N rule understood.",
         "newRisk": "Sloppy quorums and concurrent writes still need version reconciliation (next step)."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-choosing-nwr.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-choosing-nwr.jpg",
+      "tradeoffs": [
+        {
+          "name": "Write latency vs. read staleness",
+          "description": "With N=3, W=1,R=1 gives the lowest latency and stays writable with two nodes down, but reads can be stale because the sets need not overlap; W=3 or R=3 strengthens one path but lets a single down replica block it. W=2,R=2 sits in the middle: read-your-writes overlap while surviving one node down on both paths.",
+          "chosen": "The design defaults to W=2,R=2 as the balanced quorum, keeping stronger or faster settings available per operation for workloads that need them."
+        }
+      ]
     },
     {
       "id": "conflicts",
@@ -1541,6 +1535,14 @@
           "whyItMatters": "Distinguishes 'this version supersedes that' from 'these happened concurrently'.",
           "example": "Cart versions {A:2} and {A:1,B:1} are concurrent -> merge as siblings.",
           "group": "Detect and Reconcile Conflicting Writes"
+        },
+        {
+          "term": "Vector clocks",
+          "description": "Per-key causal version vectors to detect concurrent (conflicting) writes.",
+          "whyItMatters": "Multi-writer systems where last-write-wins would silently drop data.",
+          "steps": [
+            "conflicts"
+          ]
         }
       ],
       "probeLinks": [
@@ -1549,9 +1551,6 @@
         "riak-conflict-resolution",
         "cassandra-tombstones",
         "dynamodb-global-tables"
-      ],
-      "patterns": [
-        "Vector clocks"
       ],
       "whyNow": [
         "A store that accepts writes during partitions must have an answer for divergence; vector clocks are the principled one."
@@ -1644,6 +1643,18 @@
           "why": "A replica that was down during the delete still holds the old value; on later anti-entropy it looks 'newer' than 'absent' and resurrects the deleted key.",
           "instead": "Write a tombstone with an advanced vector clock, replicate and repair it like a value, and GC only after a grace period once all replicas have seen it."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Conflict preservation vs. client simplicity",
+          "description": "Last-write-wins returns a single value and needs no merge logic, but clock skew can let a stale write win and silently destroy a newer one — fatal when every write matters, like add-to-cart. Vector clocks distinguish 'supersedes' from 'concurrent' so no write is dropped, but the application must merge siblings and the clocks need pruning as writers accumulate.",
+          "chosen": "The design picks vector clocks with siblings, pushing merge work to the application because silently losing writes is unacceptable for a store that accepts writes during partitions."
+        },
+        {
+          "name": "Automatic merging vs. data-model generality",
+          "description": "Server-side CRDTs merge concurrent versions deterministically so no siblings ever reach the caller, but they only work for values shaped like counters, sets, or registers — opaque bytes can't be merged that way, and CRDT metadata bloats every value. Opaque values with siblings keep the store general but leave reconciliation to callers.",
+          "chosen": "The design stays a general opaque-value store and surfaces siblings, leaving CRDT-style merging as an application-level choice rather than a server constraint."
+        }
       ]
     },
     {
@@ -1706,10 +1717,6 @@
         "cassandra-read-repair",
         "cassandra-tombstones",
         "aws-retries-backoff"
-      ],
-      "patterns": [
-        "Hinted handoff",
-        "Merkle-tree anti-entropy"
       ],
       "whyNow": [
         "Failure handling is where availability is actually earned; naming hinted handoff + Merkle anti-entropy shows real distributed-systems depth."
@@ -1894,7 +1901,19 @@
           "mitigation": "Decommission it from the ring and bootstrap a replacement that streams its ranges from the surviving replicas."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-failures.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-failures.jpg",
+      "tradeoffs": [
+        {
+          "name": "Write availability vs. quorum overlap",
+          "description": "Hinted handoff keeps the store writable when a preference-list replica is down by writing to a substitute holding a hint, but those substitute acks mean W+R>N no longer strictly guarantees that a read overlaps a fresh write. Refusing the write preserves the overlap guarantee but rejects operations during exactly the failures the store promises to ride through.",
+          "chosen": "The design accepts writes via hinted handoff, preferring availability and relying on hint replay plus reconciliation to restore consistency afterwards."
+        },
+        {
+          "name": "Bounded hints vs. complete recovery",
+          "description": "Keeping hints indefinitely would let any outage be replayed exactly, but hints would grow into a second database and flood recovering nodes on replay. TTLs, per-destination quotas, and rate-limited replay bound that cost, at the price of dropping hints for long outages and leaning on slower full anti-entropy instead.",
+          "chosen": "The design bounds hints with TTLs and quotas and lets Merkle-tree anti-entropy handle anything beyond the window, keeping the fast path cheap and the slow path thorough."
+        }
+      ]
     },
     {
       "id": "membership",
@@ -2117,6 +2136,13 @@
             "Membership"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Decentralized gossip vs. authoritative coordination",
+          "description": "A central coordinator like ZooKeeper gives one strongly consistent, instantly updated view of liveness and the ring, but it reintroduces a quasi-master that must itself be made highly available and blocks safe topology changes when unreachable. Gossip has no master and converges in O(log N) rounds, but the topology view is eventually consistent, membership changes take several rounds, and emergent behavior is harder to debug.",
+          "chosen": "The design picks gossip-based membership to honor the no-single-point-of-failure requirement, accepting convergence delay and the occasional stale-view extra hop."
+        }
       ]
     },
     {
@@ -2193,7 +2219,19 @@
           "instead": "Give every background job an explicit I/O budget and surface its backlog as a first-class metric."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/09-operations.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/09-operations.jpg",
+      "tradeoffs": [
+        {
+          "name": "Background repair vs. foreground latency",
+          "description": "Anti-entropy, compaction, hint replay, and rebalancing are what keep the store healthy, but run unbounded they steal disk and network from foreground reads and writes and blow the latency SLO. Throttling them protects latency but lets backlogs — hints, siblings, unrepaired ranges — grow into future user-visible problems.",
+          "chosen": "The design bounds and instruments the background work, alerting on leading indicators like hint backlog and repair lag so throttles can be tuned before foreground latency or divergence suffers."
+        },
+        {
+          "name": "Tenant isolation vs. shared utilization",
+          "description": "Letting every keyspace share the cluster freely maximizes hardware utilization, but one tenant's oversized values or request storms degrade everyone's latency. Per-keyspace request and storage quotas plus value-size caps protect neighbors, at the cost of rejecting work the hardware could technically absorb.",
+          "chosen": "The design enforces admission control with per-keyspace quotas and value-size caps, trading some raw utilization for predictable latency across tenants."
+        }
+      ]
     }
   ],
   "finalDesign": {

@@ -1437,62 +1437,6 @@
       "makesIrrelevant": "Managed telemetry with metrics, traces, logs, alerting, and retention controls removes much of the custom dashboard and pipeline-health scraping code."
     }
   ],
-  "patterns": [
-    {
-      "name": "Durable event log (Kafka)",
-      "what": "Append events to a partitioned, replayable log that decouples ingestion from processing.",
-      "whenToUse": "High-throughput ingestion where producers and consumers scale independently.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Durable High-Throughput Ingestion"
-    },
-    {
-      "name": "Stream processing (speed layer)",
-      "what": "Consume the log continuously to produce low-latency, approximate metrics.",
-      "whenToUse": "When seconds-fresh numbers matter.",
-      "steps": [
-        "speed"
-      ],
-      "group": "Speed Layer: Real-Time Metrics"
-    },
-    {
-      "name": "Batch reprocessing (batch layer)",
-      "what": "Recompute metrics from immutable raw events for accuracy and bug fixes.",
-      "whenToUse": "When billing-grade correctness and replayability are required.",
-      "steps": [
-        "batch"
-      ],
-      "group": "Batch Layer: Accurate, Reprocessable Metrics"
-    },
-    {
-      "name": "Idempotent dedup",
-      "what": "Use an event id + a seen-set/Bloom filter so retries don't over-count.",
-      "whenToUse": "At-least-once delivery where counts must be correct.",
-      "steps": [
-        "dedup"
-      ],
-      "group": "Deduplicate for Correct Counts"
-    },
-    {
-      "name": "Windowed attribution",
-      "what": "Join clicks to later conversions within a time window to credit campaigns.",
-      "whenToUse": "Conversion/ROI metrics that span multiple events.",
-      "steps": [
-        "attribution"
-      ],
-      "group": "Attribution: Credit Clicks for Conversions"
-    },
-    {
-      "name": "Pre-aggregation / rollups",
-      "what": "Materialize metrics by time bucket and dimension so queries are cheap.",
-      "whenToUse": "Dashboards over huge event volumes.",
-      "steps": [
-        "serve"
-      ],
-      "group": "Serve: Pre-Aggregation and Query"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1540,7 +1484,14 @@
           "instead": "Append events to a durable log, count asynchronously with idempotent dedup, and keep raw events for batch recompute."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. write contention",
+          "description": "A synchronous counter increment per event is trivially correct at low volume, but at ~1M events/sec it collapses: a popular campaign concentrates tens of thousands of increments per second on a single hot row, and read replicas cannot help because the contention is on writes. It also counts a twice-delivered event twice, which is a billing error, not just a display glitch.",
+          "chosen": "The design abandons per-event synchronous increments as the baseline, motivating a durable log, stream aggregation, and dedup instead of a hot counter row."
+        }
+      ]
     },
     {
       "id": "ingest",
@@ -1583,6 +1534,14 @@
           "whyItMatters": "Decouples ingestion from processing and enables replay — the backbone of the pipeline.",
           "example": "Kafka topic partitioned by salted campaign_id, retained for days, consumed by stream + archived to a lake.",
           "group": "Durable High-Throughput Ingestion"
+        },
+        {
+          "term": "Durable event log (Kafka)",
+          "description": "Append events to a partitioned, replayable log that decouples ingestion from processing.",
+          "whyItMatters": "High-throughput ingestion where producers and consumers scale independently.",
+          "steps": [
+            "ingest"
+          ]
         }
       ],
       "probeLinks": [
@@ -1596,9 +1555,6 @@
         "openlineage",
         "deequ-paper",
         "iab-gpp"
-      ],
-      "patterns": [
-        "Durable event log (Kafka)"
       ],
       "whyNow": [
         "The log is the architectural backbone; everything (real-time, batch, replay) hangs off durable, decoupled ingestion."
@@ -1625,7 +1581,19 @@
           "instead": "Minimize at the edge: pseudonymize/hash user ids, drop fields the advertiser may not measure, and stamp a consent flag. Attribution only joins identity when ad_measurement consent is present; non-consented events still count aggregate impressions/clicks but fall back to unattributed. Partition the lake by a deletion key so erasure requests are a partition rewrite, not a full scan."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg",
+      "tradeoffs": [
+        {
+          "name": "Inline processing vs. log decoupling",
+          "description": "Processing events inline in the collector is the shortest path from event to metric, but couples producers to processor speed and loses events the moment processing lags or crashes. Appending to a durable partitioned log adds a hop and infrastructure, but decouples producers from consumers, absorbs bursts, and preserves raw events for replay.",
+          "chosen": "The design puts a Kafka-style log between a lightweight collector and the processors, keeping the collector thin enough to absorb ~1M events/sec with batched, compressed appends."
+        },
+        {
+          "name": "Fast acks vs. durable acceptance",
+          "description": "Acking as soon as the collector receives an event minimizes producer latency, but an event acked before it is replicated can be lost while the client stops retrying — and these events are billed. Acking only after quorum replication makes acceptance a durability guarantee, at the cost of ack latency, and requires a stable event_id so a retry after a lost ack is deduplicated rather than double-counted.",
+          "chosen": "The design returns 202 only after the event is replicated to a quorum of log replicas, defining accepted as durable, with stable event_ids making producer retries safe."
+        }
+      ]
     },
     {
       "id": "speed",
@@ -1674,6 +1642,14 @@
           "whyItMatters": "Out-of-order, retried events would otherwise land in the wrong window; the watermark decides when a window can close and what counts as 'late'.",
           "example": "A click stamped 10:00:03 that arrives at 10:00:09 still lands in the 10:00 window; one arriving past the allowed-lateness grace is sent to correction.",
           "group": "Speed Layer: Real-Time Metrics"
+        },
+        {
+          "term": "Stream processing (speed layer)",
+          "description": "Consume the log continuously to produce low-latency, approximate metrics.",
+          "whyItMatters": "When seconds-fresh numbers matter.",
+          "steps": [
+            "speed"
+          ]
         }
       ],
       "probeLinks": [
@@ -1688,9 +1664,6 @@
         "linkedin-samza",
         "netflix-mantis"
       ],
-      "patterns": [
-        "Stream processing (speed layer)"
-      ],
       "whyNow": [
         "Real-time freshness is a hard requirement; the stream layer delivers it, while explicitly being the approximate half of the design."
       ],
@@ -1699,7 +1672,14 @@
         "after": "Seconds-fresh approximate metrics queryable now.",
         "newRisk": "Retries/duplicates over-count; late events are missed — correctness needs more."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-speed.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-speed.jpg",
+      "tradeoffs": [
+        {
+          "name": "Event time vs. processing time",
+          "description": "Aggregating by processing time is simple — count events as they arrive — but clients retry and buffer, so events arrive out of order and land in the wrong windows. Event-time windows with watermarks credit each event to when it actually happened, but a window must stay open until the watermark plus an allowed-lateness grace passes, delaying emission, and events later than that must be quarantined rather than silently dropped or misfiled.",
+          "chosen": "The design aggregates by event time with watermarks and an explicit late-arrival policy, accepting delayed window emission because event-time semantics are what make dedup, attribution, and batch reconciliation coherent later."
+        }
+      ]
     },
     {
       "id": "dedup",
@@ -1858,9 +1838,6 @@
         "iab-click-guidelines",
         "iab-ivt-guidelines"
       ],
-      "patterns": [
-        "Idempotent dedup"
-      ],
       "whyNow": [
         "Correct counts are non-negotiable for billing; dedup is the mechanism and the at-least-once reality is the reason."
       ],
@@ -1958,6 +1935,18 @@
             "Stream",
             "DedupStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Exact vs. probabilistic dedup",
+          "description": "A RocksDB-backed keyed seen-set never counts a seen event_id twice, so billed clicks are right, but state grows with distinct ids per window and every event pays a lookup on the hot path. A Bloom filter fits billions of ids in memory with constant-time checks, but false positives drop genuinely new clicks — trading a known over-count for an unknown under-count, which is the wrong direction for billing. Skipping real-time dedup entirely is simplest but leaves dashboards visibly inflated until batch corrects them.",
+          "chosen": "The design uses an exact keyed dedup store with per-key TTL bounding it to the dedup window, because billed counts must be right in real time and checkpointed keyed state survives crashes with the log offset."
+        },
+        {
+          "name": "Window-bounded vs. global exactness",
+          "description": "Guaranteeing global exactly-once would mean remembering every event id forever and coordinating every write; bounding dedup to a window keeps state affordable but means longer-horizon duplicates slip through, and end-to-end correctness still requires committing the log offset, dedup state, and OLAP write together so a crash cannot double-count.",
+          "chosen": "The design promises exactly-once within the bounded dedup window and atomic offset-state-write commits, leaving longer-horizon duplicates to the batch backstop."
         }
       ]
     },
@@ -2079,6 +2068,14 @@
           "whyItMatters": "Produces ROI/conversion metrics that span multiple events and days.",
           "example": "Last-click within 7 days credits the most recent click's campaign.",
           "group": "Attribution: Credit Clicks for Conversions"
+        },
+        {
+          "term": "Windowed attribution",
+          "description": "Join clicks to later conversions within a time window to credit campaigns.",
+          "whyItMatters": "Conversion/ROI metrics that span multiple events.",
+          "steps": [
+            "attribution"
+          ]
         }
       ],
       "probeLinks": [
@@ -2092,9 +2089,6 @@
         "google-ads-attribution-reports",
         "iab-gpp"
       ],
-      "patterns": [
-        "Windowed attribution"
-      ],
       "whyNow": [
         "Attribution is the ad-specific depth that separates this from a generic counter; the windowed join and model choice are the senior signals."
       ],
@@ -2102,7 +2096,14 @@
         "before": "Independent event counts.",
         "after": "Conversions attributed to campaigns within a window.",
         "newRisk": "Long windows + corrections exceed what the speed layer can hold accurately — batch must reconcile."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Streaming state vs. batch join",
+          "description": "A stateful streaming windowed join credits a conversion to its click within seconds and gives advertisers live ROI, but it must hold every click in keyed state for the whole attribution window (e.g. 7 days) — large, costly state — and changing the attribution model means rebuilding live state. Batch-only attribution over the raw store handles arbitrarily long windows and model changes as just another job, but attribution lags by the batch cadence and advertisers get no live feedback during a campaign.",
+          "chosen": "The design runs a stateful streaming join over a time-windowed click-state store on the hot path, accepting multi-day keyed state as the price of near-real-time conversion credit, with batch correcting late conversions."
+        }
+      ]
     },
     {
       "id": "batch",
@@ -2213,6 +2214,14 @@
           "whyItMatters": "Delivers both freshness and correctness, and makes bugs recoverable.",
           "example": "Once a day is complete, batch writes a higher-versioned rollup and publishes a settlement marker that supersedes the speed rows.",
           "group": "Batch Layer: Accurate, Reprocessable Metrics"
+        },
+        {
+          "term": "Batch reprocessing (batch layer)",
+          "description": "Recompute metrics from immutable raw events for accuracy and bug fixes.",
+          "whyItMatters": "When billing-grade correctness and replayability are required.",
+          "steps": [
+            "batch"
+          ]
         }
       ],
       "probeLinks": [
@@ -2225,9 +2234,6 @@
         "openlineage",
         "deequ-paper",
         "linkedin-pinot"
-      ],
-      "patterns": [
-        "Batch reprocessing (batch layer)"
       ],
       "whyNow": [
         "The accuracy + reprocessability requirements demand a batch/replay layer; framing speed-vs-batch is the core architectural tradeoff of the case."
@@ -2307,6 +2313,13 @@
             "Batch"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Lambda vs. kappa",
+          "description": "Lambda's separate speed and batch layers let each be tuned for its job — stream for latency, batch for billing-grade completeness — and a processing bug is fixed by re-running batch over immutable raw events; but two codebases compute the same metrics and can drift, and serving must hide the seam where batch supersedes speed. Kappa keeps one replayable stream codebase, but requires retaining the full log long enough to replay billing history and reprocessing months of events through a stream engine can be slower than a tuned batch job.",
+          "chosen": "The design chooses lambda: batch recomputes each window from raw events, writes a versioned batch row, validates it against sanity bounds, and publishes a settlement marker that atomically supersedes the provisional speed rows."
+        }
       ]
     },
     {
@@ -2361,9 +2374,6 @@
         "uber-pinot-ingestion",
         "druid-kafka-ingestion",
         "pinot-docs"
-      ],
-      "patterns": [
-        "Pre-aggregation / rollups"
       ],
       "whyNow": [
         "Serving ties it together: it's where the freshness/accuracy split becomes a single coherent answer for the user."
@@ -2456,7 +2466,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-serve.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-serve.jpg",
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. finality",
+          "description": "Serving only settled batch numbers would never contradict itself but leaves advertisers blind on open windows; serving only live speed numbers is fresh but provisional and later silently changes. Keying rollup rows by (metric_key, window, source, version) with a per-window settlement marker adds serving-layer complexity, but lets the API return provisional speed rows for open windows and authoritative batch rows for settled ones without ever mixing sources.",
+          "chosen": "The design serves speed rows for the open window and batch rows once the settlement marker flips, stamping each bucket with a source and settled marker so the UI shows finalizing versus final instead of numbers that quietly contradict themselves."
+        }
+      ]
     }
   ],
   "finalDesign": {

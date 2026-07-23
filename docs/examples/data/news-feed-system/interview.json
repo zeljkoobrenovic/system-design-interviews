@@ -2766,7 +2766,14 @@
           "PostSvc",
           "FeedSvc"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Contract simplicity vs. fetch precision",
+          "description": "Fixed REST endpoints are easy to cache, observe, and explain, and serve web and mobile alike, but clients risk overfetching and real-time updates need polling or an extra channel. A GraphQL gateway lets clients request exactly the feed-card fields they render and aggregates post, author, media, and counters behind one API, but query-cost control, caching, and N+1 resolver mistakes add machinery beyond the basic scope.",
+          "chosen": "The design exposes REST endpoints through a stateless web tier, taking some overfetch risk in exchange for a simple, cacheable, observable contract."
+        }
+      ]
     },
     {
       "id": "durable-post-store",
@@ -3111,7 +3118,14 @@
           "PostCache",
           "FanoutQ"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Transactional clarity vs. write scale",
+          "description": "A relational Post DB gives simple transactions for post metadata and visibility state, straightforward indexes for author history, and a good story for moderation and deletes — but it needs sharding as volume grows and hot authors concentrate writes. A wide-column store partitions naturally by author or post id for very high append throughput, but weakens cross-entity transactions and pushes secondary access patterns into denormalized tables.",
+          "chosen": "The design stores post metadata in SQL fronted by a hot-post cache, committing durability before any fanout begins, and defers wide-column scale-out until write volume forces it."
+        }
+      ]
     },
     {
       "id": "graph-service",
@@ -3421,7 +3435,14 @@
           "GraphCache",
           "Privacy"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Centralized eligibility vs. batch read efficiency",
+          "description": "A dedicated graph service owns follow edges and applies mutes, blocks, and privacy filters in one place, with cached follower/following sets — but its cache invalidation on follow/unfollow/mute is subtle and fanout correctness depends on graph freshness. Denormalized follower tables give fanout workers cheap batch key-value reads without a specialized dependency, but relationship changes must update multiple views and privacy rules risk spreading across services.",
+          "chosen": "The design puts relationships behind a graph service with cached edge sets, accepting invalidation subtlety so eligibility rules stay centralized and safe at both fanout time and read time."
+        }
+      ]
     },
     {
       "id": "fanout-on-write",
@@ -3772,7 +3793,19 @@
           "FeedCache",
           "Notify"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Read latency vs. write amplification",
+          "description": "Pushing post ids into every eligible friend's feed cache at publish time makes feed reads a fast precomputed lookup and enables quick appearance and notifications, but each publish multiplies into per-follower writes — wasted for inactive viewers and bursty for popular authors — and feed-cache memory grows with retained entries. Not precomputing shifts all that cost onto every read instead.",
+          "chosen": "The design fans out on write for normal authors, paying write-time amplification because average friend counts are moderate and read latency is the metric users feel."
+        },
+        {
+          "name": "Async workers vs. synchronous publish",
+          "description": "Doing fanout inline in the publish request means the publisher knows immediately whether feed writes completed and needs no queue infrastructure, but publish latency grows with friend count, large audiences cause timeouts, and one bad graph or cache dependency breaks posting. Queue-driven workers decouple publish success from fanout completion, adding retry and duplicate-prevention concerns.",
+          "chosen": "The design makes publish durable first and hands fanout to asynchronous workers with queueing and retries, so posting never blocks on or fails with downstream feed writes."
+        }
+      ]
     },
     {
       "id": "feed-cache",
@@ -4089,7 +4122,14 @@
           "RedisC",
           "RebuildQ"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Memory speed vs. durability",
+          "description": "Redis sorted sets scored by time are a natural fit for reverse-chronological reads, trim cheaply to the newest N, and page cleanly by score cursor — but memory overhead is high, large active-user counts need careful sharding, and a cache loss forces a rebuild from posts and graph. A persistent inbox table survives restarts and serves inactive users without RAM, but reads are slower and write amplification at fanout volume is expensive.",
+          "chosen": "The design keeps each viewer's feed as a Redis sorted set of post ids trimmed to a bounded window, treating it as a rebuildable materialization rather than durable truth."
+        }
+      ]
     },
     {
       "id": "hybrid-fanout",
@@ -4416,7 +4456,14 @@
           "PushQ",
           "AuthorOutbox"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Read-path uniformity vs. write-storm protection",
+          "description": "Pushing every author uniformly keeps the read path a single inbox lookup, but a celebrity post triggers millions of cache writes at once. Holding celebrity posts in author outboxes merged at read time eliminates those write storms and lets the threshold be tuned by queue lag and audience size, but the read path must merge inbox and outbox sources, celebrity freshness differs slightly, and authors need classification and monitoring.",
+          "chosen": "The design goes hybrid — push for normal authors, pull-and-merge for high-fanout authors — accepting a more complex read path to keep both publish and read latency bounded."
+        }
+      ]
     },
     {
       "id": "feed-retrieval",
@@ -4787,7 +4834,14 @@
           "CounterCache",
           "CDN"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Server assembly vs. client round trips",
+          "description": "Server-side hydration returns render-ready cards, batches cache lookups, and enforces privacy filtering consistently across platforms, but the Feed Service does more work per request and large hydrated responses can add latency. Returning compact id lists and letting clients lazy-load card details lightens the server and suits experimental clients, but many mobile round trips hurt latency and battery and filtering consistency fragments across clients.",
+          "chosen": "The design hydrates on the server — merging hybrid candidates, filtering invalid entries, and batch-fetching posts, authors, media, and counters — so mobile clients stay simple and privacy rechecks happen in one place."
+        }
+      ]
     },
     {
       "id": "media-pipeline",
@@ -5140,7 +5194,14 @@
           "Processor",
           "CDN"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Byte offload vs. state-machine complexity",
+          "description": "Uploading media directly to object storage keeps large bytes off the web tier and lets the CDN absorb global delivery, but the system must track a media state machine (uploading, processing, ready, failed), handle posts whose media is not ready, and secure signed URLs with content validation. Proxying uploads through the app is a simpler client story with pre-storage validation, but the web tier becomes a bandwidth bottleneck that videos can exhaust.",
+          "chosen": "The design uploads directly to object storage with worker-side transcoding and validation and CDN URLs in feed cards, accepting explicit media states so publish and read latency never carry media bytes."
+        }
+      ]
     },
     {
       "id": "hydration-and-cache-layers",
@@ -5474,7 +5535,14 @@
           "CounterCache",
           "GraphCache"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Cache freshness vs. read assembly cost",
+          "description": "Cache-aside layers per data type keep each source database authoritative and let every service tune its own TTL and invalidation, but each read assembles cards from many layers and the layered snapshots can be mutually inconsistent. Preassembled materialized cards make reads extremely fast with minimal hydration fanout, but memory balloons and any profile or counter change leaves stale cards, and viewer-specific action state resists materialization.",
+          "chosen": "The design uses explicit service-owned cache-aside layers for feed ids, posts, profiles, actions, and counters, paying per-request assembly so freshness and personalization stay controllable per layer."
+        }
+      ]
     },
     {
       "id": "multi-region-and-observability",
@@ -5867,7 +5935,14 @@
           "Rep",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Write locality vs. conflict simplicity",
+          "description": "Giving each user a home region for post and graph writes keeps conflict handling simple — one writer per user — while replicas serve reads near other regions, but distant users pay higher publish latency, freshness elsewhere depends on replication lag, and failover needs careful home-region promotion. Active-active writes minimize publish latency everywhere and survive regional write outages, but graph changes, deletes, and privacy updates develop conflict cases and fanout can duplicate or reorder entries.",
+          "chosen": "The design assigns each user a home write region with replicated reads and local feed caches elsewhere, trading some publish latency for a conflict model an operations team can actually reason about."
+        }
+      ]
     }
   ],
   "finalDesign": {

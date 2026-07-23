@@ -920,62 +920,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Durable ingest buffer (Kafka)",
-      "what": "Accept logs into a durable partitioned stream that decouples producers from indexers.",
-      "whenToUse": "High-throughput ingestion where consumers vary in speed.",
-      "steps": [
-        "ingest"
-      ],
-      "group": "Durable High-Throughput Ingestion"
-    },
-    {
-      "name": "Parse & structure pipeline",
-      "what": "Turn raw lines into structured events (fields, levels) for indexing and querying.",
-      "whenToUse": "Mixed free-text and structured search.",
-      "steps": [
-        "process"
-      ],
-      "group": "Parse, Structure, and Sample"
-    },
-    {
-      "name": "Time-bucketed indexing",
-      "what": "Build immutable index segments per time window so search prunes by time and old segments age out.",
-      "whenToUse": "Append-only, time-ordered data dominated by recent queries.",
-      "steps": [
-        "index"
-      ],
-      "group": "Time-Bucketed Indexing for Search"
-    },
-    {
-      "name": "Hot/cold tiering",
-      "what": "Keep recent data indexed on fast storage; age old data to cheap cold storage.",
-      "whenToUse": "Retention where most reads target recent data.",
-      "steps": [
-        "tiering"
-      ],
-      "group": "Hot/Cold Storage Tiering"
-    },
-    {
-      "name": "Sampling / quotas",
-      "what": "Drop or downsample low-value high-volume logs to control cost.",
-      "whenToUse": "When ingest volume/cost outpaces value.",
-      "steps": [
-        "process"
-      ],
-      "group": "Parse, Structure, and Sample"
-    },
-    {
-      "name": "Streaming alert rules",
-      "what": "Evaluate alert conditions on the ingest stream, not by polling the index.",
-      "whenToUse": "Low-latency alerting on log patterns.",
-      "steps": [
-        "alert"
-      ],
-      "group": "Streaming Alerts"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1027,7 +971,14 @@
           "instead": "Buffer ingestion durably, index recent logs in time buckets, and tier/expire old data by retention policy."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One shared store vs. workload separation",
+          "description": "Writing every log line synchronously into one store and grepping it on demand is the simplest possible platform, but synchronous writes cannot absorb a ~10 TB/day firehose without stalling the applications doing the logging, full scans get unusably slow as data grows, and nothing ages data out.",
+          "chosen": "The design uses the naive baseline to name the three problems — ingestion throughput, search speed, unbounded growth — that the buffer, index, and tiering each exist to solve."
+        }
+      ]
     },
     {
       "id": "ingest",
@@ -1069,6 +1020,14 @@
           "whyItMatters": "Decouples ingest throughput from indexer speed and prevents log loss on consumer lag.",
           "example": "Kafka topic partitioned by service; indexers consume at their own pace.",
           "group": "Durable High-Throughput Ingestion"
+        },
+        {
+          "term": "Durable ingest buffer (Kafka)",
+          "description": "Accept logs into a durable partitioned stream that decouples producers from indexers.",
+          "whyItMatters": "High-throughput ingestion where consumers vary in speed.",
+          "steps": [
+            "ingest"
+          ]
         }
       ],
       "probeLinks": [
@@ -1078,9 +1037,6 @@
         "fluent-bit-backpressure",
         "vector-reference-architectures",
         "twitter-unified-logging"
-      ],
-      "patterns": [
-        "Durable ingest buffer (Kafka)"
       ],
       "whyNow": [
         "The buffer is the backbone: it's what makes ingestion durable and decoupled, the precondition for everything downstream."
@@ -1175,7 +1131,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg",
+      "tradeoffs": [
+        {
+          "name": "Inline indexing vs. buffered decoupling",
+          "description": "Indexing inline would make logs searchable the instant they arrive, but couples every producer to the indexer's health — a slow or down indexer would drop logs or stall applications. A durable partitioned buffer absorbs the firehose and lets consumers catch up later, at the cost of another system and some indexing lag.",
+          "chosen": "The design puts a Kafka-style durable buffer between collection and indexing, trading a little freshness for never losing logs when the indexer struggles."
+        },
+        {
+          "name": "Reject at the edge vs. lose after the ack",
+          "description": "The ack is the durability contract: everything the collector must guarantee — auth, quota checks, PII redaction — happens before it, and anything dropped there (a 429) is an explicit, visible refusal. Doing that work later would be cheaper per batch but would mean redacting after storage and losing data the platform already promised to keep.",
+          "chosen": "The design makes the collector do auth, quota, and edge redaction before acknowledging a batch, so no accepted log is ever silently lost or stored unredacted."
+        }
+      ]
     },
     {
       "id": "process",
@@ -1336,6 +1304,14 @@
           "whyItMatters": "Keeps cost proportional to value when volume is unbounded.",
           "example": "Keep all errors; sample 1% of debug; quota a noisy service.",
           "group": "Parse, Structure, and Sample"
+        },
+        {
+          "term": "Parse & structure pipeline",
+          "description": "Turn raw lines into structured events (fields, levels) for indexing and querying.",
+          "whyItMatters": "Mixed free-text and structured search.",
+          "steps": [
+            "process"
+          ]
         }
       ],
       "probeLinks": [
@@ -1346,10 +1322,6 @@
         "loki-labels",
         "twitter-unified-logging"
       ],
-      "patterns": [
-        "Parse & structure pipeline",
-        "Sampling / quotas"
-      ],
       "whyNow": [
         "Structuring enables real search and alerting; sampling is the cost lever, which is the headline tradeoff for logging at scale."
       ],
@@ -1357,7 +1329,19 @@
         "before": "Raw lines.",
         "after": "Structured events: all accepted raw archived, hot index sampled (with sample weights for aggregations), schema-versioned.",
         "newRisk": "Searching all events directly is too slow — recent data needs an index."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Outcome-aware sampling vs. stateless sampling",
+          "description": "Head-based sampling decides from each log alone — stateless, cheap, trivially scalable — but cannot know a debug line belongs to a request that later errored, so it drops exactly the context you want; tail-based sampling buffers a request's logs until the outcome is known, keeping full context around errors and slow requests at the cost of processor state, latency, and non-trivial trace grouping.",
+          "chosen": "The design uses tail-based sampling because the whole point of cutting debug volume is keeping the debug lines that surround failures."
+        },
+        {
+          "name": "Index cost vs. searchability of everything",
+          "description": "The hot inverted index is the expensive resource, and most healthy debug logs are never read; sampling them out of the index cuts the dominant cost, while the raw stream stays archived in cheap storage — so nothing is destroyed, but un-indexed logs are only reachable by slow re-processing.",
+          "chosen": "The design indexes selectively and archives everything raw, distinguishing the one destructive drop (before the collector's ack) from cost-control decisions made after durability."
+        }
+      ]
     },
     {
       "id": "index",
@@ -1478,6 +1462,14 @@
           "whyItMatters": "Queries prune by time then search terms; old segments retire without rebuilds.",
           "example": "Search only the 13:00 and 14:00 buckets for a 13:30-14:30 query.",
           "group": "Time-Bucketed Indexing for Search"
+        },
+        {
+          "term": "Time-bucketed indexing",
+          "description": "Build immutable index segments per time window so search prunes by time and old segments age out.",
+          "whyItMatters": "Append-only, time-ordered data dominated by recent queries.",
+          "steps": [
+            "index"
+          ]
         }
       ],
       "probeLinks": [
@@ -1488,9 +1480,6 @@
         "loki-labels",
         "clickhouse-observability-logs"
       ],
-      "patterns": [
-        "Time-bucketed indexing"
-      ],
       "whyNow": [
         "Time-bucketed indexing is the core search mechanism and the natural unit for tiering — the structural decision the rest builds on."
       ],
@@ -1498,7 +1487,19 @@
         "before": "Unsearchable structured events.",
         "after": "Fast time-pruned search over recent logs.",
         "newRisk": "Indexing and keeping everything hot is expensive — most data is old and rarely read."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Free-text search vs. storage economy",
+          "description": "An inverted index makes 'this exact error string in service X' fast and flexible, but is storage-heavy (often larger than the raw logs), write-amplifying, and CPU-hungry enough to fall behind during a surge; a columnar store on object storage is far cheaper and great for aggregations, but scans columns for free-text lookups.",
+          "chosen": "The design builds time-bucketed inverted indexes because ad-hoc keyword search over recent logs is the platform's core interactive query."
+        },
+        {
+          "name": "Tenant sharding vs. segment sprawl",
+          "description": "Sharding each time bucket by tenant/service keeps a noisy tenant from bloating everyone's index and lets queries scope to one tenant, but multiplies the number of segments to track; targeting ~30-50 GB sealed segments keeps each one small enough to rebuild and rebalance without becoming a management burden.",
+          "chosen": "The design shards segments per (tenant-shard, hourly bucket) and sizes them so ~70 TB of hot data stays about 1,400 manageable segments."
+        }
+      ]
     },
     {
       "id": "tiering",
@@ -1631,9 +1632,6 @@
         "athena-docs",
         "parquet-docs"
       ],
-      "patterns": [
-        "Hot/cold tiering"
-      ],
       "whyNow": [
         "Tiering is the defining cost/searchability tradeoff of a logging platform; routing queries by age is the concrete mechanism."
       ],
@@ -1744,6 +1742,18 @@
             "HotIndex",
             "ColdStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Query speed vs. retention cost",
+          "description": "Indexing the full year would make every query fast and routing trivial, but indexing a year of TB/day logs is prohibitively expensive for data almost never read; a ~7-day hot index plus compressed columnar files in object storage makes 1-year retention affordable, while last-month queries become slow cold reads.",
+          "chosen": "The design keeps a short hot window and ages everything else to object storage with a lifecycle worker, matching spend to the heavy recency skew of reads."
+        },
+        {
+          "name": "Interactive queries vs. bounded scan cost",
+          "description": "Letting historical queries run synchronously against cold storage would feel seamless but invites unbounded, expensive scans; forcing them into async query_jobs with required time/service filters and a scanned-bytes cost cap keeps cold reads predictable and affordable at the price of a non-interactive experience.",
+          "chosen": "The design runs cold-range queries as capped asynchronous jobs, accepting wait time on rare historical digs to keep their cost bounded."
         }
       ]
     },
@@ -1858,9 +1868,6 @@
         }
       ],
       "decisionPrompt": "You need to alert within seconds of an error spike. Do you query the index on a timer?",
-      "patterns": [
-        "Streaming alert rules"
-      ],
       "probeLinks": [
         "flink-windows",
         "flink-cep",
@@ -1879,6 +1886,14 @@
           "whyItMatters": "Near-real-time detection without hammering the search index.",
           "example": "Windowed count of level:error per service > threshold -> alert.",
           "group": "Streaming Alerts"
+        },
+        {
+          "term": "Streaming alert rules",
+          "description": "Evaluate alert conditions on the ingest stream, not by polling the index.",
+          "whyItMatters": "Low-latency alerting on log patterns.",
+          "steps": [
+            "alert"
+          ]
         }
       ],
       "recap": {
@@ -1969,6 +1984,18 @@
           "highlight": [
             "AlertSvc"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Detection latency vs. rule expressiveness",
+          "description": "Evaluating rules on the live ingest stream fires within seconds of a spike, but rules must be expressible as streaming windowed aggregations and their state must survive restarts; scheduled queries against the index make anything searchable alertable with no new engine, but detection lags by the timer interval plus indexing lag.",
+          "chosen": "The design evaluates alerts on the stream because seconds-level detection is the requirement, and keeps windowed alert state durable so a crash cannot miss a firing."
+        },
+        {
+          "name": "Reusing the index vs. independence from its lag",
+          "description": "Polling the index reuses the search path you already have, but the index is exactly the component that falls behind during a log surge — so the alert that matters most would fire latest; consuming the buffer directly costs a separate evaluation path but keeps alerting current when the indexer is not.",
+          "chosen": "The design makes alerting just another consumer of the durable buffer, decoupling incident detection from indexing health."
         }
       ]
     },
@@ -2084,7 +2111,19 @@
           "mitigation": "Separate notification worker with retry/backoff + escalation; alert_events persist delivery_status as evidence; per-tenant notification rate caps prevent storm amplification."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-reliability.jpg",
+      "tradeoffs": [
+        {
+          "name": "Absorbing bursts vs. shedding at the edge",
+          "description": "The durable buffer lets indexers fall hours behind during a surge and catch up without losing acknowledged data, but a truly overwhelmed platform must eventually refuse input; returning 429 and sampling at the collector before the ack drops low-value logs visibly at the edge, which is fundamentally different from losing logs already accepted.",
+          "chosen": "The design buffers first and sheds pre-ack only as the last resort, preserving the rule that an acknowledged log is never lost."
+        },
+        {
+          "name": "Tenant fairness vs. burst headroom",
+          "description": "Per-tenant quotas stop one noisy service from starving everyone else's ingestion and index capacity, but they also cap a well-behaved tenant's legitimate incident-time burst — the moment they most need their logs kept.",
+          "chosen": "The design enforces per-tenant quotas at the collector because platform-wide fairness and predictability outweigh unlimited burst for any single tenant."
+        }
+      ]
     }
   ],
   "finalDesign": {

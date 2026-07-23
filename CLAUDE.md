@@ -208,13 +208,13 @@ The explorer (`interview.js`). One IIFE. Top to bottom:
    `renderOptionTabs`, `renderProsCons`, `renderStepExtras`. The diagram
    highlight pipeline is described below.
 9. **Intro renderers** — `renderIntroRequirements`, `renderIntroCapacity`,
-   `renderIntroApi`, `renderIntroDataModel`, `renderIntroPatterns`,
-   `renderIntroPatternCatalog`,
+   `renderIntroApi`, `renderIntroDataModel`, `renderIntroTradeoffs`,
+   `renderIntroConcepts`, `renderIntroPatternCatalog`,
    `renderIntroApiFlows`, `renderIntroSatisfies`, `renderIntroInterviewScript`,
    `renderIntroLevelVariants`, `renderIntroFollowUps`,
    `renderIntroStepsOverview` (the decision-tree map). Each returns a DOM node;
    `renderIntroEntry()` dispatches by slug. (`renderTraps` and
-   `renderStepPatternTags` are per-step, appended in `renderStepExtras`.)
+   `renderStepTradeoffs` are per-step, appended in `renderStepExtras`.)
 10. **`renderCurrentEntry()`** — top-level rendering. Shows/hides
     `#diagram-block` vs `#intro-block` based on `entry.kind`.
 11. **Navigation** — `selectEntry`, `selectOption`, `updateHash`, `parseHash`.
@@ -478,10 +478,16 @@ parent must reference an existing step id; unknown parents are ignored.
 Optional fields exist for the `book` group's pedagogy (all degrade to nothing
 when absent, so the `examples` datasets are unaffected):
 
-- `patterns` (dataset) → Overview "Patterns" entry. Each `{ name, what,
-  whenToUse?, steps? }`; `steps` cross-links to the steps that use it.
-- `step.patterns` → per-step pattern-tag chips (string names, ideally matching
-  a dataset-level pattern name).
+- `step.tradeoffs` → per-step "Trade-offs" cards **and** a derived Overview
+  "Trade-offs" entry (deduped across steps via `collectDatasetTradeoffs`, same
+  mechanics as Concepts: grouped by `group` or the step's title, with step
+  chips). Each `{ name, description, chosen?, icon?, group? }` — `name` is a
+  short tension label ("Latency vs. freshness"), `description` explains the
+  tension, `chosen` states what this design picks and why. The shared fallback
+  icon is `icons/decision-point.png`. **The old `patterns` (dataset) and
+  `step.patterns` fields were removed and are rejected by `validateDataset`** —
+  pattern vocabulary now lives in `step.concepts`, pattern decisions in
+  `step.tradeoffs` (the `patternCatalog` reference dataset is unaffected).
 - `step.traps` → per-step "Common traps" section. Each `{ trap, why?, instead? }`.
 - `technologyChoices` (dataset) → Wrap-up "Technology Choices" entry (between
   Design vs. Requirements and API Flows). Each is one architecture concern:
@@ -519,8 +525,8 @@ when absent, so the `examples` datasets are unaffected):
   pairsWith?, commonlyConfusedWith?, usedBy? }`. **A dataset with
   `patternCatalog` and no `steps` is valid** (a catalog, not a walkthrough) —
   `validateDataset` requires `steps[]` *or* `patternCatalog[]`. The catalog name
-  is the **canonical vocabulary**: `aliases[]` lists case-study `step.patterns[]`
-  synonyms that map to it (rendered as "Also called" chips), and `pairsWith[]` /
+  is the **canonical vocabulary**: `aliases[]` lists case-study synonyms
+  that map to it (rendered as "Also called" chips), and `pairsWith[]` /
   `commonlyConfusedWith[]` are other catalog names rendered as relationship chips
   ("Pairs with" / "Confused with") — keep those references pointing at real
   catalog `name`s. `usedBy[]` entries are either a free-text case name (string)
@@ -566,7 +572,7 @@ when absent, so the `examples` datasets are unaffected):
 `data/book/payment-system` is the reference dataset using the per-step/wrap-up
 fields; `data/book/notification-system` is a second full case;
 `data/book/patterns` is the catalog dataset (no steps, `patternCatalog` only).
-`url-shortener` carries a smaller sample (`patterns`, `interviewScript`,
+`url-shortener` carries a smaller sample (`interviewScript`,
 `levelVariants`, and `traps` on the cache step).
 
 The `book` group's categories live in `data/book/index.json`: Reference (the

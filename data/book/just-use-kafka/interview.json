@@ -1396,65 +1396,6 @@
       "makesIrrelevant": "Managed metrics, tracing, logs, and dashboards reduce custom lag collectors and broker-health pages, but not the Kafka-specific SLO definitions."
     }
   ],
-  "patterns": [
-    {
-      "name": "Decoupled log (pub/sub over a commit log)",
-      "what": "Producers append to a durable log; consumers read independently at their own offsets.",
-      "whenToUse": "Whenever many producers and many consumers must be decoupled in time and identity.",
-      "steps": [
-        "ingest"
-      ]
-    },
-    {
-      "name": "Consumer groups (competing consumers)",
-      "what": "Partitions are balanced across a group so members share the load and scale horizontally.",
-      "whenToUse": "Event-driven microservices that need parallel, ordered-per-key processing.",
-      "steps": [
-        "pubsub"
-      ]
-    },
-    {
-      "name": "Stream processing",
-      "what": "Stateful windowed joins/aggregations over topics, results written back as topics.",
-      "whenToUse": "Real-time analytics, enrichment, and materialized views.",
-      "steps": [
-        "stream"
-      ]
-    },
-    {
-      "name": "CDC and event sourcing",
-      "what": "CDC captures committed DB changes (DB stays authoritative) into replayable topics; event sourcing makes domain events the authoritative write model.",
-      "whenToUse": "Replayable history, cross-system replication, and rebuildable read models — with the DB or the event log as the source of truth respectively.",
-      "steps": [
-        "cdc"
-      ]
-    },
-    {
-      "name": "Exactly-once (idempotence + transactions)",
-      "what": "Idempotent producer plus transactional read-process-write for exactly-once processing effects within Kafka.",
-      "whenToUse": "Financial or dedup-sensitive Kafka-to-Kafka pipelines that can't tolerate duplicates.",
-      "steps": [
-        "semantics"
-      ]
-    },
-    {
-      "name": "Retry, DLQ & poison-message handling",
-      "what": "Immediate retry for transient errors, delayed retry topics for backoff, and a DLQ/quarantine for terminal failures — with replay after fix.",
-      "whenToUse": "Any consumer group or stream processor where a bad record must not block a partition.",
-      "steps": [
-        "pubsub",
-        "semantics"
-      ]
-    },
-    {
-      "name": "Platform control plane (governance)",
-      "what": "Topic ownership/naming/retention classes, ACLs and quotas, per-topic schema compatibility policy, connector approval, and audit — the controls a shared log needs.",
-      "whenToUse": "A company-wide multi-tenant Kafka estate with many producers and consumers.",
-      "steps": [
-        "scale-ops"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1501,7 +1442,14 @@
           "instead": "Publish events once to a durable log and let consumers subscribe independently."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Direct calls vs. integration sprawl",
+          "description": "Synchronous point-to-point calls are the simplest way to move data between a handful of services, but every new consumer adds an integration to every producer, growing an N x M web where producers block on slow consumers, downstream outages cascade upstream, and there is no replay for a consumer that was down.",
+          "chosen": "The design treats point-to-point only as a baseline that exposes the coupling problem, and replaces it with a single decoupling layer where producers append events to a log once and consumers read independently."
+        }
+      ]
     },
     {
       "id": "ingest",
@@ -1559,10 +1507,15 @@
           "definition": "A versioned store of event schemas with compatibility rules.",
           "whyItMatters": "Producers can evolve events without breaking existing consumers.",
           "example": "Add an optional field; old consumers keep working (backward compatible)."
+        },
+        {
+          "term": "Decoupled log (pub/sub over a commit log)",
+          "description": "Producers append to a durable log; consumers read independently at their own offsets.",
+          "whyItMatters": "Whenever many producers and many consumers must be decoupled in time and identity.",
+          "steps": [
+            "ingest"
+          ]
         }
-      ],
-      "patterns": [
-        "Decoupled log (pub/sub over a commit log)"
       ],
       "probeLinks": [
         "kafka-paper",
@@ -1646,7 +1599,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-ingest.jpg",
+      "tradeoffs": [
+        {
+          "name": "Producer throughput vs. durability",
+          "description": "Waiting for a durable, replicated append (acks=all) costs more per send than fire-and-forget, but it is what guarantees an event survives broker failure; batching, compression, and the idempotent producer claw the throughput back without creating duplicate appends.",
+          "chosen": "The design pays for durable acknowledged appends and recovers throughput with batching and idempotent retries, because the log is only useful as a system backbone if nothing published to it can be lost."
+        },
+        {
+          "name": "Consumer independence vs. immediate processing",
+          "description": "Publishing to a durable log means no consumer processes an event at the instant it happens — each reads at its own pace from its own offset. In exchange, a consumer that was offline for an hour rewinds to its last offset and recovers with zero data loss, something synchronous delivery cannot offer.",
+          "chosen": "The design accepts consumer-side lag as normal in order to get replay and independent pacing, since the producer's send() no longer waits on any consumer at all."
+        }
+      ]
     },
     {
       "id": "pubsub",
@@ -1760,10 +1725,24 @@
           "definition": "Multiple groups each independently read the full topic.",
           "whyItMatters": "New consumers add zero load or change to producers.",
           "example": "fulfillment, email, fraud groups all read orders."
+        },
+        {
+          "term": "Consumer groups (competing consumers)",
+          "description": "Partitions are balanced across a group so members share the load and scale horizontally.",
+          "whyItMatters": "Event-driven microservices that need parallel, ordered-per-key processing.",
+          "steps": [
+            "pubsub"
+          ]
+        },
+        {
+          "term": "Retry, DLQ & poison-message handling",
+          "description": "Immediate retry for transient errors, delayed retry topics for backoff, and a DLQ/quarantine for terminal failures — with replay after fix.",
+          "whyItMatters": "Any consumer group or stream processor where a bad record must not block a partition.",
+          "steps": [
+            "pubsub",
+            "semantics"
+          ]
         }
-      ],
-      "patterns": [
-        "Consumer groups (competing consumers)"
       ],
       "probeLinks": [
         "apache-just-use-kafka",
@@ -1840,6 +1819,18 @@
             "Consumers"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Choreography vs. orchestration",
+          "description": "Consumer groups let each downstream concern (fulfillment, email, fraud, analytics) react independently — adding a reaction touches no producer — but the resulting workflow is choreographed and harder to trace end-to-end. A central orchestrator gives explicit, visible sequencing at the cost of reintroducing synchronous coupling, cascading failures, and a single bottleneck.",
+          "chosen": "The design chooses choreography via consumer groups, accepting weaker end-to-end traceability so that adding or failing one downstream never affects the producer or the other consumers."
+        },
+        {
+          "name": "Parallelism vs. ordering",
+          "description": "Within a consumer group, partitions are balanced across members, so a group scales horizontally only up to the partition count — and that cap is the price of keeping each partition's records strictly ordered per key.",
+          "chosen": "The design keeps per-key ordering by accepting the partition-count cap on group parallelism, sizing partitions for the needed throughput rather than abandoning ordered delivery."
+        }
       ]
     },
     {
@@ -1896,10 +1887,15 @@
           "definition": "Window on the record's own timestamp; a watermark bounds how long to wait for late/out-of-order events.",
           "whyItMatters": "Processing-time windows give wrong results when events arrive late; event time makes them correct and reproducible.",
           "example": "1-min event-time window emits once the watermark passes window-end + grace."
+        },
+        {
+          "term": "Stream processing",
+          "description": "Stateful windowed joins/aggregations over topics, results written back as topics.",
+          "whyItMatters": "Real-time analytics, enrichment, and materialized views.",
+          "steps": [
+            "stream"
+          ]
         }
-      ],
-      "patterns": [
-        "Stream processing"
       ],
       "probeLinks": [
         "kafka-streams-architecture",
@@ -1978,7 +1974,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-stream.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-stream.jpg",
+      "tradeoffs": [
+        {
+          "name": "Local state vs. recovery cost",
+          "description": "A stream processor keeps aggregation state (running counts, windows) locally for speed, which means a crashed task has lost its memory; backing that state with a changelog topic makes it recoverable, at the cost of writing every state change to Kafka and replaying the changelog on restart.",
+          "chosen": "The design keeps state local for fast per-event updates and pays the changelog write and replay cost, because rebuilding from the changelog makes the processor fault-tolerant without an external state store."
+        },
+        {
+          "name": "Emitting early vs. waiting for late events",
+          "description": "Events arrive late and out of order, so a windowed aggregation must choose between emitting results promptly (and being wrong when stragglers arrive) and holding windows open longer (delaying results for everyone).",
+          "chosen": "The design uses explicit windowing semantics to bound how long a window waits, trading a small amount of completeness on late data for timely aggregate results."
+        }
+      ]
     },
     {
       "id": "cdc",
@@ -2140,10 +2148,15 @@
           "definition": "Persist state as an ordered event log; current state is a fold over it.",
           "whyItMatters": "Full audit history and rebuildable read models.",
           "example": "Account balance = replay of Deposited/Withdrawn events."
+        },
+        {
+          "term": "CDC and event sourcing",
+          "description": "CDC captures committed DB changes (DB stays authoritative) into replayable topics; event sourcing makes domain events the authoritative write model.",
+          "whyItMatters": "Replayable history, cross-system replication, and rebuildable read models — with the DB or the event log as the source of truth respectively.",
+          "steps": [
+            "cdc"
+          ]
         }
-      ],
-      "patterns": [
-        "CDC and event sourcing"
       ],
       "probeLinks": [
         "debezium-architecture",
@@ -2230,6 +2243,18 @@
             "Connect"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Correctness vs. infrastructure",
+          "description": "Application dual-write needs no extra infrastructure but has no single commit point — the DB write and the event publish can diverge on failure. CDC via a Debezium-style connector makes the DB log the single commit point and captures every change in order, at the price of operating connector and log-decoding infrastructure coupled to the source DB's log format.",
+          "chosen": "The design chooses connector-based CDC, accepting the extra pipeline to operate because eliminating the dual-write race is what makes the change stream trustworthy enough to rebuild indexes, caches, and warehouses from."
+        },
+        {
+          "name": "Event shape control vs. pipeline simplicity",
+          "description": "Raw row-level CDC emits whatever the table schema looks like, so schema and DDL changes ripple into consumers; a transactional outbox lets the application author intentional event shapes in the same DB transaction, but adds an outbox table plus a relay to operate and clean up at volume.",
+          "chosen": "The design defaults to raw CDC for liberating existing data with zero application change, keeping the outbox as the variant to reach for when consumers need app-defined event contracts rather than row images."
+        }
       ]
     },
     {
@@ -2299,11 +2324,15 @@
           "definition": "Commit only after the effect is durable; committing before shifts to loss risk, after to duplicate risk.",
           "whyItMatters": "The commit point must be coordinated with the side effect (and DLQ handoff) to control correctness.",
           "example": "Commit after the DB upsert (or DLQ write) succeeds — never before."
+        },
+        {
+          "term": "Exactly-once (idempotence + transactions)",
+          "description": "Idempotent producer plus transactional read-process-write for exactly-once processing effects within Kafka.",
+          "whyItMatters": "Financial or dedup-sensitive Kafka-to-Kafka pipelines that can't tolerate duplicates.",
+          "steps": [
+            "semantics"
+          ]
         }
-      ],
-      "patterns": [
-        "Exactly-once (idempotence + transactions)",
-        "Retry, DLQ & poison-message handling"
       ],
       "probeLinks": [
         "kafka-eos",
@@ -2388,7 +2417,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/06-semantics.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/06-semantics.jpg",
+      "tradeoffs": [
+        {
+          "name": "Speed vs. delivery guarantees",
+          "description": "At-most-once (commit the offset before processing) is fastest but can silently lose records; at-least-once (process, then commit) never loses but duplicates on retry; exactly-once processing adds transactional overhead to make committed outputs and input offsets atomic.",
+          "chosen": "The design escalates to exactly-once semantics for Kafka-to-Kafka pipelines because the log is now load-bearing, accepting the transaction overhead so the observable effect of reprocessing is invisible."
+        },
+        {
+          "name": "Transactional scope vs. external side effects",
+          "description": "Kafka's transactions can make topic-to-topic processing atomic, but they cannot cover an external side effect like charging a card — the outside world does not participate in the transaction, so a retry can repeat the effect.",
+          "chosen": "The design confines exactly-once claims to the Kafka-to-Kafka scope and requires external effects to be made idempotent by the consumer, rather than pretending the broker can protect actions it does not own."
+        }
+      ]
     },
     {
       "id": "scale-ops",
@@ -2484,10 +2525,15 @@
           "definition": "Cluster linking or MirrorMaker copy topics across regions; active-active is hard.",
           "whyItMatters": "No transparent exactly-once global failover — plan RPO/RTO and expect duplicates after failover.",
           "example": "MirrorMaker to a standby region; rehearse failover and tiered-storage restore."
+        },
+        {
+          "term": "Platform control plane (governance)",
+          "description": "Topic ownership/naming/retention classes, ACLs and quotas, per-topic schema compatibility policy, connector approval, and audit — the controls a shared log needs.",
+          "whyItMatters": "A company-wide multi-tenant Kafka estate with many producers and consumers.",
+          "steps": [
+            "scale-ops"
+          ]
         }
-      ],
-      "patterns": [
-        "Platform control plane (governance)"
       ],
       "probeLinks": [
         "apache-kafka-design",
@@ -2525,7 +2571,24 @@
           "instead": "Use RPC for synchronous command/query paths, a DB or object store for mutable queryable state, a simple task queue when replay and independent consumer groups aren't needed, and Redis/lightweight pub-sub for low-durability ephemeral notifications. Reach for Kafka when you genuinely need durable, replayable, fan-out event flow."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-ops.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-ops.jpg",
+      "tradeoffs": [
+        {
+          "name": "Partition count vs. rebalance overhead",
+          "description": "More partitions buy more producer and consumer parallelism, but each partition adds metadata and rebalance cost, and repartitioning a keyed topic later reshuffles per-key ordering — so undersizing hurts throughput while oversizing hurts operations.",
+          "chosen": "The design sizes partitions deliberately up front with headroom for the target consumer parallelism, because growing a keyed topic after the fact breaks the ordering guarantees consumers depend on."
+        },
+        {
+          "name": "Retention depth vs. storage cost",
+          "description": "Keeping data longer makes the log a replayable history that new consumers and rebuilds can draw on, but retained bytes on broker disks cost money and slow recovery; short retention is cheap but forfeits replay.",
+          "chosen": "The design keeps generous retention (offloading older segments to cheaper storage where available) because replayability is the property that lets downstream systems be rebuilt from the log."
+        },
+        {
+          "name": "Write acknowledgement vs. broker fault tolerance",
+          "description": "Producing with acks=all plus min.insync.replicas=2 means every write waits for multiple brokers, adding latency per append; the reward is that a single broker loss is invisible and no acknowledged write can disappear in a failover.",
+          "chosen": "The design accepts the replication round trip on every write because a company-wide backbone cannot renege on acknowledged events when one broker dies."
+        }
+      ]
     }
   ],
   "finalDesign": {

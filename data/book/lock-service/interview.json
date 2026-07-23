@@ -1655,62 +1655,6 @@
       "makesIrrelevant": "A managed metrics, tracing, and audit stack removes much of the custom log pipeline and dashboard hosting, but not the need to choose low-cardinality labels carefully."
     }
   ],
-  "patterns": [
-    {
-      "name": "Consensus-replicated state",
-      "what": "Replicate lock operations via Raft/Paxos so a quorum agrees; survive node loss without divergence.",
-      "whenToUse": "Lock/config state that must be durable, consistent, and highly available.",
-      "steps": [
-        "consensus"
-      ],
-      "group": "Consensus-Backed Lock State"
-    },
-    {
-      "name": "Lease with TTL",
-      "what": "Grant a lock for a bounded time; the holder renews, or it auto-expires.",
-      "whenToUse": "Avoiding permanent deadlock when a holder dies.",
-      "steps": [
-        "lease"
-      ],
-      "group": "Leases with TTL (No Permanent Deadlock)"
-    },
-    {
-      "name": "Fencing token",
-      "what": "Issue a monotonically increasing token with each grant; resources reject stale tokens.",
-      "whenToUse": "Defeating the lock's fundamental gap (a paused holder acting after expiry).",
-      "steps": [
-        "fencing"
-      ],
-      "group": "Fencing Tokens (The Fundamental Gap)"
-    },
-    {
-      "name": "Leader election (lock as primitive)",
-      "what": "Holding a well-known lock = being the leader; lease loss = stepping down.",
-      "whenToUse": "Single-active-instance coordination.",
-      "steps": [
-        "election"
-      ],
-      "group": "Leader Election as a Lock"
-    },
-    {
-      "name": "Lease sweeping / failure detection",
-      "what": "Expire leases whose holder stopped renewing within the TTL + grace.",
-      "whenToUse": "Detecting dead holders and reclaiming locks.",
-      "steps": [
-        "lease"
-      ],
-      "group": "Leases with TTL (No Permanent Deadlock)"
-    },
-    {
-      "name": "Linearizable (CP) operations",
-      "what": "Lock grants go through the leader/quorum so there's a single, total order.",
-      "whenToUse": "When two holders would be catastrophic (choose CP over availability).",
-      "steps": [
-        "consensus"
-      ],
-      "group": "Consensus-Backed Lock State"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1759,7 +1703,14 @@
           "instead": "Bound the grant with a lease that auto-expires, back the state with consensus, and hand out fencing tokens."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Happy-path correctness vs. failure-mode safety",
+          "description": "A conditional write on a single lock row genuinely gives mutual exclusion while everything is healthy, but a dead holder leaves the row set forever (permanent deadlock), and making the single database highly available with async-replicated failover lets a promoted replica forget the latest lock and grant it twice.",
+          "chosen": "The design treats the single-row lock as a baseline that fails both hard requirements — liveness on holder death and safety across failover — motivating consensus, leases, and fencing."
+        }
+      ]
     },
     {
       "id": "consensus",
@@ -1948,6 +1899,22 @@
           "whyItMatters": "Guarantees a single, consistent view of who holds a lock even through node failures.",
           "example": "Acquire is committed only after a quorum replicates it.",
           "group": "Consensus-Backed Lock State"
+        },
+        {
+          "term": "Consensus-replicated state",
+          "description": "Replicate lock operations via Raft/Paxos so a quorum agrees; survive node loss without divergence.",
+          "whyItMatters": "Lock/config state that must be durable, consistent, and highly available.",
+          "steps": [
+            "consensus"
+          ]
+        },
+        {
+          "term": "Linearizable (CP) operations",
+          "description": "Lock grants go through the leader/quorum so there's a single, total order.",
+          "whyItMatters": "When two holders would be catastrophic (choose CP over availability).",
+          "steps": [
+            "consensus"
+          ]
         }
       ],
       "probeLinks": [
@@ -1957,10 +1924,6 @@
         "zookeeper-paper",
         "etcd-api-guarantees",
         "linearizability-paper"
-      ],
-      "patterns": [
-        "Consensus-replicated state",
-        "Linearizable (CP) operations"
       ],
       "whyNow": [
         "Consensus is the foundation — mutual exclusion demands a single agreed source of truth; everything else (leases, fencing) sits on top."
@@ -1975,6 +1938,18 @@
           "trap": "Storing lock state in a single (or async-replicated) database.",
           "why": "A failover/partition can produce two nodes that each grant the lock -> two holders.",
           "instead": "Consensus-replicated, linearizable lock state (CP)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Acquire latency vs. failover safety",
+          "description": "A single fast store answers SET NX in one hop, but on failover a replica may lack the latest lock and grant a duplicate; committing every acquire, renew, release, and expire through a quorum-replicated log adds a replication round trip and caps throughput at the leader, in exchange for lock state that survives failover with one linearizable order.",
+          "chosen": "The design pays the quorum round trip on every lock operation because for a service whose only job is mutual exclusion, a split-brain grant is worse than slower acquires."
+        },
+        {
+          "name": "Timing assumptions vs. proven ordering",
+          "description": "Redlock avoids running a consensus cluster by taking SET NX on a majority of independent stores, but its safety rests on bounded clock drift and timing that GC pauses and network delays can violate; a shared consensus log needs more machinery but derives ownership from committed entries, not clocks.",
+          "chosen": "The design rejects timing-based majority schemes in favor of a consensus log, so correctness never depends on well-behaved clocks."
         }
       ]
     },
@@ -2110,6 +2085,22 @@
           "whyItMatters": "Provides liveness — a dead holder's lock is reclaimed without manual intervention.",
           "example": "15s lease; renew every 5s; miss renewals -> expire and free.",
           "group": "Leases with TTL (No Permanent Deadlock)"
+        },
+        {
+          "term": "Lease with TTL",
+          "description": "Grant a lock for a bounded time; the holder renews, or it auto-expires.",
+          "whyItMatters": "Avoiding permanent deadlock when a holder dies.",
+          "steps": [
+            "lease"
+          ]
+        },
+        {
+          "term": "Lease sweeping / failure detection",
+          "description": "Expire leases whose holder stopped renewing within the TTL + grace.",
+          "whyItMatters": "Detecting dead holders and reclaiming locks.",
+          "steps": [
+            "lease"
+          ]
         }
       ],
       "probeLinks": [
@@ -2121,10 +2112,6 @@
         "kubernetes-leaderelection",
         "redis-locks",
         "jepsen-etcd-locks"
-      ],
-      "patterns": [
-        "Lease with TTL",
-        "Lease sweeping / failure detection"
       ],
       "whyNow": [
         "Leases are the standard fix for the dead-holder deadlock; the TTL tradeoff is the practical decision."
@@ -2277,6 +2264,18 @@
             "Leader"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "False expiry vs. recovery delay",
+          "description": "The TTL is a dial with loss on both ends: too short and a slow-but-alive holder misses a renewal and loses a lock it still thinks it holds; too long and a genuinely crashed holder blocks the resource until the lease lapses. Renewing at about TTL/3 buys tolerance for a missed heartbeat or two.",
+          "chosen": "The design picks the TTL against p99 renew latency and clamps client-requested TTLs to a server-side band, so no client can choose a pathological value in either direction."
+        },
+        {
+          "name": "Fixed TTL vs. session liveness",
+          "description": "A TTL lease with heartbeats is explicit and simple — a sweeper reclaims anything past its TTL — but forces a tuning choice; ZooKeeper-style ephemeral sessions release the lock when the client's session dies with no TTL to tune, yet still hinge on a session timeout, require a persistent connection per client, and leave the same fencing gap under a long GC pause.",
+          "chosen": "The design grants TTL leases with heartbeat renewal, preferring an explicit, tunable expiry over subtler session-expiry semantics that dodge none of the fundamental hazards."
+        }
       ]
     },
     {
@@ -2327,9 +2326,6 @@
         "etcd-concurrency-api",
         "chubby-paper",
         "zookeeper-paper"
-      ],
-      "patterns": [
-        "Fencing token"
       ],
       "whyNow": [
         "Fencing tokens are THE senior insight of distributed locking — naming the pause/expiry gap and that the resource must check tokens is the differentiator."
@@ -2430,7 +2426,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-fencing.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-fencing.jpg",
+      "tradeoffs": [
+        {
+          "name": "Service-side guarantees vs. resource-side enforcement",
+          "description": "No lock service alone can stop a holder that pauses past its lease, wakes, and writes while a new holder is active — the service cannot reach into the resource. Fencing tokens close the gap by making every guarded write carry a monotonically increasing token the resource itself checks, which means every protected resource must participate in the contract.",
+          "chosen": "The design issues a fencing token with every grant and requires resources to reject lower tokens, accepting that safety becomes a three-party contract rather than a lock-service promise."
+        }
+      ]
     },
     {
       "id": "election",
@@ -2470,6 +2473,14 @@
           "whyItMatters": "A single, reusable primitive for single-active-instance coordination.",
           "example": "Scheduler acquires 'scheduler-leader'; ex-leader's lower epoch is fenced out.",
           "group": "Leader Election as a Lock"
+        },
+        {
+          "term": "Leader election (lock as primitive)",
+          "description": "Holding a well-known lock = being the leader; lease loss = stepping down.",
+          "whyItMatters": "Single-active-instance coordination.",
+          "steps": [
+            "election"
+          ]
         }
       ],
       "probeLinks": [
@@ -2481,10 +2492,6 @@
         "zookeeper-paper",
         "raft-paper"
       ],
-      "patterns": [
-        "Leader election (lock as primitive)",
-        "Fencing token"
-      ],
       "whyNow": [
         "Showing the lock is the building block for leader election connects it to the broader systems (job scheduler, etc.) and reuses fencing as the epoch."
       ],
@@ -2493,7 +2500,14 @@
         "after": "Locks as a leader-election primitive with fenced epochs.",
         "newRisk": "The lock service's own leader can fail or partition — it must recover safely."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/05-election.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/05-election.jpg",
+      "tradeoffs": [
+        {
+          "name": "Takeover speed vs. stale-leader risk",
+          "description": "Building leader election on the lock's lease means a crashed leader is replaced automatically once its lease expires — but the same expiry window that enables takeover lets a paused ex-leader briefly believe it still leads; the fencing token, used as the leader's epoch, is what lets downstream systems refuse the stale leader's actions.",
+          "chosen": "The design elects leaders by holding a well-known lock and treats the fencing token as the epoch, keeping the service's own Raft leadership as an internal detail clients never see."
+        }
+      ]
     },
     {
       "id": "availability",
@@ -2636,10 +2650,6 @@
         "etcd-api-guarantees",
         "jepsen-etcd-locks",
         "kubernetes-leaderelection"
-      ],
-      "patterns": [
-        "Consensus-replicated state",
-        "Linearizable (CP) operations"
       ],
       "whyNow": [
         "Partition/failure behavior is where lock correctness is truly tested; quorum + fencing + not trusting clocks is the staff-level answer."
@@ -2819,6 +2829,13 @@
             "Resource"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Consistency vs. availability under partition",
+          "description": "During a 2-vs-3 partition, letting both sides keep granting maximizes availability but permits two concurrent holders of the same lock — destroying the one guarantee a lock service exists for, with no way to reconcile conflicting grants after the heal; quorum-only granting keeps safety by construction while the minority side is fully unavailable.",
+          "chosen": "The design is strictly CP: only the majority side grants, the minority refuses or waits, because an unavailable lock service is recoverable and a split-brain one is not."
+        }
       ]
     },
     {
@@ -2988,7 +3005,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Single-group ordering vs. sharded throughput",
+          "description": "One Raft group gives a single totally ordered log for all keys but commits only ~10-20K ops/sec against a ~240K writes/sec demand; sharding the key space across ~16 independent consensus groups scales horizontally because locks on different keys never contend, at the cost of more clusters to operate and no total order across shards.",
+          "chosen": "The design shards keys across many small consensus groups, since mutual exclusion is per key and cross-key ordering is a guarantee nobody needs."
+        },
+        {
+          "name": "Heartbeat frequency vs. write load",
+          "description": "Renewals dominate the write budget — 1M active locks renewing every 5s is ~200K writes/sec, dwarfing acquires and releases — so renewing more often buys faster failure detection but multiplies committed writes and thus the number of shards needed.",
+          "chosen": "The design sizes the shard count off the renewal rate and keeps renew-to-TTL around 1:3, accepting seconds-scale failure detection to keep the write volume tractable."
+        }
+      ]
     }
   ],
   "finalDesign": {

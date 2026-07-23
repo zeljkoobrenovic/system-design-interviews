@@ -673,62 +673,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Static edge offload (CDN)",
-      "what": "Serve the sale page and read state from the CDN so the backend only sees buy attempts.",
-      "whenToUse": "When read traffic dwarfs the actual transactional work.",
-      "steps": [
-        "offload"
-      ],
-      "group": "Offload Reads to the Edge"
-    },
-    {
-      "name": "Admission control / load shedding",
-      "what": "Reject or queue most traffic at the edge so the core only handles a survivable rate.",
-      "whenToUse": "Demand far exceeds capacity and most requests can't succeed anyway.",
-      "steps": [
-        "admission"
-      ],
-      "group": "Admission Control at the Edge"
-    },
-    {
-      "name": "Virtual waiting room",
-      "what": "Hold users in a fair queue and admit a capped rate into the purchase path.",
-      "whenToUse": "Fairness + protecting the core under a massive simultaneous arrival.",
-      "steps": [
-        "waitroom"
-      ],
-      "group": "Fairness: Virtual Waiting Room"
-    },
-    {
-      "name": "Atomic counter reservation",
-      "what": "Decrement a single in-memory stock counter atomically; success means you hold a unit.",
-      "whenToUse": "Fast, oversell-proof allocation of limited stock under extreme concurrency.",
-      "steps": [
-        "reserve"
-      ],
-      "group": "Oversell-Proof Reservation"
-    },
-    {
-      "name": "Async order processing",
-      "what": "Confirm the reservation instantly, then create the durable order and charge off the hot path.",
-      "whenToUse": "Keep the contended path tiny; do durable/slow work behind a queue.",
-      "steps": [
-        "async"
-      ],
-      "group": "Async Order Creation and Payment"
-    },
-    {
-      "name": "Reconciliation + reaping",
-      "what": "Reconcile the fast counter to the durable ledger and release reservations that don't pay in time.",
-      "whenToUse": "Fast-counter designs that must stay consistent with durable truth.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Consistency, Reconciliation, and Degradation"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -785,7 +729,14 @@
           "instead": "Offload reads to the edge, admit a fair capped rate, and reserve with a single atomic decrement-if-positive counter."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Transactional simplicity vs. spike survival",
+          "description": "One buy endpoint decrementing a stock row in the database is exactly right for a normal store: single source of truth, one transaction per purchase. Under a flash sale, millions of users in one second crush the DB, separate read-check-decrement steps let concurrent buyers oversell, and even a guarded single-row UPDATE collapses into a row-lock hotspot.",
+          "chosen": "The design keeps this as the baseline that proves the point: the straightforward transactional path cannot absorb demand 100-1000x over stock, motivating everything that follows."
+        }
+      ]
     },
     {
       "id": "offload",
@@ -821,10 +772,15 @@
           "whyItMatters": "Absorbs the bulk of the spike before it reaches any backend.",
           "example": "Sold-out flag cached at the edge with a 1s TTL; the page polls the CDN, not the DB.",
           "group": "Offload Reads to the Edge"
+        },
+        {
+          "term": "Static edge offload (CDN)",
+          "description": "Serve the sale page and read state from the CDN so the backend only sees buy attempts.",
+          "whyItMatters": "When read traffic dwarfs the actual transactional work.",
+          "steps": [
+            "offload"
+          ]
         }
-      ],
-      "patterns": [
-        "Static edge offload (CDN)"
       ],
       "probeLinks": [
         "aws-flash-sale-considerations",
@@ -848,7 +804,14 @@
           "instead": "Serve availability from the CDN edge with a short TTL."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/02-offload.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-offload.jpg",
+      "tradeoffs": [
+        {
+          "name": "Edge caching vs. availability accuracy",
+          "description": "Serving the sale page and a cacheable availability flag from the CDN keeps the vast majority of lookers and refreshers off the backend entirely — but a cached value is necessarily slightly stale, so users may briefly see 'available' after sell-out or vice versa. Serving availability live from the backend would be exact but would let the read flood reach the core.",
+          "chosen": "The design pushes reads to the edge with a frequently-updated cached availability value, accepting seconds of staleness so the backend only ever sees admission and buy attempts."
+        }
+      ]
     },
     {
       "id": "admission",
@@ -892,6 +855,14 @@
           "whyItMatters": "The right number of admissions depends on how fast reservations convert to paid orders, which only the running sale reveals.",
           "example": "Slow/pause admission when the counter nears zero or workers are unhealthy; admit another tranche when holds expire.",
           "group": "Admission Control at the Edge"
+        },
+        {
+          "term": "Admission control / load shedding",
+          "description": "Reject or queue most traffic at the edge so the core only handles a survivable rate.",
+          "whyItMatters": "Demand far exceeds capacity and most requests can't succeed anyway.",
+          "steps": [
+            "admission"
+          ]
         }
       ],
       "probeLinks": [
@@ -903,9 +874,6 @@
         "aws-flash-sale-considerations",
         "shopify-bfcm-readiness"
       ],
-      "patterns": [
-        "Admission control / load shedding"
-      ],
       "whyNow": [
         "Admission control is the core survival mechanism; stating that most traffic must be rejected cheaply is the key senior insight."
       ],
@@ -914,7 +882,14 @@
         "after": "Edge sheds the excess; core sees a survivable rate.",
         "newRisk": "Raw shedding is unfair (luck of the millisecond) — need fairness."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/03-admission.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-admission.jpg",
+      "tradeoffs": [
+        {
+          "name": "Protecting the core vs. filling every unit",
+          "description": "Admitting only about stock/completion_rate users keeps the purchase core at a survivable rate, but admit too few (or completion runs lower than estimated) and stock goes unsold; admit too many and the core takes the flood back. A fixed set-point cannot track reality, while a feedback controller adds moving parts to the hottest path.",
+          "chosen": "The design treats admission as a feedback controller that starts from the capacity math and adjusts the admit rate live from counter, reservation, and completion signals."
+        }
+      ]
     },
     {
       "id": "waitroom",
@@ -1093,9 +1068,6 @@
         "seatgeek-waiting-room",
         "aws-visitor-prioritization"
       ],
-      "patterns": [
-        "Virtual waiting room"
-      ],
       "deepDives": [
         {
           "title": "Durable waiting-room state and recovery",
@@ -1132,7 +1104,19 @@
         "before": "Admission was a timing lottery.",
         "after": "Fair, throttled admission with tokens gating the core.",
         "newRisk": "Admitted users now contend on the single scarce resource: stock."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Arrival order vs. equal odds",
+          "description": "FIFO admission is legible and communicable — 'you are number 42,001 in line' — and meters admission to inventory drain, but strict ordering rewards whoever's packet won the network race at the start gun, which favors bots on fast connections. A random lottery gives every entrant in a window equal odds but feels arbitrary because users see no position or progress.",
+          "chosen": "The design picks the FIFO waiting room for its legible, communicable fairness, and layers bot defenses on the authenticated entry rather than switching to a lottery."
+        },
+        {
+          "name": "Fairness vs. admission-tier statelessness",
+          "description": "A token-bucket throttle keeps the admission tier nearly stateless and caps core load precisely, but offers no fairness at all — well-timed retriers get in repeatedly while others get hard rejections. A durable ordered queue with per-user positions and signed, single-use, identity-bound tokens gives real fairness and abuse resistance, but the queue itself must absorb 10M concurrent entrants and hold per-user state.",
+          "chosen": "The design accepts a durable, stateful waiting room with identity-bound single-use tokens, because fairness and abuse resistance are product requirements a stateless throttle cannot meet."
+        }
+      ]
     },
     {
       "id": "reserve",
@@ -1301,6 +1285,14 @@
           "whyItMatters": "Clients retry aggressively under a spike; without it a retry would consume a second unit.",
           "example": "Unique (sale_id, idempotency_key) on reservations; a duplicate buy returns the original reservationId.",
           "group": "Oversell-Proof Reservation"
+        },
+        {
+          "term": "Atomic counter reservation",
+          "description": "Decrement a single in-memory stock counter atomically; success means you hold a unit.",
+          "whyItMatters": "Fast, oversell-proof allocation of limited stock under extreme concurrency.",
+          "steps": [
+            "reserve"
+          ]
         }
       ],
       "probeLinks": [
@@ -1311,9 +1303,6 @@
         "dynamodb-condition",
         "postgres-isolation",
         "shopify-inventory-reservations"
-      ],
-      "patterns": [
-        "Atomic counter reservation"
       ],
       "whyNow": [
         "The atomic counter is the precise mechanism that makes overselling impossible; collapsing the requirement to one atomic op is the senior move."
@@ -1416,6 +1405,18 @@
             "BuySvc",
             "Inventory"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Memory-speed counter vs. single durable truth",
+          "description": "Locking the stock row in the order DB keeps one transactional source of truth with no reconciliation, but 10k simultaneous buyers serialize on that row and throughput collapses to lock-acquisition rate — the naive failure again. A guarded Redis conditional decrement rejects the (stock+1)th buyer at memory speed, but the counter is volatile, is a single hot key, and creates a second source of truth beside the ledger.",
+          "chosen": "The design puts an atomic decrement-if-positive counter in Redis on the hot path and reconciles it against the durable ledger, trading reconciliation work for burst-proof oversell protection."
+        },
+        {
+          "name": "Hot counter vs. pre-minted token pool",
+          "description": "Pre-minting one single-use claim token per unit makes oversell structurally impossible and lets the check be sharded away from a single hot key, but abandoned tokens strand inventory until TTL reclaim recirculates them, and distributing the finite pool fairly just reintroduces the admission problem. The single counter concentrates contention but is O(1), trivially oversell-proof, and has no token lifecycle to manage.",
+          "chosen": "The design keeps the single guarded counter for its simplicity and speed, relying on admission control upstream to keep the contention on it survivable."
         }
       ]
     },
@@ -1531,9 +1532,6 @@
         }
       ],
       "decisionPrompt": "Why not create the order and charge the card synchronously inside the buy request?",
-      "patterns": [
-        "Async order processing"
-      ],
       "probeLinks": [
         "kafka-design",
         "aws-transactional-outbox",
@@ -1552,6 +1550,14 @@
           "whyItMatters": "Prevents non-payers from permanently locking scarce stock.",
           "example": "Reserve -> 10 min to pay -> else expire and release the unit.",
           "group": "Async Order Creation and Payment"
+        },
+        {
+          "term": "Async order processing",
+          "description": "Confirm the reservation instantly, then create the durable order and charge off the hot path.",
+          "whyItMatters": "Keep the contended path tiny; do durable/slow work behind a queue.",
+          "steps": [
+            "async"
+          ]
         }
       ],
       "recap": {
@@ -1648,6 +1654,13 @@
             "OrderSvc"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Instant response vs. definitive confirmation",
+          "description": "Charging synchronously inside the buy request gives the buyer a definitive 'paid and confirmed' with no pending state, but a third-party payment call of hundreds of milliseconds holds threads open under peak load and caps throughput at the slowest dependency. Returning 'reserved' the instant the counter decrement succeeds keeps the contended path tiny, but the UX must explain a pending state and the pipeline needs idempotency plus a stock-release path for failed charges.",
+          "chosen": "The design returns 'reserved' immediately and runs order creation and payment off a durable queue, since the stored payment method lets a worker complete the charge with no further buyer interaction."
+        }
       ]
     },
     {
@@ -1694,6 +1707,14 @@
           "whyItMatters": "Resolves counter-failover ambiguity: correctness (no oversell) outranks buy-path availability.",
           "example": "Redis primary failover ⇒ pause /buy, return 'try later' until the counter is rebuilt and fenced.",
           "group": "Consistency, Reconciliation, and Degradation"
+        },
+        {
+          "term": "Reconciliation + reaping",
+          "description": "Reconcile the fast counter to the durable ledger and release reservations that don't pay in time.",
+          "whyItMatters": "Fast-counter designs that must stay consistent with durable truth.",
+          "steps": [
+            "consistency"
+          ]
         }
       ],
       "deepDives": [
@@ -1739,9 +1760,6 @@
         "shopify-inventory-reservations",
         "shopify-idempotent-graphql"
       ],
-      "patterns": [
-        "Reconciliation + reaping"
-      ],
       "whyNow": [
         "Closing on reconciliation + graceful degradation shows the fast-path design stays correct under failure — the no-oversell guarantee survives."
       ],
@@ -1750,7 +1768,19 @@
         "after": "Counter reconciled to the durable ledger and fenced by epoch; on counter failure the buy path fails closed; failures shed cleanly; no oversell.",
         "newRisk": "Reconciliation lag and reaper timing — bounded by conservative holds, idempotent reaping, and the durable ledger as authority."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-consistency.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-consistency.jpg",
+      "tradeoffs": [
+        {
+          "name": "Counter speed vs. ledger durability",
+          "description": "The in-memory counter is what survives the burst, but it is not durable; the append-only stock_ledger_events table is the durable truth but far too slow to sit on the hot path. Running both means the invariant remaining = total - reserves + releases must be actively maintained: reconcile periodically and rebuild the counter from the ledger after any restart.",
+          "chosen": "The design makes the ledger the source of truth and treats the counter as a fast, rebuildable derivative, reconciling on a schedule and after every failover."
+        },
+        {
+          "name": "Fail closed vs. keep selling",
+          "description": "When the Redis primary dies or its authority is uncertain — failover, replication lag, possible split-brain — continuing to issue 'reserved' from a stale or split counter risks overselling scarce stock, while pausing sales turns away buyers and leaves stock momentarily unsold. For a fixed, scarce inventory the oversell is the irreversible mistake.",
+          "chosen": "The design fails closed for scarce inventory: it stops issuing reservations and returns 'try later' until the counter's authority is re-established from the ledger."
+        }
+      ]
     }
   ],
   "finalDesign": {

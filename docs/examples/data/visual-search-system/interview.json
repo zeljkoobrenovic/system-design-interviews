@@ -264,7 +264,14 @@
           "Vector",
           "Index"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Learned similarity vs. explicit relevance rules",
+          "description": "Framing visual search as nearest-neighbor retrieval in an embedding space lets one learned geometry answer every image query, with relevance defined implicitly by what the model places nearby — but that definition is only as good as the training signal and is hard to inspect or override per query. Hand-built relevance rules over attributes would be explainable yet cannot cover the open-ended space of visual similarity.",
+          "chosen": "The design defines relevance as proximity in a learned embedding space, accepting an implicit, data-driven notion of similarity in exchange for generality over arbitrary image queries."
+        }
+      ]
     },
     {
       "id": "image-data-and-click-labels",
@@ -324,7 +331,14 @@
           "PairBuilder",
           "TrainingPairs"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Label scale vs. label quality",
+          "description": "Click logs supply training pairs at massive scale for free, but a click is a weak, noisy proxy for visual usefulness and covers only what was already shown. Human judgments are clean but scarce and expensive, and self-supervised augmentation needs no labels at all yet does not directly encode user intent.",
+          "chosen": "The design combines abundant weak click labels with sparse human judgments, and supplements both with self-supervised and contrastive signals where clicks are thin."
+        }
+      ]
     },
     {
       "id": "image-preprocessing-and-embedding-model",
@@ -382,7 +396,14 @@
           "Encoder",
           "Embedding"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Train-serve consistency vs. pipeline flexibility",
+          "description": "Locking resizing, normalization, and crop handling to be identical across training, indexing, and query serving is what keeps query embeddings comparable to indexed embeddings — any drift silently degrades retrieval. The cost is rigidity: improving preprocessing or the encoder means re-running it everywhere, including re-embedding the indexed corpus.",
+          "chosen": "The design enforces one shared preprocessing contract across all three paths, treating pipeline agility as less important than embedding-space consistency."
+        }
+      ]
     },
     {
       "id": "contrastive-training",
@@ -542,6 +563,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Targeted negatives vs. cheap batch negatives",
+          "description": "Triplet loss directly optimizes the served geometry and maps cleanly onto clicked-versus-skipped pairs, but its quality hinges on a hard-negative mining pipeline and only a few negatives per step slow convergence. InfoNCE gets many negatives free from large batches and often trains faster, yet needs big-batch memory, and in-batch negatives can be false negatives that add noise.",
+          "chosen": "The design trains with triplet loss on click-derived anchor/positive/negative triples, accepting the mining pipeline for its direct fit to ANN retrieval."
+        },
+        {
+          "name": "Single-stage training vs. pretraining leverage",
+          "description": "A single contrastive objective on click pairs is the lightest pipeline to build and iterate on, but it depends entirely on scarce click and judgment data. Self-supervised pretraining learns strong visual features without labels and then fine-tunes to user intent, reducing cold-start dependence — at the price of a heavier two-stage pipeline with more compute and longer iteration cycles.",
+          "chosen": "The design keeps a single-stage triplet objective for simplicity, leaving self-supervised pretraining as an upgrade when label scarcity bites."
+        }
       ]
     },
     {
@@ -669,6 +702,13 @@
               "IndexVersion"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Index freshness vs. index integrity",
+          "description": "Building a complete new index version offline, validating it, and swapping atomically means the live index is never corrupted mid-update and a bad build is simply not promoted — but new images are not searchable until the next rebuild, and rebuilding the whole corpus often is expensive. Incremental insertion makes fresh images searchable in minutes, yet many ANN structures degrade in recall when mutated in place and still need periodic compaction.",
+          "chosen": "The design uses versioned full rebuilds with atomic swap, trading freshness lag for guaranteed index consistency and trivial rollback."
         }
       ]
     },
@@ -864,7 +904,14 @@
           "Shard2",
           "Shard3"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Recall exactness vs. query latency",
+          "description": "Comparing the query against every image vector guarantees the true nearest neighbors, but a linear scan over a web-scale corpus cannot answer an interactive search within budget. Approximate nearest-neighbor structures answer orders of magnitude faster while occasionally missing a true neighbor.",
+          "chosen": "The design accepts ANN's small recall loss because interactive latency at corpus scale is impossible with exact search."
+        }
+      ]
     },
     {
       "id": "reranking-and-filtering",
@@ -924,7 +971,14 @@
           "Filters",
           "Results"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Result quality vs. added latency",
+          "description": "Running expensive similarity, deduplication, quality filters, and policy filters over the candidate set materially improves what users see and keeps unsafe or duplicate results out — but every extra stage adds latency and compute after ANN has already returned. Returning raw ANN hits would be fastest yet ships near-duplicates and policy violations straight to the user.",
+          "chosen": "The design reranks and filters only the small ANN candidate set, confining heavy per-item work to a bounded stage the latency budget can absorb."
+        }
+      ]
     },
     {
       "id": "evaluation-and-refresh",
@@ -987,7 +1041,14 @@
           "ABTest",
           "Rollout"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Offline metrics vs. online validation",
+          "description": "Offline precision@K, recall@K, MRR, and NDCG on judged sets compare a new embedding model or ANN index cheaply and repeatably, but they measure agreement with past labels, not real user benefit. Online click metrics reveal true impact yet require exposing traffic to the candidate model and waiting for significance.",
+          "chosen": "The design screens candidates with offline ranking metrics and only promotes to full rollout after online click metrics confirm the improvement."
+        }
+      ]
     }
   ],
   "satisfies": {

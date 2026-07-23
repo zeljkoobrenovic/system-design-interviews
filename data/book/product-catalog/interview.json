@@ -1677,62 +1677,6 @@
       "makesIrrelevant": "Managed metrics, tracing, logs, and dashboards remove much of the custom lag-checker and ad hoc replay-debug tooling around the projection pipeline."
     }
   ],
-  "patterns": [
-    {
-      "name": "CQRS (read/write split)",
-      "what": "Separate the normalized write model from denormalized read models built by projection.",
-      "whenToUse": "Read-heavy domains where read and write shapes differ greatly.",
-      "steps": [
-        "cqrs"
-      ],
-      "group": "Split Reads from Writes (CQRS)"
-    },
-    {
-      "name": "Search index + faceting",
-      "what": "An inverted index with facet aggregations for keyword search and filtering.",
-      "whenToUse": "Browse/search over large, attribute-rich catalogs.",
-      "steps": [
-        "search"
-      ],
-      "group": "Search and Faceting"
-    },
-    {
-      "name": "Denormalized read model",
-      "what": "Precompute a render-ready product view so detail pages are a single lookup.",
-      "whenToUse": "Hot detail pages assembled from many sources.",
-      "steps": [
-        "readmodel"
-      ],
-      "group": "Denormalized Product Read Model"
-    },
-    {
-      "name": "Change-stream projection",
-      "what": "Project write/price/inventory changes into read model and index via an event stream.",
-      "whenToUse": "Keeping derived read stores eventually consistent with sources.",
-      "steps": [
-        "projection"
-      ],
-      "group": "Keep Read Stores Fresh via Change Streams"
-    },
-    {
-      "name": "Authoritative live read for volatile data",
-      "what": "Read fast-changing data (stock, price) live from its owner at decision time, not from the cached view.",
-      "whenToUse": "When staleness on a value would cause a wrong purchase.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Inventory and Price: Freshness Where It Matters"
-    },
-    {
-      "name": "Service ownership (bounded contexts)",
-      "what": "Catalog, pricing, and inventory are separate services owning their data.",
-      "whenToUse": "Different consistency/change profiles per domain.",
-      "steps": [
-        "consistency"
-      ],
-      "group": "Inventory and Price: Freshness Where It Matters"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1788,7 +1732,14 @@
           "instead": "Split reads from writes (CQRS): a search/facet index and a denormalized read model derived from the write model."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "One model vs. read performance",
+          "description": "A single normalized products table is the simplest source of truth and perfectly serviceable for a small store, but at ~300M products, ~150k search QPS, and ~300k detail QPS, LIKE scans with per-filter facet aggregations and per-request fan-out joins cannot meet a sub-200 ms p99. The write-shaped model is simply the wrong shape for read-heavy browse.",
+          "chosen": "The design uses this baseline to show why one normalized model cannot serve both sides, motivating the read/write split, search index, and denormalized read model that follow."
+        }
+      ]
     },
     {
       "id": "cqrs",
@@ -1914,6 +1865,14 @@
           "whyItMatters": "Lets the read side be denormalized, indexed, and scaled independently of the write side.",
           "example": "Normalized products table for sellers; denormalized read model + search index for shoppers.",
           "group": "Split Reads from Writes (CQRS)"
+        },
+        {
+          "term": "CQRS (read/write split)",
+          "description": "Separate the normalized write model from denormalized read models built by projection.",
+          "whyItMatters": "Read-heavy domains where read and write shapes differ greatly.",
+          "steps": [
+            "cqrs"
+          ]
         }
       ],
       "probeLinks": [
@@ -1927,10 +1886,6 @@
         "dynamodb-data-modeling",
         "amazon-catalog-bedrock"
       ],
-      "patterns": [
-        "CQRS (read/write split)",
-        "Service ownership (bounded contexts)"
-      ],
       "whyNow": [
         "The read/write split frames everything; stating it first is what lets search, read models, and projection make sense as derived stores."
       ],
@@ -1938,7 +1893,14 @@
         "before": "Everything served from one normalized table.",
         "after": "Authoritative write model separate from derived read stores.",
         "newRisk": "Search/browse over hundreds of millions of products needs a real index, not table scans."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Consistency vs. shape-optimized reads",
+          "description": "One store with read replicas and a cache keeps reads always consistent with writes and is operationally simplest, but replicas do not fix the shape problem — faceted search and render-ready pages stay slow on a normalized schema. Deriving read-optimized stores lets each side scale and be shaped independently, at the price of a projection pipeline and eventual consistency between write and read.",
+          "chosen": "The design splits reads from writes (CQRS), accepting projection lag on catalog content in exchange for read stores shaped exactly for browse and detail traffic."
+        }
+      ]
     },
     {
       "id": "search",
@@ -2113,6 +2075,14 @@
           "whyItMatters": "Indexing a fast-changing price as a precise key churns the index and still serves stale numbers; bucketing keeps search fast while live reads keep purchase correct.",
           "example": "Sort-by-price uses indexed_price_bucket; detail/add-to-cart refreshes the winning offer's live price.",
           "group": "Search and Faceting"
+        },
+        {
+          "term": "Search index + faceting",
+          "description": "An inverted index with facet aggregations for keyword search and filtering.",
+          "whyItMatters": "Browse/search over large, attribute-rich catalogs.",
+          "steps": [
+            "search"
+          ]
         }
       ],
       "probeLinks": [
@@ -2128,9 +2098,6 @@
         "amazon-shop-the-look",
         "ebay-search-architecture",
         "ebay-buyer-demand-data"
-      ],
-      "patterns": [
-        "Search index + faceting"
       ],
       "whyNow": [
         "Search + faceting is how shoppers actually find products; it's the dominant read path and the e-commerce-specific depth."
@@ -2199,6 +2166,18 @@
             "SearchSvc",
             "SearchIdx"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Dedicated engine vs. database search",
+          "description": "Running full-text or LIKE queries in the catalog store needs no extra engine and stays immediately consistent, but keyword relevance and per-filter facet counts over hundreds of millions of rows are slow, crude, and load browse traffic onto the write-critical store. A dedicated inverted-index engine delivers low-latency ranked search with facet aggregations in the query, but is one more store to operate and keep fresh.",
+          "chosen": "The design runs a dedicated inverted-index search engine sharded by product, because faceted, ranked search at 150k QPS is a workload the catalog database cannot absorb."
+        },
+        {
+          "name": "Index freshness vs. index churn",
+          "description": "Indexing every price and stock change as a precise sort key would keep search exactly current, but at 50-100k price/stock events per second it would churn the index constantly and still serve stale numbers by the time results render. A coarse, debounced indexed_price_bucket sacrifices exact price sorting for a stable index.",
+          "chosen": "The design filters and sorts on a debounced price bucket and treats displayed price as a projected snapshot, letting the purchase path — not the index — own price truth."
         }
       ]
     },
@@ -2373,9 +2352,6 @@
         }
       ],
       "decisionPrompt": "A product page needs data from 5 services. How do you render it in one fast lookup?",
-      "patterns": [
-        "Denormalized read model"
-      ],
       "probeLinks": [
         "elasticsearch-docs",
         "lucene-docs",
@@ -2468,6 +2444,18 @@
             "ReadModel",
             "CatalogSvc"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Precompute vs. assemble-on-read",
+          "description": "Fanning out joins across five services per request always reflects the latest data and needs no derived store, but cannot deliver single-lookup latency at ~300k detail QPS and drives heavy join load onto the write stores. A precomputed render-ready view serves the page in one lookup but duplicates storage, must be kept fresh via projection, and needs reprojection on schema changes.",
+          "chosen": "The design precomputes a denormalized product view keyed by product id, since one fast lookup for both detail pages and search-card hydration is worth the projection machinery."
+        },
+        {
+          "name": "Eager materialization vs. lazy caching",
+          "description": "Lazy cache-on-read only materializes products people actually view and needs no always-on projector, but the first request pays the full fan-out latency, invalidation on seller edits is fiddly, and a viral product's cache stampede hammers the source services at once. Eager projection spends storage and pipeline work on the whole catalog but makes every read — including the long tail and traffic spikes — a warm hit.",
+          "chosen": "The design eagerly projects the full read model, trading storage for predictable latency and immunity to cold-start stampedes."
         }
       ]
     },
@@ -2632,9 +2620,6 @@
         }
       ],
       "decisionPrompt": "A seller fixes a typo in a title. How does it reach search results and the product page?",
-      "patterns": [
-        "Change-stream projection"
-      ],
       "probeLinks": [
         "kafka-design",
         "elasticsearch-docs",
@@ -2659,6 +2644,14 @@
           "whyItMatters": "Keeps multiple read shapes consistent from one source of change.",
           "example": "Product change -> stream -> projector updates read model + search index.",
           "group": "Keep Read Stores Fresh via Change Streams"
+        },
+        {
+          "term": "Change-stream projection",
+          "description": "Project write/price/inventory changes into read model and index via an event stream.",
+          "whyItMatters": "Keeping derived read stores eventually consistent with sources.",
+          "steps": [
+            "projection"
+          ]
         }
       ],
       "recap": {
@@ -2678,6 +2671,18 @@
             "Recovery is tiered: replay from the last checkpoint for a crashed projector, partial reindex by product / category / shard for a corrupted slice, and a full reproject from the authoritative write model only as a last resort.",
             "Bulk imports buffer in the stream and are throttled so live-shopper-visible fields stay within the lag SLO."
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. write-path coupling",
+          "description": "Synchronous dual-writes from the catalog service give minimal lag, but a partial failure (DB commits, index update fails) leaves stores inconsistent with no clean recovery, and a bulk import overwhelms the index inline. An async change stream adds seconds of staleness and an ordered-stream-plus-idempotent-projector operational surface, but decouples seller writes from derived-store updates and buffers bursts.",
+          "chosen": "The design emits change events to a durable stream consumed by projectors, accepting a short edit-to-visible delay in exchange for no dual-write inconsistency and burst buffering."
+        },
+        {
+          "name": "Event-driven vs. batch rebuild",
+          "description": "A periodic full reindex is dead simple and doubles as the recovery path, but an edit may not appear until the next batch run — failing the typo-fix-appears-in-seconds expectation — and rebuilding the whole catalog for small edits is wasteful. Per-change streaming keeps staleness to seconds but needs lag monitoring and versioned projections.",
+          "chosen": "The design streams individual changes and keeps the full rebuild as a recovery tool, versioning each projection by source write version so lag is detectable and rebuilds deterministic."
         }
       ]
     },
@@ -2847,6 +2852,22 @@
           "whyItMatters": "Avoids both slow reads (over-consistency) and wrong purchases (over-staleness).",
           "example": "Title/desc: projected, eventually consistent. Stock/price at checkout: live from owner.",
           "group": "Inventory and Price: Freshness Where It Matters"
+        },
+        {
+          "term": "Authoritative live read for volatile data",
+          "description": "Read fast-changing data (stock, price) live from its owner at decision time, not from the cached view.",
+          "whyItMatters": "When staleness on a value would cause a wrong purchase.",
+          "steps": [
+            "consistency"
+          ]
+        },
+        {
+          "term": "Service ownership (bounded contexts)",
+          "description": "Catalog, pricing, and inventory are separate services owning their data.",
+          "whyItMatters": "Different consistency/change profiles per domain.",
+          "steps": [
+            "consistency"
+          ]
         }
       ],
       "probeLinks": [
@@ -2858,10 +2879,6 @@
         "aws-timeouts-retries",
         "transactional-outbox",
         "dynamodb-streams"
-      ],
-      "patterns": [
-        "Authoritative live read for volatile data",
-        "Service ownership (bounded contexts)"
       ],
       "whyNow": [
         "Mixing eventual content with authoritative volatile reads is the key e-commerce correctness insight and the most common senior follow-up."
@@ -2899,6 +2916,18 @@
             "Offer/buy-box ownership: a product has many seller offers; the Pricing Service owns buy-box selection and projects the winning offer into the read model/index for display and bucketed search. The quote and reservation are always scoped to a specific offer_id, so switching sellers re-quotes.",
             "Scope boundary: catalog/search/read-model is in scope here; the cart/checkout/order service is the adjacent owner of the final decision and is intentionally out of scope for this catalog case."
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Uniform projection vs. live reads for volatile fields",
+          "description": "Projecting price and stock like any other field makes every read, even checkout, a single lookup with one consistency story, but projection lag can show an out-of-stock item as buyable or a stale price at purchase — a real defect, not a cosmetic one. Reading those fields live from their owning services at decision time keeps the purchase path authoritative, at the cost of a synchronous call on the hot path and two consistency models to operate.",
+          "chosen": "The design serves catalog content from the projection but reads inventory and price live from their owners at add-to-cart and checkout, spending consistency only where staleness costs money."
+        },
+        {
+          "name": "Everything strong vs. targeted freshness",
+          "description": "Making all product data strongly consistent eliminates staleness bugs everywhere, but forces browse-volume reads onto authoritative stores and pays fan-out join latency for description text that tolerates seconds of lag. Splitting by data type keeps browse cheap while protecting the purchase decision.",
+          "chosen": "The design rejects blanket strong consistency: only the fields that gate a purchase are verified live, and checkout re-verifies an authoritative price quote."
         }
       ]
     },
@@ -3000,7 +3029,14 @@
           "mitigation": "Active cache invalidation (purge by key) for suppression/takedown, short TTLs on cached content as a backstop, and never cache the suppressed-state response long."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale.jpg",
+      "tradeoffs": [
+        {
+          "name": "Cache absorption vs. authoritative truth",
+          "description": "A viral product concentrates enormous read volume on one key; absorbing it with the read model, edge caches, and index-shard replicas keeps latency flat but means shoppers see slightly stale derived data during the spike. Pushing those reads to authoritative stores would keep everything current but melt the write side.",
+          "chosen": "The design lets derived, rebuildable stores absorb the spike — caches and replicas serve the hot product — while the write model stays authoritative and the purchase path still verifies live."
+        }
+      ]
     }
   ],
   "finalDesign": {

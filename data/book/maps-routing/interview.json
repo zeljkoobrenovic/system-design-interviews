@@ -1725,62 +1725,6 @@
       "makesIrrelevant": "Managed metrics, traces, and log retention remove much of the bespoke dashboard storage, but not the domain-specific route-regression gates."
     }
   ],
-  "patterns": [
-    {
-      "name": "Graph model of roads",
-      "what": "Model the network as weighted directed edges between intersection nodes.",
-      "whenToUse": "Any routing/shortest-path problem.",
-      "steps": [
-        "graph"
-      ],
-      "group": "Model Roads as a Weighted Graph"
-    },
-    {
-      "name": "Preprocessing for fast shortest-path",
-      "what": "Precompute shortcuts (contraction hierarchies / hub labels) so queries skip most of the graph.",
-      "whenToUse": "Repeated shortest-path queries on a slowly-changing large graph.",
-      "steps": [
-        "preprocess"
-      ],
-      "group": "Make Shortest-Path Fast with Preprocessing"
-    },
-    {
-      "name": "Pre-rendered tiles + CDN",
-      "what": "Pre-render map tiles by zoom/coordinate and serve from CDN.",
-      "whenToUse": "Map display where most content is static and read-heavy.",
-      "steps": [
-        "tiles"
-      ],
-      "group": "Serving Map Tiles"
-    },
-    {
-      "name": "Probe aggregation (live traffic)",
-      "what": "Aggregate anonymized GPS probes into per-edge live speeds.",
-      "whenToUse": "Deriving real-time conditions from crowd data.",
-      "steps": [
-        "traffic"
-      ],
-      "group": "Live Traffic from GPS Probes"
-    },
-    {
-      "name": "Geo partitioning / region sharding",
-      "what": "Partition the graph and tiles by geographic region for locality and scale.",
-      "whenToUse": "Continental-scale graphs and tile sets.",
-      "steps": [
-        "scale"
-      ],
-      "group": "Scaling: Region Partitioning"
-    },
-    {
-      "name": "Dynamic edge weights",
-      "what": "Combine static base travel time with a live-traffic multiplier at query time.",
-      "whenToUse": "Traffic-aware routing without re-preprocessing constantly.",
-      "steps": [
-        "traffic"
-      ],
-      "group": "Live Traffic from GPS Probes"
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1830,7 +1774,14 @@
           "instead": "Keep Dijkstra as the baseline, then exploit the slow-changing graph with offline preprocessing (contraction hierarchies)."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Algorithmic simplicity vs. continental latency",
+          "description": "Running Dijkstra or A* over the full graph per request is correct everywhere and needs no preprocessing, but a coast-to-coast query settles tens of millions of nodes and takes seconds, while a preprocessed index answers by touching a few thousand nodes in single-digit milliseconds; the naive approach only holds up at city scale.",
+          "chosen": "The design keeps plain search as the baseline that defines correctness, then invests in preprocessing because the millisecond budget cannot be met by exploring the graph at query time."
+        }
+      ]
     },
     {
       "id": "graph",
@@ -1873,6 +1824,14 @@
           "whyItMatters": "Turns routing into a shortest-path problem with standard algorithms.",
           "example": "Edge weight = segment length / speed limit; one-ways are directed edges.",
           "group": "Model Roads as a Weighted Graph"
+        },
+        {
+          "term": "Graph model of roads",
+          "description": "Model the network as weighted directed edges between intersection nodes.",
+          "whyItMatters": "Any routing/shortest-path problem.",
+          "steps": [
+            "graph"
+          ]
         }
       ],
       "probeLinks": [
@@ -1884,9 +1843,6 @@
         "pelias",
         "h3-docs",
         "s2-docs"
-      ],
-      "patterns": [
-        "Graph model of roads"
       ],
       "whyNow": [
         "The graph model is the foundation; the size + slow-change nature is exactly what justifies the preprocessing in the next step."
@@ -1903,7 +1859,14 @@
         "after": "Roads as a weighted directed graph; routing = shortest path.",
         "newRisk": "Plain Dijkstra over hundreds of millions of nodes per query is far too slow."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/02-graph.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/02-graph.jpg",
+      "tradeoffs": [
+        {
+          "name": "Model fidelity vs. graph complexity",
+          "description": "Encoding one-way streets, turn restrictions, and road-class speeds as edge directionality and penalties makes 'fastest route' a well-defined shortest-path query, but every bit of real-world fidelity grows an already huge graph of hundreds of millions of nodes plus the geometry needed to draw routes.",
+          "chosen": "The design models full directional and restriction fidelity anyway, because the graph changes slowly — and that stability is exactly what makes heavy preprocessing over a rich model viable."
+        }
+      ]
     },
     {
       "id": "preprocess",
@@ -1941,6 +1904,14 @@
           "whyItMatters": "Cuts a continental query from exploring millions of nodes to a few thousand.",
           "example": "Bidirectional search up the hierarchy finds NYC->LA in ms.",
           "group": "Make Shortest-Path Fast with Preprocessing"
+        },
+        {
+          "term": "Preprocessing for fast shortest-path",
+          "description": "Precompute shortcuts (contraction hierarchies / hub labels) so queries skip most of the graph.",
+          "whyItMatters": "Repeated shortest-path queries on a slowly-changing large graph.",
+          "steps": [
+            "preprocess"
+          ]
         }
       ],
       "probeLinks": [
@@ -1950,9 +1921,6 @@
         "customizable-route-planning",
         "hub-labeling-paper",
         "uber-routing-engine"
-      ],
-      "patterns": [
-        "Preprocessing for fast shortest-path"
       ],
       "whyNow": [
         "Preprocessing is the intellectual core; naming contraction hierarchies / hub labels and the offline-build tradeoff is the senior signal."
@@ -1969,7 +1937,19 @@
           "instead": "Precompute (contraction hierarchies / hub labels) and query the index."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/03-preprocess.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/03-preprocess.jpg",
+      "tradeoffs": [
+        {
+          "name": "Offline build cost vs. query speed",
+          "description": "Precomputing a contraction hierarchy takes hours of build time and extra shortcut storage, and the resulting index goes stale whenever the map changes; in exchange, a long-distance query touches a tiny fraction of the graph instead of exploring it, turning seconds into milliseconds.",
+          "chosen": "The design moves the expensive work offline and answers queries from the precomputed index, betting on the road network changing far more slowly than users ask for routes."
+        },
+        {
+          "name": "Compact answers vs. drawable paths",
+          "description": "The CH query returns a path of shortcuts — fast to find but not actual roads; unpacking each shortcut back into base edges restores the real turn-by-turn path and geometry, adding a recursive expansion step to every query.",
+          "chosen": "The design pays the unpacking step per query, since a route the client cannot draw or narrate is useless however fast it was computed."
+        }
+      ]
     },
     {
       "id": "preprocessing-choice",
@@ -2137,7 +2117,24 @@
         "before": "Some preprocessing makes queries fast.",
         "after": "A specific technique chosen against the build/storage/latency triangle.",
         "newRisk": "Heavier preprocessing is harder to refresh when the map changes (handled by offline rebuilds)."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Query latency vs. storage",
+          "description": "Hub labeling reduces a shortest-path query to intersecting two precomputed label sets — the fastest option, nearly independent of route length — but its per-node labels are the largest storage of the three and must be rebuilt on map changes; contraction hierarchies are slightly slower per query at a fraction of the storage.",
+          "chosen": "The design picks contraction hierarchies as the production sweet spot, giving up hub labeling's near-constant lookups to avoid its dominating storage cost."
+        },
+        {
+          "name": "Preprocessing effort vs. query work",
+          "description": "A*-with-landmarks needs only a handful of landmark distance tables and adapts naturally when edge weights change, but each query still expands a large share of the graph, so continental routes can miss the millisecond budget; CH shifts that work into a heavier offline build.",
+          "chosen": "The design accepts CH's hours-long builds because ALT's low preprocessing bill is paid back, with interest, on every long-distance query."
+        },
+        {
+          "name": "Static optimality vs. traffic adaptability",
+          "description": "The techniques that make queries fastest bake edge weights into precomputed structures, so live traffic — which changes weights every few minutes — undermines them; ALT folds in new weights easily but is slow, while plain CH is fast but assumes fixed weights.",
+          "chosen": "The design still chooses CH and plans for a customizable variant, treating traffic-driven re-weighting as a solvable extension rather than a reason to accept slow queries."
+        }
+      ]
     },
     {
       "id": "tiles",
@@ -2292,6 +2289,14 @@
           "whyItMatters": "Handles massive read fanout for map display with near-zero origin load.",
           "example": "Pan the map -> fetch tiles at z=14 around the viewport from CDN.",
           "group": "Serving Map Tiles"
+        },
+        {
+          "term": "Pre-rendered tiles + CDN",
+          "description": "Pre-render map tiles by zoom/coordinate and serve from CDN.",
+          "whyItMatters": "Map display where most content is static and read-heavy.",
+          "steps": [
+            "tiles"
+          ]
         }
       ],
       "probeLinks": [
@@ -2300,9 +2305,6 @@
         "switch2osm-serving-tiles",
         "osm2pgsql-manual",
         "postgis-docs"
-      ],
-      "patterns": [
-        "Pre-rendered tiles + CDN"
       ],
       "whyNow": [
         "Tile serving is a distinct, large part of a maps system; recognizing it as static CDN content is the clean separation from routing."
@@ -2378,6 +2380,18 @@
             "CDN",
             "TileStore"
           ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Offline rendering vs. on-demand freshness",
+          "description": "Pre-rendering the world into an immutable z/x/y pyramid means the CDN absorbs essentially all traffic and rendering cost is paid once offline, but map edits require re-rendering and republishing a new tile_version; rendering at the origin per request shows edits immediately and allows per-request customization, yet is CPU-heavy, bottlenecks under global pan/zoom load, and defeats the CDN.",
+          "chosen": "The design pre-renders tiles and serves them from a CDN, publishing new immutable versions on the rare map change instead of paying render cost per request."
+        },
+        {
+          "name": "Server-side raster vs. client-side vector",
+          "description": "Raster tiles are ready-made images any client can display, but they bake in style and zoom, so restyling means a full re-render and storage covers every zoom level; vector tiles ship compact data once and restyle, rotate, and zoom smoothly on-device, at the cost of heavier client CPU/GPU and inconsistent results on low-end devices.",
+          "chosen": "The design defaults to pre-rendered tiles on the CDN, keeping the serving path a static GET and leaving rendering burden off the weakest clients."
         }
       ]
     },
@@ -2530,6 +2544,22 @@
           "whyItMatters": "Urgent correctness changes (a road closes now) must take effect in seconds without waiting hours for a CH rebuild.",
           "example": "A flooded road is banned via the overlay immediately; the base graph catches up on the next offline rebuild.",
           "group": "Live Traffic from GPS Probes"
+        },
+        {
+          "term": "Probe aggregation (live traffic)",
+          "description": "Aggregate anonymized GPS probes into per-edge live speeds.",
+          "whyItMatters": "Deriving real-time conditions from crowd data.",
+          "steps": [
+            "traffic"
+          ]
+        },
+        {
+          "term": "Dynamic edge weights",
+          "description": "Combine static base travel time with a live-traffic multiplier at query time.",
+          "whyItMatters": "Traffic-aware routing without re-preprocessing constantly.",
+          "steps": [
+            "traffic"
+          ]
         }
       ],
       "probeLinks": [
@@ -2540,10 +2570,6 @@
         "valhalla-speeds",
         "waze-closures",
         "openlr"
-      ],
-      "patterns": [
-        "Probe aggregation (live traffic)",
-        "Dynamic edge weights"
       ],
       "traps": [
         {
@@ -2654,6 +2680,18 @@
             "RestrictionOverlay"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Traffic freshness vs. index rebuild cost",
+          "description": "Baking live speeds into the hierarchy by re-running preprocessing keeps queries maximally fast and provably optimal, but a CH build takes hours — useless against a jam that started 5 minutes ago; a customizable CH re-weights the existing shortcut structure in a cheap per-update customization phase, at the cost of extra query-time work applying live multipliers and overlays.",
+          "chosen": "The design runs customizable CH with dynamic edge weights, refreshing every few minutes so ETAs track current jams without ever re-running the full contraction."
+        },
+        {
+          "name": "Live signal vs. probe confidence",
+          "description": "Trusting every live per-edge speed makes the map maximally current but lets a few bad or sparse GPS probes distort a segment; falling back on low-confidence edges trades recency for stability, and the design falls back to historical time-of-day speeds — not free-flow — so the estimate stays realistic.",
+          "chosen": "The design gates live speeds on sample count and confidence, using map-matched, deduplicated probes and historical profiles as the fallback rather than optimistic free-flow times."
+        }
       ]
     },
     {
@@ -2762,9 +2800,6 @@
         }
       ],
       "decisionPrompt": "The graph doesn't fit on one machine. How do you partition it, and what about routes that cross partitions?",
-      "patterns": [
-        "Geo partitioning / region sharding"
-      ],
       "probeLinks": [
         "s2-docs",
         "h3-docs",
@@ -2782,6 +2817,14 @@
           "whyItMatters": "Locality + independent scaling + fault isolation at planet scale, without synchronous fanout across regions.",
           "example": "West-coast routes served regionally; NYC->LA plans on the overlay then unpacks in the NY and CA shards.",
           "group": "Scaling: Region Partitioning"
+        },
+        {
+          "term": "Geo partitioning / region sharding",
+          "description": "Partition the graph and tiles by geographic region for locality and scale.",
+          "whyItMatters": "Continental-scale graphs and tile sets.",
+          "steps": [
+            "scale"
+          ]
         }
       ],
       "recap": {
@@ -2799,6 +2842,18 @@
           "scenario": "A region's graph shard is stale or its overlay-graph publish fails (overlay_version mismatches the regional CH).",
           "expectedBehavior": "Local routes in that region serve the previous pinned version; cross-region routes that must traverse it are degraded or rejected rather than planned on a mismatched overlay.",
           "mitigation": "Pin overlay_version with the regional (graph_version, index_version); reject cross-region plans on a version mismatch and fall back to the last good overlay."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Partition fit vs. replication simplicity",
+          "description": "Replicating the whole continental graph to every node makes any node able to answer any query with trivial load balancing, but it caps the system at one machine's memory and dodges the actual problem — the graph does not fit; geographic partitioning fits each region on its own cluster and isolates failures, at the cost of cross-region query stitching.",
+          "chosen": "The design partitions by geography with region-local clusters and CDN edges, since most routes are local and full replication is physically ruled out."
+        },
+        {
+          "name": "Region locality vs. boundary complexity",
+          "description": "Clean region ownership keeps each cluster simple, but routes regularly cross cuts: border vertices must be owned by one partition and duplicated read-only into neighbors, and a versioned inter-region overlay of high-rank CH shortcuts must be maintained so long routes plan on the overlay and unpack locally.",
+          "chosen": "The design accepts the border-vertex and overlay maintenance burden because it confines cross-region queries to a thin planning layer instead of a synchronous fanout across regions."
         }
       ]
     },
@@ -2972,7 +3027,19 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/08-ops.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/08-ops.jpg",
+      "tradeoffs": [
+        {
+          "name": "Rollout safety vs. update latency",
+          "description": "Treating graph and CH index as immutable versioned artifacts — built, regression-tested, canaried per region, and rolled back on metric regression — means a routine map change takes hours to reach users, but a bad build can never silently corrupt routing, and a request always pins one consistent graph_version and index_version end to end.",
+          "chosen": "The design ships map updates through the versioned build-and-canary pipeline, trading hours of propagation delay for the ability to detect and roll back regressions safely."
+        },
+        {
+          "name": "Urgent overrides vs. rebuilt optimality",
+          "description": "Waiting for the full pipeline is unacceptable for a road closure, so urgent changes apply immediately as restriction-overlay hard bans without touching the index — but an overlay-banned route is a patched query result, not one the hierarchy was optimized for, so the fully rebuilt index remains the eventual source of quality.",
+          "chosen": "The design runs two cadences: closures take effect in minutes via the overlay, while the slow rebuild path folds them into a properly optimized index later."
+        }
+      ]
     }
   ],
   "finalDesign": {

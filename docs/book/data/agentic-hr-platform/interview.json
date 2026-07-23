@@ -1383,88 +1383,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Agent harness (from Foundations)",
-      "what": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
-      "whenToUse": "The HR Orchestrator runs on this harness, picking the bounded flow (screening, helpdesk, onboarding) and applying the hiring gate on top of it.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-      "what": "Screening is an authored flow (score -> monitor -> human decide), not an autonomous loop that could auto-reject.",
-      "whenToUse": "Where decisions are legally consequential.",
-      "steps": [
-        "naive"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A human decides every adverse hiring outcome; agents only recommend.",
-      "whenToUse": "Any adverse or consequential employment decision.",
-      "steps": [
-        "hiring-gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "Agents recommend freely but a human-decision gate and fairness monitor fence outcomes.",
-      "whenToUse": "Recommendation autonomy with a human-decision boundary.",
-      "steps": [
-        "hiring-gate"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground answers in effective-dated, jurisdiction-tagged policy, not model memory.",
-      "whenToUse": "Policy/benefits Q&A that must be current and correct.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Identity-scoped access binds hiring decisions to a human and PII to its owner.",
-      "whenToUse": "Accessing HRIS records and recording decisions.",
-      "steps": [
-        "privacy"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat resumes and free-text inputs as untrusted; partition from HRIS authority.",
-      "whenToUse": "Resumes and queries are attacker-reachable.",
-      "steps": [
-        "privacy"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate policy-answer accuracy and deflection, and audit screening for bias.",
-      "whenToUse": "Measuring quality and fairness.",
-      "steps": [
-        "service-eval"
-      ]
-    },
-    {
-      "name": "Durable workflow with idempotency + reconciliation",
-      "what": "Long-running onboarding/offboarding runs as a state machine of idempotent HRIS tasks that survive throttling, timeouts, duplicate callbacks, and manual HRIS edits.",
-      "whenToUse": "Multi-step, partially-failing, rate-limited writes to an external system of record.",
-      "steps": [
-        "service-eval"
-      ]
-    },
-    {
-      "name": "Queue-based load leveling; admission control",
-      "what": "Level bursty screening and throttled HRIS-write load behind a durable task queue.",
-      "whenToUse": "Bursty recruiting, open-enrollment helpdesk, or rate-limited HRIS provisioning.",
-      "steps": [
-        "service-eval"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1483,6 +1401,22 @@
           "definition": "The deterministic runtime that wraps the model and drives the agent loop — context assembly, tool-call parsing/execution, and budget/stop-condition enforcement. Distinct from an eval harness (offline scoring).",
           "whyItMatters": "The HR Orchestrator is this harness configured for bounded, human-decided flows; the hiring gate and adverse-impact monitoring are layered on top, not a replacement for the runtime.",
           "example": "A screening request enters the harness, which assembles policy context, runs the scoped screening agent, and routes the recommendation to a human — the harness never auto-rejects."
+        },
+        {
+          "term": "Agent harness (from Foundations)",
+          "description": "The deterministic runtime that wraps the model and turns one completion into an agent: it owns the loop, assembles context each turn, parses and executes tool calls, feeds observations back, and enforces stop conditions, retries, compaction, and budgets. This platform consumes the harness from Agentic Platform Foundations rather than reimplementing it.",
+          "whyItMatters": "The HR Orchestrator runs on this harness, picking the bounded flow (screening, helpdesk, onboarding) and applying the hiring gate on top of it.",
+          "steps": [
+            "naive"
+          ]
+        },
+        {
+          "term": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
+          "description": "Screening is an authored flow (score -> monitor -> human decide), not an autonomous loop that could auto-reject.",
+          "whyItMatters": "Where decisions are legally consequential.",
+          "steps": [
+            "naive"
+          ]
         }
       ],
       "view": {
@@ -1503,9 +1437,6 @@
         "caption": "An agent auto-scores and rejects candidates — the legally hazardous baseline."
       },
       "decisionPrompt": "Why is auto-rejecting candidates riskier than auto-publishing a marketing asset?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)"
-      ],
       "probeLinks": [
         "nyc-aedt-dcwp",
         "eu-ai-act-2024",
@@ -1528,7 +1459,14 @@
           "instead": "Have the agent recommend on job-related skills; a human decides, with adverse-impact monitoring."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Screening speed vs. legal exposure",
+          "description": "Auto-scoring resumes and rejecting the low scores clears a bursty application pipeline (a posting wave can 5x daily volume) with zero recruiter effort, but auto-rejection is an automated adverse decision: the model may lean on proxies for protected traits, creating disparate impact with no audit trail, and unscoped retrieval can expose one employee's PII to another. Unlike auto-publishing a marketing asset, a wrongful rejection is legally consequential and hard to reverse.",
+          "chosen": "The design treats the auto-reject agent as the hazard to eliminate, rebuilding it with grounding, PII scoping, a human-decision gate, and adverse-impact monitoring."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -1635,9 +1573,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/02-grounding-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "rag-paper",
         "postgres-range-types",
@@ -1650,6 +1585,14 @@
           "definition": "Policy docs versioned by when they apply and where, so retrieval returns the rule in force for the asker.",
           "whyItMatters": "A stale or wrong-jurisdiction answer is wrong and can mislead an employee on benefits or leave.",
           "example": "A California employee asking about leave gets the current CA policy, not last year's or another state's."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground answers in effective-dated, jurisdiction-tagged policy, not model memory.",
+          "whyItMatters": "Policy/benefits Q&A that must be current and correct.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -1738,7 +1681,19 @@
         "before": "Answers came from model memory or a single doc.",
         "after": "Answers are grounded in the right policy version and jurisdiction.",
         "newRisk": "Retrieval must not cross from one employee's data into another's."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Shared index vs. physical isolation",
+          "description": "One metadata-filtered index with jurisdiction and effective-date as query predicates is the cheapest to operate — new versions are inserts, supersession flips a date — but filter correctness becomes load-bearing: a wrong filter returns a wrong-jurisdiction rule, and tenant isolation lives in the filter rather than in physical separation. Per-tenant or per-jurisdiction segmented indexes make crossing a boundary structurally impossible, at the cost of index sprawl, query fan-out, and keeping versions in sync everywhere.",
+          "chosen": "The design picks the metadata-filtered shared index for operational simplicity and cross-jurisdiction queries, accepting that filter enforcement must be treated as a hard correctness requirement."
+        },
+        {
+          "name": "Static corpus vs. policy lifecycle",
+          "description": "Indexing policy documents once as a static corpus is simple, but HR policy has a lifecycle — approval, effective dates, expiry, supersession — and an answer from a stale or wrong-jurisdiction version is exactly the failure the corpus exists to prevent. Modeling ingestion, effective-dating, jurisdiction tags, citation metadata, and cache invalidation adds pipeline work but makes every answer citable to the version in force.",
+          "chosen": "The design treats the corpus as a versioned lifecycle, not a static index, so an employee's answer comes from the policy in force for their location and date and cites that version."
+        }
+      ]
     },
     {
       "id": "privacy",
@@ -1855,10 +1810,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/03-privacy-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Delegation not impersonation (OAuth token exchange, act claim)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "oauth-token-exchange",
         "postgres-row-security",
@@ -1872,6 +1823,22 @@
           "definition": "Retrieval constrained by the requester's identity so it can only return their own records.",
           "whyItMatters": "HR holds the most sensitive employee data; cross-record access is a privacy breach.",
           "example": "The retrieval filter is bound to the authenticated employee id, not the query text."
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Identity-scoped access binds hiring decisions to a human and PII to its owner.",
+          "whyItMatters": "Accessing HRIS records and recording decisions.",
+          "steps": [
+            "privacy"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat resumes and free-text inputs as untrusted; partition from HRIS authority.",
+          "whyItMatters": "Resumes and queries are attacker-reachable.",
+          "steps": [
+            "privacy"
+          ]
         }
       ],
       "whyNow": [
@@ -1968,6 +1935,13 @@
           "trap": "Enforcing PII scope with a prompt instruction ('only read the asker's record').",
           "why": "A prompt-injected query can ask for someone else's record and the model may comply — it's not an enforcement boundary.",
           "instead": "Bind the scope to the authenticated identity at the retrieval/HRIS boundary via a scoped, delegated token or a row-level filter."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Enforcement strength vs. infrastructure cost",
+          "description": "A prompt-level rule ('only answer about the requester') is trivial to add but is not an enforcement boundary — an injected query can ask for another employee's record and get it. A retrieval filter bound to the authenticated id is cheaper than token exchange but leaves HRIS writes uncovered and turns a filter bug into a silent cross-record leak. A token-scoped service boundary requires a real identity broker and per-call scope resolution, but the token simply cannot fetch another record regardless of what the prompt says.",
+          "chosen": "The design enforces PII scope with scoped, delegated tokens at the data boundary — an injected instruction can't widen scope — and uses the same mechanism for tenant isolation and residency, paying the identity-broker complexity."
         }
       ]
     },
@@ -2091,10 +2065,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/04-hiring-gate-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)"
-      ],
       "probeLinks": [
         "nyc-aedt-dcwp",
         "uniform-guidelines-four-fifths",
@@ -2115,6 +2085,22 @@
           "definition": "Demographic data used to measure adverse impact is stored apart from, and never joined into, the features the scoring model can read.",
           "whyItMatters": "You need the data to audit fairness, but if it can reach scoring it becomes a direct discrimination vector.",
           "example": "selection_metrics reads protected_attribute_audit_data; the screening agent only sees the job rubric's feature allowlist."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A human decides every adverse hiring outcome; agents only recommend.",
+          "whyItMatters": "Any adverse or consequential employment decision.",
+          "steps": [
+            "hiring-gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "Agents recommend freely but a human-decision gate and fairness monitor fence outcomes.",
+          "whyItMatters": "Recommendation autonomy with a human-decision boundary.",
+          "steps": [
+            "hiring-gate"
+          ]
         }
       ],
       "whyNow": [
@@ -2232,6 +2218,18 @@
           "why": "Models learn proxies; without measurement, disparate impact is invisible.",
           "instead": "Exclude prohibited signals and instrument selection rates with the four-fifths rule."
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Candidate latency vs. human decision guarantee",
+          "description": "Post-hoc auditing adds no latency to the candidate path but means the adverse decision already happened without a human — auditing, not deciding. Thresholded escalation concentrates reviewer time on borderline cases but risks an adverse outcome below the threshold auto-applying. A pre-decision review queue guarantees nothing adverse happens until a human decides, at the cost of latency and reviewer staffing for every adverse outcome.",
+          "chosen": "The design routes every recommendation through a pre-decision review queue with feature evidence, reviewer rationale, and recusal captured before any HRIS write — the cleanest audit story for LL144 and the EU AI Act."
+        },
+        {
+          "name": "Queue liveness vs. review rigor",
+          "description": "Requiring rationale, allowing recusal, and escalating flagged items makes each decision defensible, but a rigorous queue can back up and leave candidates waiting past any acceptable window. SLAs with escalation to a second reviewer keep items moving, at the cost of more reviewer coordination and staffing overhead.",
+          "chosen": "The design gives every pending recommendation an assignment and SLA, escalating breached SLAs, recusals, and adverse-impact flags to a second reviewer so rigor doesn't quietly become a stalled pipeline."
+        }
       ]
     },
     {
@@ -2333,11 +2331,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/05-service-eval-opt2.jpg"
         }
       ],
-      "patterns": [
-        "Durable workflow with idempotency + reconciliation",
-        "LLM-as-judge / trajectory evaluation",
-        "Queue-based load leveling; admission control"
-      ],
       "probeLinks": [
         "eu-ai-act-2024",
         "temporal-workflows",
@@ -2353,6 +2346,30 @@
           "definition": "Regimes like NYC LL144 require periodic bias audits and candidate notice for automated employment decision tools.",
           "whyItMatters": "Automated hiring is regulated; the platform must produce audit evidence, not just function.",
           "example": "Publish a bias-audit summary and notify candidates that an automated tool is used."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate policy-answer accuracy and deflection, and audit screening for bias.",
+          "whyItMatters": "Measuring quality and fairness.",
+          "steps": [
+            "service-eval"
+          ]
+        },
+        {
+          "term": "Durable workflow with idempotency + reconciliation",
+          "description": "Long-running onboarding/offboarding runs as a state machine of idempotent HRIS tasks that survive throttling, timeouts, duplicate callbacks, and manual HRIS edits.",
+          "whyItMatters": "Multi-step, partially-failing, rate-limited writes to an external system of record.",
+          "steps": [
+            "service-eval"
+          ]
+        },
+        {
+          "term": "Queue-based load leveling; admission control",
+          "description": "Level bursty screening and throttled HRIS-write load behind a durable task queue.",
+          "whyItMatters": "Bursty recruiting, open-enrollment helpdesk, or rate-limited HRIS provisioning.",
+          "steps": [
+            "service-eval"
+          ]
         }
       ],
       "whyNow": [
@@ -2477,6 +2494,18 @@
           "trap": "Treating audit as 'we log everything'.",
           "why": "Compliance regimes want dated, scoped evidence packets (bias audit for a period, candidate notices issued), not a searchable firehose.",
           "instead": "Produce audit runs: a dated metrics snapshot per regime with retention and legal hold."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Immediacy vs. reliability under rate limits",
+          "description": "Synchronous HRIS writes are simple and tell the caller the result immediately, but HRIS rate limits and timeouts cause partial provisioning and duplicate effects, with no clean recovery when a write times out after actually succeeding. A durable workflow queue with keyed idempotent writes and reconciliation survives throttling and duplicate webhooks, but adds infrastructure and leaves onboarding in a 'reconciling' state for a while.",
+          "chosen": "The design runs onboarding/offboarding as a durable, idempotent state machine with reconciliation, trading immediate results for provisioning that cannot half-complete or double-apply."
+        },
+        {
+          "name": "Generic logging vs. dated compliance evidence",
+          "description": "Ordinary application logs are free but don't satisfy regulators: NYC LL144 demands an annual bias audit, public posting, and candidate notices, and the EU AI Act treats hiring as high-risk with staged deadlines. Producing dated evidence packets, four-fifths-rule monitoring, and per-decision audit records is extra pipeline and storage work, but it is what an enforcement inquiry actually accepts.",
+          "chosen": "The design makes compliance first-class: dated audit-run evidence packets and per-recommendation audit records, not generic logs retrofitted after a regulator asks."
         }
       ]
     }

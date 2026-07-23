@@ -287,7 +287,14 @@
           "LeaderboardAPI",
           "EventLog"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Idempotency vs. ingestion simplicity",
+          "description": "Treating each match result as a durable, uniquely identified score event lets duplicate match notifications be detected and applied exactly once, but it forces every increment to carry an event identity and be checked before applying. Blindly applying ZINCRBY on every notification is simpler and faster but double counts wins on retries.",
+          "chosen": "The design makes the durable score event the source of truth and applies increments idempotently, accepting the extra bookkeeping to guarantee no double counting."
+        }
+      ]
     },
     {
       "id": "api-and-monthly-tournament-model",
@@ -419,6 +426,18 @@
               "Current"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "History vs. memory footprint",
+          "description": "Giving each month its own leaderboard key preserves prior tournaments for archival and historical queries, but old keys accumulate and need an eviction process to reclaim memory. Reusing one fixed key keeps only the active month in memory but destroys the previous board with no archive.",
+          "chosen": "The design opens a new key per month and archives old ones, trading an archival process for intact historical rankings."
+        },
+        {
+          "name": "Atomic rollover vs. client simplicity",
+          "description": "Repointing a 'current' alias at a fresh key makes the monthly reset instant and atomic, but clients must resolve the alias instead of hitting a fixed key name. Clearing one fixed key is a simpler client contract, yet bulk-deleting a 25M-member set can stall the active board and a mid-reset crash leaves it half-cleared.",
+          "chosen": "The design accepts alias indirection so the rollover is an instant pointer switch with no bulk delete on the live board."
         }
       ]
     },
@@ -591,7 +610,14 @@
         "highlight": [
           "Redis"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "In-memory speed vs. relational durability",
+          "description": "A Redis sorted set answers ZINCRBY, ZREVRANGE, and ZREVRANK in microseconds and keeps the whole active ranking hot, but the data lives in volatile memory. Computing ranks with ordered SQL queries keeps scores in durable storage yet makes every rank read an expensive sort or index scan at 25M-player scale.",
+          "chosen": "The design keeps the active tournament in an in-memory sorted set for query speed and pushes durability to a separate event log and snapshots."
+        }
+      ]
     },
     {
       "id": "rank-and-neighborhood-queries",
@@ -716,7 +742,14 @@
           "Rank",
           "Neighbors"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Maintained order vs. per-query computation",
+          "description": "Because the sorted set maintains global order on every write, top-10, exact rank, and neighbor windows are each a cheap range or rank lookup at read time. The cost is paid continuously on the write path, where every score update must reposition the member, rather than at query time.",
+          "chosen": "The design pays ordering cost on each score update so that all three required reads stay O(log N) range and rank lookups on the live board."
+        }
+      ]
     },
     {
       "id": "durable-event-log-and-rebuild",
@@ -884,6 +917,18 @@
               "Snapshot"
             ]
           }
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Recovery time vs. storage overhead",
+          "description": "Keeping both an event log and periodic snapshots bounds recovery to loading the latest snapshot plus replaying recent events, but it means two durable artifacts to manage and a snapshot cadence to tune. Replaying the whole log alone needs no snapshots yet recovery grows unbounded as billions of events accumulate.",
+          "chosen": "The design combines an event log with periodic snapshots so recovery time stays bounded for a live tournament, accepting the extra artifact and cadence tuning."
+        },
+        {
+          "name": "External audit trail vs. built-in persistence",
+          "description": "Delegating durability to Redis AOF/RDB is the simplest story with no external log or rebuild worker, but a crash can lose the last writes and a corrupt dump leaves no independent recompute path. An external event log costs extra machinery yet doubles as the authoritative audit trail of every score change.",
+          "chosen": "The design keeps durability outside Redis in its own event log, so recovery and reconciliation never depend on Redis internals."
         }
       ]
     },
@@ -1082,6 +1127,18 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Write balance vs. global-query cost",
+          "description": "Hashing members by user ID spreads writes evenly and makes per-user rank lookups a single-shard hit, but global top-N and global rank then require scatter-gather through an aggregator. Score-range bands make top queries cheap by reading only the highest band, yet players migrate between bands and the top band becomes a launch-spike write hotspot.",
+          "chosen": "The design shards by user-ID hash with an aggregator, preferring even write distribution and accepting aggregation cost on global queries."
+        },
+        {
+          "name": "Scale-out vs. single-node simplicity",
+          "description": "One sorted set with read replicas keeps global top, rank, and neighbor queries trivial and handles roughly 25M players, but write throughput and memory are capped by one primary. Sharding removes that ceiling at the price of extra aggregation machinery that is pure overhead below it.",
+          "chosen": "The design stays on a single sorted set until the tournament outgrows one node, and only then introduces hash sharding — premature sharding adds cost for no gain."
+        }
       ]
     },
     {
@@ -1238,6 +1295,13 @@
             ]
           }
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Simplicity vs. deterministic fairness",
+          "description": "Letting the raw score alone drive rank matches the prompt and needs no extra encoding, but tied players order arbitrarily by member id and top-N can return them in an unstable order across reads. Baking a tiebreak into a composite score makes ties deterministic and explainable, yet requires careful float encoding and replaces plain ZINCRBY with a recomputed sort value.",
+          "chosen": "The design keeps shared ranks with no tie-breaker, matching the prompt's default and keeping every update a plain sorted-set increment."
+        }
       ]
     },
     {
@@ -1304,7 +1368,14 @@
           "Rollover",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Operational resilience vs. running cost",
+          "description": "Replicas, snapshots, event logs, metrics, and alerting keep the leaderboard alive through Redis failures, monthly rollovers, and game-launch spikes, but each layer is standing infrastructure and operational surface that must be maintained even in quiet months. Skipping any of them lowers cost until the one tournament where a failure loses scores or the rollover stalls the board.",
+          "chosen": "The design carries the full recovery and observability stack because a live tournament cannot afford lost scores or a stalled board during a spike."
+        }
+      ]
     }
   ],
   "satisfies": {

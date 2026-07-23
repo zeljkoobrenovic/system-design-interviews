@@ -2580,7 +2580,14 @@
           "Parser",
           "Seen"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Prototype speed vs. crash resilience",
+          "description": "An in-memory queue and seen-set are the fastest way to prove the fetch-extract-enqueue loop with no external dependencies, but a restart loses every pending URL and nothing can hold retry or priority state. A local durable queue survives restarts and makes retry behavior visible, yet it is still single-machine and its locking already limits concurrency.",
+          "chosen": "The design starts with the in-memory queue to prove the algorithm, explicitly accepting that durability and multi-worker support come in the next step."
+        }
+      ]
     },
     {
       "id": "url-frontier",
@@ -2923,7 +2930,14 @@
           "URLStore",
           "Worker"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Scheduling expressiveness vs. ingestion throughput",
+          "description": "A dedicated priority frontier models priority, due time, retries, and worker leases directly, which is exactly what crawl scheduling and recrawl freshness need — but its queue shards need careful partitioning and large delayed queues need custom storage. A log-backed frontier ingests at append-only throughput with easy replay, yet due-time and priority reads are awkward on a plain log and require an extra materialized scheduler view.",
+          "chosen": "The design uses a purpose-built priority frontier because lease, retry, and due-time semantics are the core of the component, accepting the heavier storage design."
+        }
+      ]
     },
     {
       "id": "downloader-pool",
@@ -3341,7 +3355,14 @@
           "DNS",
           "FetchLog"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Central simplicity vs. regional locality",
+          "description": "One central pool of stateless fetchers behind a shared DNS cache is simple to autoscale and reason about, but egress bandwidth concentrates in one location, distant origins add latency, and a regional outage stops all fetching. Regional pools fetch closer to origins and survive a region loss, yet they need global lease coordination and make duplicate fetches and global politeness harder.",
+          "chosen": "The design runs a central worker pool first, keeping lease and politeness coordination simple until egress or latency forces regionalization."
+        }
+      ]
     },
     {
       "id": "parser-and-url-dedupe",
@@ -3698,7 +3719,14 @@
           "Normalizer",
           "Outlinks"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Exact deduplication vs. lookup load",
+          "description": "Checking every canonicalized URL against a durable URL store with put-if-absent gives exact dedupe with no false positives, but every extracted link becomes a storage lookup that needs sharding and write batching at scale. Screening with an in-memory Bloom filter first slashes read load, yet false positives can hide genuinely new URLs unless every apparent hit is still confirmed against the store.",
+          "chosen": "The design makes the durable URL store the authority for deduplication, taking the lookup cost for a simple, exact correctness story."
+        }
+      ]
     },
     {
       "id": "storage-and-content-dedupe",
@@ -4071,7 +4099,14 @@
           "Versions",
           "IndexFeed"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Dedupe precision vs. index quality",
+          "description": "Exact content hashing is deterministic, cheap, and never suppresses a distinct page, but it misses mirrors and near-duplicates that differ only in templates or ads, letting redundant documents into the index. Adding a SimHash near-duplicate stage cleans those up and improves search quality, yet false positives can drop distinct useful pages and thresholds need tuning and CPU.",
+          "chosen": "The design ships exact hash dedupe first — zero false positives and easy to explain — leaving near-duplicate clustering as a second-stage refinement."
+        }
+      ]
     },
     {
       "id": "politeness",
@@ -4422,7 +4457,14 @@
           "HostPolicy",
           "Robots"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Strict politeness vs. scheduler throughput",
+          "description": "Consulting one logical host-policy store on every lease gives the strongest per-host politeness guarantee and one clear owner for robots.txt, next_allowed_at, and failure scores — but that store becomes a high-QPS dependency whose latency can leave workers idle. Encoding delays into per-host ready queues removes the per-lease check, yet millions of host queues need compact metadata and hot hosts are hard to split without breaking delay guarantees.",
+          "chosen": "The design centralizes host policy so politeness is enforced against one authoritative state, and treats partitioning that store by host as the scaling lever."
+        }
+      ]
     },
     {
       "id": "freshness-scheduler",
@@ -4780,7 +4822,19 @@
           "ChangeStats",
           "Freshness"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. crawl budget",
+          "description": "Recrawling pages aggressively keeps the index current but burns fetch capacity — and host politeness quota — on pages that have not changed. Adaptive scheduling driven by observed change history spends budget where pages actually change, at the cost of being slow to notice a sudden edit on a historically stable page.",
+          "chosen": "The design adapts recrawl intervals to each page's change history, deliberately trading detection speed on stable pages for efficient use of the crawl budget."
+        },
+        {
+          "name": "External signals vs. self-observed history",
+          "description": "Sitemaps, feeds, and manual hints can surface new or changed pages immediately and cut wasted recrawls for publishers that provide them, but the signals are incomplete across the web and spammy feeds can poison priority. Relying only on the crawler's own change observations works uniformly everywhere but reacts slower.",
+          "chosen": "The design leads with self-observed adaptive recrawl, which works even when sites offer no signals, and treats external hints as an additive prioritization layer."
+        }
+      ]
     },
     {
       "id": "distributed-crawler",
@@ -5243,7 +5297,19 @@
           "F3",
           "Metrics"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Even load vs. politeness locality",
+          "description": "Hash-sharding URLs and fingerprints spreads work evenly across frontier and worker partitions and scales by simply adding shards, but per-host politeness state must then be coordinated across shards. Sharding the frontier by host keeps each host's ordering and politeness inside one shard, yet popular hosts create uneven shard load and hot-host splitting risks violating delay guarantees.",
+          "chosen": "The design hash-shards the pipeline for balanced scale-out and pays for it with cross-shard coordination of per-host politeness."
+        },
+        {
+          "name": "Stateless scale vs. resharding cost",
+          "description": "Keeping workers stateless with all crawl state in partitioned durable stores makes fetch and parse capacity trivially elastic, but growth eventually means resharding the frontier, and pending leases must migrate carefully so URLs are neither dropped nor fetched twice. Binding state to workers would avoid that migration at the cost of elasticity and failure recovery.",
+          "chosen": "The design keeps all durable state in sharded stores and workers stateless, accepting occasional careful resharding as the price of horizontal scaling."
+        }
+      ]
     }
   ],
   "finalDesign": {

@@ -2128,118 +2128,11 @@
       "makesIrrelevant": "A managed observability stack removes much of the storage and dashboard operation, but not sampling discipline, PII redaction, or eval-set curation."
     }
   ],
-  "patterns": [
-    {
-      "name": "Stateless LLM proxy",
-      "what": "Treat the model as a stateless function; the app supplies all context each call.",
-      "whenToUse": "Any LLM integration — the model remembers nothing between calls.",
-      "steps": [
-        "chat-proxy"
-      ],
-      "group": "Thin LLM Proxy (the baseline)"
-    },
-    {
-      "name": "Context window management",
-      "what": "Fit history + retrieved context + answer into a fixed token budget, summarizing or truncating old turns.",
-      "whenToUse": "Multi-turn chat that outgrows the model's window.",
-      "steps": [
-        "conversation"
-      ],
-      "group": "Conversation Store & Context Window"
-    },
-    {
-      "name": "Streaming (SSE / WebSocket)",
-      "what": "Stream tokens to the client as generated to minimize perceived latency.",
-      "whenToUse": "Any interactive generation where total latency is high but first-token can be fast.",
-      "steps": [
-        "streaming"
-      ],
-      "group": "Streaming Responses"
-    },
-    {
-      "name": "Embedding + vector index (ANN)",
-      "what": "Represent text as vectors and search by approximate nearest neighbor for semantic retrieval.",
-      "whenToUse": "Finding relevant passages by meaning rather than keywords.",
-      "steps": [
-        "ingestion",
-        "retrieval"
-      ],
-      "group": "Document Ingestion: Chunking & Embeddings"
-    },
-    {
-      "name": "Retrieval-augmented generation (RAG)",
-      "what": "Retrieve relevant context and ground the model's answer in it, with citations.",
-      "whenToUse": "When answers must reflect a private/changing corpus and avoid hallucination.",
-      "steps": [
-        "retrieval",
-        "rag-assembly"
-      ],
-      "group": "Retrieval & Reranking"
-    },
-    {
-      "name": "Async ingestion pipeline",
-      "what": "Chunk, embed, and index documents off the request path.",
-      "whenToUse": "Indexing is slow and bursty; queries must not wait on it.",
-      "steps": [
-        "ingestion"
-      ],
-      "group": "Document Ingestion: Chunking & Embeddings"
-    },
-    {
-      "name": "Semantic / prompt caching",
-      "what": "Reuse answers or embeddings for semantically equivalent requests to cut cost and latency.",
-      "whenToUse": "Repeated or near-duplicate questions over a stable corpus.",
-      "steps": [
-        "cost-control"
-      ],
-      "group": "Caching & Cost / Rate Control"
-    },
-    {
-      "name": "Rate limiting / throttling",
-      "what": "Cap requests, tokens, or dollar spend per user/tenant and shed or queue load past the limit.",
-      "whenToUse": "Any token-priced LLM call where one client or loop can run up an unbounded bill.",
-      "steps": [
-        "cost-control"
-      ],
-      "group": "Caching & Cost / Rate Control"
-    },
-    {
-      "name": "Tenant / corpus isolation",
-      "what": "Carry tenant + corpus identity through ingestion, retrieval filters, cache keys, traces, and citations so a query can only ever see its own documents.",
-      "whenToUse": "Any multi-tenant or private-docs RAG system where retrieval must not leak across tenants.",
-      "steps": [
-        "ingestion",
-        "retrieval"
-      ],
-      "group": "Document Ingestion: Chunking & Embeddings"
-    },
-    {
-      "name": "Guardrails / safety filter",
-      "what": "Screen inputs and outputs for unsafe content and prompt injection, especially from retrieved docs.",
-      "whenToUse": "Any user-facing LLM, more so with untrusted document content.",
-      "steps": [
-        "scale-safety"
-      ],
-      "group": "Scaling, Safety & Evaluation"
-    },
-    {
-      "name": "Model routing / cascading",
-      "what": "Route easy requests to a small fast model and hard ones to a large model.",
-      "whenToUse": "Cost/latency optimization across heterogeneous request difficulty.",
-      "steps": [
-        "scale-safety"
-      ],
-      "group": "Scaling, Safety & Evaluation"
-    }
-  ],
   "steps": [
     {
       "id": "chat-proxy",
       "title": "1. Thin LLM Proxy (the baseline)",
       "description": "Start minimal: the client sends a message, the orchestrator forwards it to the LLM and returns the completion. This exposes the foundational truth — the model is a stateless, slow, expensive, non-deterministic dependency — before we add memory, retrieval, or streaming.",
-      "patterns": [
-        "Stateless LLM proxy"
-      ],
       "probeLinks": [
         "openai-conversation-state",
         "openai-production",
@@ -2259,6 +2152,14 @@
           "definition": "Outputs vary and generation is slow and token-priced.",
           "whyItMatters": "Caching, streaming, and cost control all stem from this.",
           "group": "Thin LLM Proxy (the baseline)"
+        },
+        {
+          "term": "Stateless LLM proxy",
+          "description": "Treat the model as a stateless function; the app supplies all context each call.",
+          "whyItMatters": "Any LLM integration — the model remembers nothing between calls.",
+          "steps": [
+            "chat-proxy"
+          ]
         }
       ],
       "talkingPoints": [
@@ -2313,15 +2214,19 @@
           "LLM"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/01-chat-proxy.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-chat-proxy.jpg",
+      "tradeoffs": [
+        {
+          "name": "Minimal proxy vs. product requirements",
+          "description": "Forwarding each message straight to the LLM is the simplest possible system, but it surfaces the model's nature — stateless, slow, expensive, and non-deterministic — so the assistant forgets everything between calls and every answer takes seconds. Everything the product needs (memory, grounding, responsiveness, cost control) must be built around the model.",
+          "chosen": "The design starts with the thin proxy deliberately, letting its failures dictate the conversation store, streaming, retrieval, and cost layers that follow."
+        }
+      ]
     },
     {
       "id": "conversation",
       "title": "2. Conversation Store & Context Window",
       "description": "Persist the conversation and assemble each prompt from history. Because the context window is a fixed token budget, long chats need a strategy: keep recent turns verbatim and replace older ones with a rolling summary.",
-      "patterns": [
-        "Context window management"
-      ],
       "probeLinks": [
         "openai-conversation-state",
         "lost-in-middle",
@@ -2341,6 +2246,14 @@
           "definition": "Periodically compress old turns into a short summary kept in the prompt.",
           "whyItMatters": "Preserves long-range context without resending (and re-paying for) the whole history.",
           "group": "Conversation Store & Context Window"
+        },
+        {
+          "term": "Context window management",
+          "description": "Fit history + retrieved context + answer into a fixed token budget, summarizing or truncating old turns.",
+          "whyItMatters": "Multi-turn chat that outgrows the model's window.",
+          "steps": [
+            "conversation"
+          ]
         }
       ],
       "options": [
@@ -2451,15 +2364,19 @@
           "ConvStore",
           "Summarizer"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Context fidelity vs. token budget",
+          "description": "Sending only the last N turns is trivial and costs no extra LLM call, but the assistant silently forgets anything older and loses the plot in long chats. Keeping recent turns verbatim plus a rolling summary of older ones preserves long-range context within a bounded budget, though the summary's loss is irreversible and producing it is itself an LLM call to tune and pay for.",
+          "chosen": "The design keeps recent turns verbatim and folds older history into a rolling summary, trading some fidelity and an extra summarization call for bounded prompts that still remember the conversation."
+        }
+      ]
     },
     {
       "id": "streaming",
       "title": "3. Streaming Responses",
       "description": "Generation takes seconds; waiting for the whole answer feels broken. Stream tokens to the client as they're produced (SSE or WebSocket) so time-to-first-token is ~1s even when total time is much longer.",
-      "patterns": [
-        "Streaming (SSE / WebSocket)"
-      ],
       "probeLinks": [
         "openai-streaming",
         "openai-production",
@@ -2478,6 +2395,14 @@
           "definition": "Transports that push incremental tokens to the client.",
           "whyItMatters": "Let the orchestrator relay model tokens as they arrive.",
           "group": "Streaming Responses"
+        },
+        {
+          "term": "Streaming (SSE / WebSocket)",
+          "description": "Stream tokens to the client as generated to minimize perceived latency.",
+          "whyItMatters": "Any interactive generation where total latency is high but first-token can be fast.",
+          "steps": [
+            "streaming"
+          ]
         }
       ],
       "deepDives": [
@@ -2676,17 +2601,24 @@
           },
           "aiVisual": "assets/generated/ai-visuals/steps/03-streaming-opt3.jpg"
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Perceived latency vs. transport simplicity",
+          "description": "Buffering the whole answer gives the simplest one-request contract that is trivial to cache and retry, but the user stares at a spinner for eight seconds with no progress signal and no way to stop a bad answer. Streaming tokens as they are produced makes time-to-first-token ~1s but requires streaming infrastructure and partial-render client logic.",
+          "chosen": "The design streams tokens because perceived responsiveness is the product: a ~1s first token beats an atomic response that feels broken."
+        },
+        {
+          "name": "SSE vs. WebSocket",
+          "description": "SSE is one-way plain HTTP — proxy- and CDN-friendly, auto-reconnecting, stateless to load-balance — but mid-stream client signals like stop or edit need a separate request. WebSockets are full-duplex on one persistent connection, ideal for interruptions and tool results, but stateful connections are harder to scale and you own reconnect, heartbeat, and backpressure yourself.",
+          "chosen": "The design picks SSE because chat only needs a one-way token stream, and sending the occasional stop request out-of-band is cheaper than operating stateful bidirectional connections."
+        }
       ]
     },
     {
       "id": "ingestion",
       "title": "4. Document Ingestion: Chunking & Embeddings",
       "description": "To ground answers, ingest documents: split them into passages (chunks), embed each chunk into a vector, and upsert into a vector index plus a chunk store. This runs asynchronously off the query path and re-runs when documents change.",
-      "patterns": [
-        "Async ingestion pipeline",
-        "Embedding + vector index (ANN)",
-        "Tenant / corpus isolation"
-      ],
       "probeLinks": [
         "openai-retrieval",
         "openai-vector-cookbook",
@@ -2709,6 +2641,32 @@
           "definition": "A vector representation of text capturing semantic meaning.",
           "whyItMatters": "Enables semantic 'find similar passages' rather than keyword match.",
           "group": "Document Ingestion: Chunking & Embeddings"
+        },
+        {
+          "term": "Embedding + vector index (ANN)",
+          "description": "Represent text as vectors and search by approximate nearest neighbor for semantic retrieval.",
+          "whyItMatters": "Finding relevant passages by meaning rather than keywords.",
+          "steps": [
+            "ingestion",
+            "retrieval"
+          ]
+        },
+        {
+          "term": "Async ingestion pipeline",
+          "description": "Chunk, embed, and index documents off the request path.",
+          "whyItMatters": "Indexing is slow and bursty; queries must not wait on it.",
+          "steps": [
+            "ingestion"
+          ]
+        },
+        {
+          "term": "Tenant / corpus isolation",
+          "description": "Carry tenant + corpus identity through ingestion, retrieval filters, cache keys, traces, and citations so a query can only ever see its own documents.",
+          "whyItMatters": "Any multi-tenant or private-docs RAG system where retrieval must not leak across tenants.",
+          "steps": [
+            "ingestion",
+            "retrieval"
+          ]
         }
       ],
       "deepDives": [
@@ -2897,7 +2855,14 @@
           ]
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/04-ingestion.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/04-ingestion.jpg",
+      "tradeoffs": [
+        {
+          "name": "Ingestion cost vs. retrieval quality",
+          "description": "Chunk size is the lever: large chunks mean fewer embeddings and a smaller index but each vector blends many topics, making retrieval imprecise and wasting context tokens; tiny chunks match precisely but strip away the surrounding context needed to actually answer. The pipeline also runs asynchronously, so ingestion freshness trades against keeping the query path fast.",
+          "chosen": "The design ingests asynchronously off the query path — chunk, embed, upsert — and re-runs on document change, deferring the chunk-size balance to a dedicated chunking-strategy decision."
+        }
+      ]
     },
     {
       "id": "chunking-strategy",
@@ -3060,17 +3025,24 @@
         "before": "Documents are chunked and embedded somehow.",
         "after": "A boundary-aware, overlap-tuned chunking strategy chosen for retrieval quality.",
         "newRisk": "Chunking must be re-tuned per corpus/model and validated with evals."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Semantic boundaries vs. fixed-size simplicity",
+          "description": "Cutting every N tokens is trivial, works on any text, and gives predictable embedding cost, but it splits mid-sentence and leaves retrieval quality to luck. Splitting on paragraphs, sections, and headings keeps each chunk about one topic so embeddings stay precise, but needs a structure-aware splitter, yields variable-length chunks, and degrades on poorly structured documents.",
+          "chosen": "The design splits on semantic and structural boundaries with a small overlap so boundary-spanning facts stay retrievable, accepting splitter complexity for materially better retrieval."
+        },
+        {
+          "name": "Retrieval granularity vs. context granularity",
+          "description": "Parent-child chunking embeds small children for precise matching but returns the larger parent for full context, decoupling what you search from what you send the model — at the cost of maintaining parent links, an extra lookup hop, and parents that can blow the context budget if uncapped.",
+          "chosen": "The design stays with single-level semantic chunks carrying citation metadata, judging that overlap covers most boundary cases without the parent-child machinery."
+        }
+      ]
     },
     {
       "id": "retrieval",
       "title": "5. Retrieval & Reranking",
       "description": "At query time, embed the question and find the top-k most similar chunks via approximate nearest-neighbor search, then rerank them for relevance. Authorization and freshness filtering come first: a chunk is eligible only if it belongs to the caller's tenant/corpus namespace and isn't deleted or stale. Optionally combine vector search with keyword/BM25 (hybrid) for exact terms that embeddings miss.",
-      "patterns": [
-        "Embedding + vector index (ANN)",
-        "Retrieval-augmented generation (RAG)",
-        "Tenant / corpus isolation"
-      ],
       "probeLinks": [
         "rag-paper",
         "dpr-paper",
@@ -3095,6 +3067,15 @@
           "definition": "A second, more precise model scores the candidate chunks for relevance.",
           "whyItMatters": "ANN recall is coarse; reranking sharpens which few chunks ground the answer.",
           "group": "Retrieval & Reranking"
+        },
+        {
+          "term": "Retrieval-augmented generation (RAG)",
+          "description": "Retrieve relevant context and ground the model's answer in it, with citations.",
+          "whyItMatters": "When answers must reflect a private/changing corpus and avoid hallucination.",
+          "steps": [
+            "retrieval",
+            "rag-assembly"
+          ]
         }
       ],
       "options": [
@@ -3306,16 +3287,19 @@
             "Reranker"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Recall speed vs. selection precision",
+          "description": "Trusting the raw ANN top-k alone is fastest, but embeddings return 50 plausible chunks and the prompt has room for a few; a reranker model reorders candidates far more precisely at the cost of extra latency and a second model with its own tuning. Hybrid vector-plus-BM25 fusion adds robustness for exact terms and codes embeddings blur, but means fusing two ranked lists.",
+          "chosen": "The design runs ANN for fast candidates and a reranker for final selection, paying one extra model hop so only genuinely relevant chunks spend context tokens."
+        }
       ]
     },
     {
       "id": "rag-assembly",
       "title": "6. RAG Assembly, Grounding & Citations",
       "description": "Assemble the final prompt — system instructions, conversation summary, recent turns, and retrieved chunks — instruct the model to answer only from the provided context and cite sources, then map the answer back to chunk citations.",
-      "patterns": [
-        "Retrieval-augmented generation (RAG)",
-        "Context window management"
-      ],
       "probeLinks": [
         "openai-retrieval",
         "rag-paper",
@@ -3415,16 +3399,19 @@
           "Orchestrator"
         ]
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-rag-assembly.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-rag-assembly.jpg",
+      "tradeoffs": [
+        {
+          "name": "Fluency vs. groundedness",
+          "description": "Letting the model answer freely reads naturally and can fill gaps from its own knowledge, but that is exactly where hallucination lives. Instructing it to answer only from the retrieved chunks, admit when they lack the answer, and cite sources constrains style and can produce refusals, but makes every claim traceable to a document.",
+          "chosen": "The design constrains the model to the provided context with mandatory citations, trading some conversational freedom for verifiable, grounded answers."
+        }
+      ]
     },
     {
       "id": "cost-control",
       "title": "7. Caching & Cost / Rate Control",
       "description": "LLM tokens are the dominant cost and usage is unbounded by default. Add a semantic/prompt cache for repeated questions, cache embeddings, and enforce per-user/per-tenant rate and cost limits with graceful degradation.",
-      "patterns": [
-        "Semantic / prompt caching",
-        "Rate limiting / throttling"
-      ],
       "probeLinks": [
         "openai-prompt-caching",
         "openai-rate-limits",
@@ -3445,6 +3432,22 @@
           "definition": "Per-user/tenant token or dollar limits.",
           "whyItMatters": "Without it, one user or a loop can run up an unbounded bill.",
           "group": "Caching & Cost / Rate Control"
+        },
+        {
+          "term": "Semantic / prompt caching",
+          "description": "Reuse answers or embeddings for semantically equivalent requests to cut cost and latency.",
+          "whyItMatters": "Repeated or near-duplicate questions over a stable corpus.",
+          "steps": [
+            "cost-control"
+          ]
+        },
+        {
+          "term": "Rate limiting / throttling",
+          "description": "Cap requests, tokens, or dollar spend per user/tenant and shed or queue load past the limit.",
+          "whyItMatters": "Any token-priced LLM call where one client or loop can run up an unbounded bill.",
+          "steps": [
+            "cost-control"
+          ]
         }
       ],
       "options": [
@@ -3656,16 +3659,24 @@
             "Limiter"
           ]
         }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Cache hit rate vs. answer correctness",
+          "description": "An exact-match cache never returns a not-quite-right answer, but natural-language questions are rarely byte-identical so its hit rate is tiny. A semantic cache serves answers to similar past questions and meaningfully cuts LLM spend, but can return a stale or slightly-off answer and needs a similarity threshold, TTL, and invalidation on corpus change.",
+          "chosen": "The design uses a semantic cache with tuned threshold and TTL plus per-tenant budgets, accepting a small risk of near-miss answers to bend the super-linear cost curve."
+        },
+        {
+          "name": "Hard limits vs. user experience",
+          "description": "Unbounded usage lets every user get full-quality answers but makes the bill grow super-linearly; per-user and per-tenant rate and cost limits cap spend but mean some requests are throttled or degraded. Graceful degradation softens the cap without removing it.",
+          "chosen": "The design enforces per-tenant rate and cost budgets with graceful degradation, preferring predictable spend with a softened edge over an uncapped bill."
+        }
       ]
     },
     {
       "id": "scale-safety",
       "title": "8. Scaling, Safety & Evaluation",
       "description": "Make it production-grade: route easy requests to a small fast model and hard ones to a large model, screen inputs/outputs (and retrieved docs) for safety and prompt injection, and log traces to evaluate quality over time.",
-      "patterns": [
-        "Model routing / cascading",
-        "Guardrails / safety filter"
-      ],
       "probeLinks": [
         "openai-evals",
         "ragas-metrics",
@@ -3694,6 +3705,22 @@
           "definition": "Scoring answers against a labeled set and live feedback/traces.",
           "whyItMatters": "RAG quality silently regresses; you must measure to manage it.",
           "group": "Scaling, Safety & Evaluation"
+        },
+        {
+          "term": "Guardrails / safety filter",
+          "description": "Screen inputs and outputs for unsafe content and prompt injection, especially from retrieved docs.",
+          "whyItMatters": "Any user-facing LLM, more so with untrusted document content.",
+          "steps": [
+            "scale-safety"
+          ]
+        },
+        {
+          "term": "Model routing / cascading",
+          "description": "Route easy requests to a small fast model and hard ones to a large model.",
+          "whyItMatters": "Cost/latency optimization across heterogeneous request difficulty.",
+          "steps": [
+            "scale-safety"
+          ]
         }
       ],
       "options": [
@@ -3842,7 +3869,19 @@
           "LLMbig",
           "Eval"
         ]
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Cost vs. worst-case quality",
+          "description": "Routing every request to the large model is simplest and gives the best worst-case answer, but pays maximum cost and latency on every trivial query. A cascade serves most queries with a small fast model and escalates only the hard ones — a big cost lever — but routing logic must be built and tuned, and misroutes hurt either quality or cost.",
+          "chosen": "The design cascades small-model-first with escalation on need, betting that good routing captures most of the large model's quality at a fraction of its cost."
+        },
+        {
+          "name": "Open retrieval vs. injection defense",
+          "description": "Feeding retrieved documents straight into the prompt maximizes the knowledge available, but a document containing 'ignore your instructions' becomes an attack vector — retrieved text is untrusted input. Screening inputs, outputs, and retrieved docs adds latency and screening infrastructure but keeps injected instructions from being obeyed.",
+          "chosen": "The design screens both user input and retrieved content, treating documents as data rather than instructions, and accepts the extra safety hop as the price of ingesting arbitrary text."
+        }
+      ]
     }
   ],
   "finalDesign": {

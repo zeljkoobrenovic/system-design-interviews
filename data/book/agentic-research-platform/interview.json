@@ -992,84 +992,6 @@
       ]
     }
   ],
-  "patterns": [
-    {
-      "name": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-      "what": "An authored DAG (retrieve -> hypothesize -> design -> validate -> authorize -> run), not an autonomous loop driving the lab.",
-      "whenToUse": "Where an action drives physical instruments.",
-      "steps": [
-        "validation"
-      ]
-    },
-    {
-      "name": "Human-in-the-loop approval (gate)",
-      "what": "A human authorizes any physical experiment; the agent never actuates the lab on its own.",
-      "whenToUse": "Before any reagent/robot/biosafety action.",
-      "steps": [
-        "gate"
-      ]
-    },
-    {
-      "name": "Bounded autonomy (agent + deterministic gate)",
-      "what": "The agent reasons and designs freely but a validator and authorization gate fence physical execution.",
-      "whenToUse": "Design-and-dry-run autonomy with a wet-lab boundary.",
-      "steps": [
-        "gate",
-        "validation",
-        "execution"
-      ]
-    },
-    {
-      "name": "Memory: short-term vs long-term (semantic/episodic/procedural)",
-      "what": "Ground hypotheses in primary literature and prior experimental data.",
-      "whenToUse": "Every claim must cite a source.",
-      "steps": [
-        "grounding"
-      ]
-    },
-    {
-      "name": "LLM-as-judge / trajectory evaluation",
-      "what": "Evaluate claim grounding and reproducibility against replicated results.",
-      "whenToUse": "Measuring scientific reliability.",
-      "steps": [
-        "reproducibility",
-        "eval"
-      ]
-    },
-    {
-      "name": "Delegation not impersonation (OAuth token exchange, act claim)",
-      "what": "Scoped access; a wet-lab authorization is bound to a researcher / biosafety principal.",
-      "whenToUse": "Driving instruments and recording authorizations.",
-      "steps": [
-        "gate"
-      ]
-    },
-    {
-      "name": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
-      "what": "Treat papers and datasets as untrusted; partition from lab-actuation authority via a structured protocol boundary.",
-      "whenToUse": "Literature and data are attacker-reachable input.",
-      "steps": [
-        "validation",
-        "biosafety"
-      ]
-    },
-    {
-      "name": "Durable execution / checkpointing (resume after crash)",
-      "what": "Long experiment runs resume exactly-once and never silently re-actuate.",
-      "whenToUse": "Long-running lab automation.",
-      "steps": [
-        "execution"
-      ]
-    },
-    {
-      "name": "Idempotency key for physical actuation",
-      "what": "Every physical run is submitted with an idempotency key so a retry after an ambiguous timeout resolves to the same run, not a second actuation.",
-      "whenToUse": "Any irreversible, retryable physical action.",
-      "steps": [
-        "execution"
-      ]
-    }
-  ],
   "steps": [
     {
       "id": "naive",
@@ -1097,9 +1019,6 @@
         "caption": "An agent designs and runs experiments autonomously — uncontrolled physical actuation and unreproducible claims."
       },
       "decisionPrompt": "What two different kinds of irreversibility does an autonomous lab agent risk?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)"
-      ],
       "probeLinks": [
         "coscientist-nature",
         "chemcrow-tools",
@@ -1121,7 +1040,14 @@
           "instead": "Ground and cite, validate the protocol, require human authorization for any physical run, and track provenance."
         }
       ],
-      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg",
+      "tradeoffs": [
+        {
+          "name": "Autonomy vs. physical irreversibility",
+          "description": "An end-to-end autonomous scientist maximizes experiment throughput, but an unsupervised agent actuating instruments can consume reagents, damage equipment, or run something with biosafety or dual-use implications — irreversible in the physical world. On top of that, claims drawn from the model without provenance cannot be reproduced, which is a scientific failure even when nothing physical goes wrong.",
+          "chosen": "The design rejects full autonomy as the baseline, because both kinds of irreversibility — physical actuation and unreproducible claims — demand the grounded, validated, human-authorized pipeline the rest of the interview builds."
+        }
+      ]
     },
     {
       "id": "grounding",
@@ -1190,9 +1116,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/02-grounding-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Memory: short-term vs long-term (semantic/episodic/procedural)"
-      ],
       "probeLinks": [
         "paperqa2-litqa2",
         "rag-foundations",
@@ -1212,6 +1135,14 @@
           "definition": "Recording the exact source passage and corpus version that supports each claim, not just a paper-level reference.",
           "whyItMatters": "Reproducibility needs to survive corpus updates and retractions; a span + version pins what was actually relied on.",
           "example": "A claim links to paragraph 3 of paper X in corpus snapshot 2026-06, flagged if X is later retracted."
+        },
+        {
+          "term": "Memory: short-term vs long-term (semantic/episodic/procedural)",
+          "description": "Ground hypotheses in primary literature and prior experimental data.",
+          "whyItMatters": "Every claim must cite a source.",
+          "steps": [
+            "grounding"
+          ]
         }
       ],
       "whyNow": [
@@ -1221,7 +1152,14 @@
         "before": "Claims came from model memory.",
         "after": "Hypotheses are grounded in cited literature and data.",
         "newRisk": "A grounded protocol can still be unsafe or malformed to execute physically."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. reproducibility",
+          "description": "A live retrieval index always reflects the newest literature but moves under you — a re-run can read different sources, and paper-level citations cannot pin the passage relied on or detect later retractions. A frozen curated corpus is trivially reproducible but goes stale fast in a moving field. Versioned snapshots with citation spans cost an ingestion and retraction lifecycle, but let every claim pin the exact span and corpus version it read.",
+          "chosen": "The design ingests literature into versioned, content-addressed corpus snapshots with retraction signals and retrieves from a pinned snapshot, because findings must survive corpus updates and re-run against the same sources, accepting that pinning can hide newer evidence unless freshness is surfaced."
+        }
+      ]
     },
     {
       "id": "validation",
@@ -1307,10 +1245,6 @@
         }
       ],
       "decisionPrompt": "Why is model-only safety review unacceptable, and which checks must be deterministic and un-overridable?",
-      "patterns": [
-        "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
-        "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)"
-      ],
       "probeLinks": [
         "autoprotocol-python",
         "opentrons-python-api",
@@ -1335,6 +1269,23 @@
           "definition": "Validation rules carry a version; if the policy service is unavailable, the protocol is blocked rather than allowed.",
           "whyItMatters": "An outage must never become an open door to physical actuation.",
           "example": "Policy service down -> validation returns blocked, run never schedules."
+        },
+        {
+          "term": "Workflow vs agent (deterministic pipeline vs probabilistic loop)",
+          "description": "An authored DAG (retrieve -> hypothesize -> design -> validate -> authorize -> run), not an autonomous loop driving the lab.",
+          "whyItMatters": "Where an action drives physical instruments.",
+          "steps": [
+            "validation"
+          ]
+        },
+        {
+          "term": "Prompt-injection defense (CaMeL / Dual-LLM / Plan-then-Execute)",
+          "description": "Treat papers and datasets as untrusted; partition from lab-actuation authority via a structured protocol boundary.",
+          "whyItMatters": "Literature and data are attacker-reachable input.",
+          "steps": [
+            "validation",
+            "biosafety"
+          ]
         }
       ],
       "whyNow": [
@@ -1356,7 +1307,19 @@
         "before": "A protocol could go straight from the model to the lab.",
         "after": "A structured protocol is deterministically validated, risk-tiered, and hazardous ones blocked.",
         "newRisk": "A valid protocol still must not run physically without a human authorizing it."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Deterministic rules vs. model judgment",
+          "description": "A model-as-judge safety review is cheap and flexible across novel cases, but it is probabilistic and can be prompt-injected by the very paper text it reviews — unacceptable as the sole gate before irreversible physical actions. A deterministic rule engine over a structured protocol IR is auditable, reproducible, and un-overridable, but requires maintaining the IR and a rule corpus that can lag novel hazards.",
+          "chosen": "The design puts a deterministic, versioned rule engine over a structured protocol IR in charge of validation, because the safety decision must be machine-checkable and immune to injected prose, with the model confined to bounded drafting nodes."
+        },
+        {
+          "name": "Strictness vs. escalation flexibility",
+          "description": "Pure hard allow/deny rules are simple and fully deterministic, but with no tiering they are either too strict (blocking legitimate elevated work) or too loose; adding risk-tier routing to a biosafety officer keeps low-risk throughput high while escalating the dangerous tail, at the cost of a human review path to operate.",
+          "chosen": "The design adds risk-tiering on top of the rule engine, routing elevated cases to a biosafety officer rather than forcing every ambiguous protocol into a binary allow or deny."
+        }
+      ]
     },
     {
       "id": "gate",
@@ -1456,12 +1419,6 @@
         }
       ],
       "decisionPrompt": "Which actions are free for the agent, which require human authorization, and why must approval be a durable object rather than a synchronous call?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)",
-        "Bounded autonomy (agent + deterministic gate)",
-        "Delegation not impersonation (OAuth token exchange, act claim)",
-        "Durable execution / checkpointing (resume after crash)"
-      ],
       "probeLinks": [
         "coscientist-nature",
         "who-lab-biosafety-manual",
@@ -1486,6 +1443,32 @@
           "definition": "Protocol readiness (proposed -> validated|blocked -> awaiting_authorization -> authorized|rejected) is owned by the protocol/authorization records; physical execution (submitted -> running -> succeeded|failed|aborted) is owned by run_attempts. One authorized version can spawn many run attempts (dry-run, wet-lab, replication).",
           "whyItMatters": "Conflating them breaks down the moment a version is run more than once; keeping 'approved' distinct from each 'executed' attempt is what makes the audit trail unambiguous.",
           "example": "Version-hash abc is authorized once but has three run_attempts: a dry-run, a failed wet-lab run, and a successful replication."
+        },
+        {
+          "term": "Human-in-the-loop approval (gate)",
+          "description": "A human authorizes any physical experiment; the agent never actuates the lab on its own.",
+          "whyItMatters": "Before any reagent/robot/biosafety action.",
+          "steps": [
+            "gate"
+          ]
+        },
+        {
+          "term": "Bounded autonomy (agent + deterministic gate)",
+          "description": "The agent reasons and designs freely but a validator and authorization gate fence physical execution.",
+          "whyItMatters": "Design-and-dry-run autonomy with a wet-lab boundary.",
+          "steps": [
+            "gate",
+            "validation",
+            "execution"
+          ]
+        },
+        {
+          "term": "Delegation not impersonation (OAuth token exchange, act claim)",
+          "description": "Scoped access; a wet-lab authorization is bound to a researcher / biosafety principal.",
+          "whyItMatters": "Driving instruments and recording authorizations.",
+          "steps": [
+            "gate"
+          ]
         }
       ],
       "whyNow": [
@@ -1575,7 +1558,19 @@
         "before": "The agent could actuate the lab autonomously.",
         "after": "Physical runs require human authorization; dry-runs stay free.",
         "newRisk": "'Authorized' is not 'safely executed exactly once' — a retry after a timeout could double-actuate the robot."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Durable approval vs. synchronous sign-off",
+          "description": "A synchronous authorize call is the simplest mental model, but wet-lab runs take minutes to days — holding a request open is infeasible, and a crash mid-request loses approval state and invites ambiguous re-submission. A durable approval workflow needs a state store and callback path, but makes authorization an auditable object with a signer chain, scope, expiry, and revocation, and cleanly separates approved from safely executed.",
+          "chosen": "The design makes authorization a durable workflow producing a scoped, expirable approval object signed by a researcher (plus a biosafety officer when warranted), because human decisions about physical runs are long-running and must survive waits, crashes, and handoffs."
+        },
+        {
+          "name": "Platform-bound vs. external approval",
+          "description": "Reusing an external ticketing or e-signature system leverages existing compliance tooling, but the authorization scope is not bound to the exact protocol version and hash in the platform, and the weak coupling makes exactly-once execution and revocation hard to enforce; building approval into the platform costs more but binds the sign-off to the precise validated artifact.",
+          "chosen": "The design keeps authorization inside the platform bound to the validated protocol version, because an approval that cannot name exactly what it approved cannot safely gate physical execution."
+        }
+      ]
     },
     {
       "id": "execution",
@@ -1651,9 +1646,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/05-execution-opt3.jpg"
         }
       ],
-      "patterns": [
-        "Durable execution / checkpointing (resume after crash)"
-      ],
       "probeLinks": [
         "mobile-robotic-chemist",
         "temporal-workflows",
@@ -1672,6 +1664,22 @@
           "definition": "A time-bounded claim on a run that the controller renews; an expired or unknown lease forces reconciliation, not a blind retry.",
           "whyItMatters": "It turns ambiguous 'did it run?' states into a deliberate check rather than a guess.",
           "example": "A missing callback past the lease triggers a status query to the robot before any retry."
+        },
+        {
+          "term": "Durable execution / checkpointing (resume after crash)",
+          "description": "Long experiment runs resume exactly-once and never silently re-actuate.",
+          "whyItMatters": "Long-running lab automation.",
+          "steps": [
+            "execution"
+          ]
+        },
+        {
+          "term": "Idempotency key for physical actuation",
+          "description": "Every physical run is submitted with an idempotency key so a retry after an ambiguous timeout resolves to the same run, not a second actuation.",
+          "whyItMatters": "Any irreversible, retryable physical action.",
+          "steps": [
+            "execution"
+          ]
         }
       ],
       "whyNow": [
@@ -1746,7 +1754,14 @@
         "before": "Authorization flowed straight to the robot, with retries risking double actuation.",
         "after": "An execution controller makes physical runs idempotent, leased, and reconcilable.",
         "newRisk": "Results and claims must be reproducible and fully traceable to be science."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Workflow machinery vs. moving parts",
+          "description": "Calling the robot API directly from the pipeline has the fewest moving parts, but an ambiguous timeout becomes a blind retry that double-actuates — consuming reagents twice is the highest-blast-radius bug in the system. A plain queue is simpler than a workflow engine but loses checkpoint and lease state on a worker crash, making reconciliation ad hoc. A durable workflow engine plus reservation service is the most operational machinery, but makes exactly-once actuation enforceable.",
+          "chosen": "The design drives each run as a durable, checkpointed saga with a reservation service, idempotency keys, and run leases, because surviving crashes and ambiguous timeouts without resubmitting a physical experiment justifies the extra machinery."
+        }
+      ]
     },
     {
       "id": "reproducibility",
@@ -1808,9 +1823,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/06-reproducibility-opt2.jpg"
         }
       ],
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "w3c-prov-overview",
         "ro-crate-spec",
@@ -1823,6 +1835,15 @@
           "definition": "A traceable chain from each claim to its source and each datum to the run, protocol, and conditions that produced it.",
           "whyItMatters": "Reproducibility is the core scientific requirement; without provenance a result can't be trusted or rebuilt.",
           "example": "A finding links to its source papers and to run #42 with its exact protocol version and parameters."
+        },
+        {
+          "term": "LLM-as-judge / trajectory evaluation",
+          "description": "Evaluate claim grounding and reproducibility against replicated results.",
+          "whyItMatters": "Measuring scientific reliability.",
+          "steps": [
+            "reproducibility",
+            "eval"
+          ]
         }
       ],
       "whyNow": [
@@ -1852,7 +1873,14 @@
         "before": "Results had no traceable origin.",
         "after": "Every claim and datum is traceable and reproducible.",
         "newRisk": "Hazardous or dual-use protocols must be screened, and scientific reliability measured."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Write-time lineage vs. hot-path intrusion",
+          "description": "Post-hoc lineage extraction keeps producing components clean and runs provenance as a separate batch job, but it is lossy — spans, snapshots, and conditions that were not logged cannot be recovered, and the gaps surface exactly when you need to reproduce a result. Capturing lineage at write time threads provenance through every producer's hot path and costs storage and coordination, but nothing has to be reconstructed or guessed afterward.",
+          "chosen": "The design writes provenance alongside the artifacts as they are produced — citation span and snapshot per claim, run, checksum, protocol version, and conditions per datum — because reproducibility cannot depend on reconstructing what was never recorded."
+        }
+      ]
     },
     {
       "id": "biosafety",
@@ -1888,9 +1916,6 @@
         "caption": "Untrusted paper text flows through the agent into a structured protocol; deterministic screening blocks hazards and routes biosafety cases to an officer."
       },
       "decisionPrompt": "How do you stop an injected instruction in a paper from talking the agent into a hazardous protocol?",
-      "patterns": [
-        "Human-in-the-loop approval (gate)"
-      ],
       "probeLinks": [
         "who-lab-biosafety-manual",
         "owasp-prompt-injection",
@@ -1980,7 +2005,14 @@
         "after": "Dual-use/biosafety hazards are blocked deterministically (hard-block vs needs-biosafety) and untrusted text is kept out of the safety decision.",
         "newRisk": "Scientific reliability across workflows still needs to be measured."
       },
-      "aiVisual": "assets/generated/ai-visuals/steps/07-biosafety.jpg"
+      "aiVisual": "assets/generated/ai-visuals/steps/07-biosafety.jpg",
+      "tradeoffs": [
+        {
+          "name": "Open literature access vs. injection exposure",
+          "description": "Letting the agent read arbitrary papers and datasets is essential for research breadth, but those inputs are untrusted — an injected instruction in a paper could steer the design agent toward a hazardous protocol. The structural defense costs expressiveness: the agent can only emit a structured protocol IR, and screening evaluates the IR, never the model's prose or the paper's text.",
+          "chosen": "The design accepts untrusted content into the agent's context but confines its output to a structured IR screened deterministically, separating hard-blocked hazards (un-overridable) from needs-biosafety escalations, with rules versioned and failing closed."
+        }
+      ]
     },
     {
       "id": "eval",
@@ -2048,9 +2080,6 @@
           "aiVisual": "assets/generated/ai-visuals/steps/08-eval-opt3.jpg"
         }
       ],
-      "patterns": [
-        "LLM-as-judge / trajectory evaluation"
-      ],
       "probeLinks": [
         "lab-bench",
         "paperqa2-litqa2",
@@ -2072,7 +2101,14 @@
         "before": "Only output plausibility was assessed.",
         "after": "Grounding and reproducibility are evaluated against replicated results.",
         "newRisk": "This completes phase 3 of the series: Foundations plus verticals spanning the full gradient and the real-time, contestability, and physical-experiment axes."
-      }
+      },
+      "tradeoffs": [
+        {
+          "name": "Replication rigor vs. evaluation cost",
+          "description": "Scoring outputs by plausibility is cheap and fast but rewards confident fabrication — the wrong objective for a system that drives physical experiments; citation precision alone is cheaper than replication but a well-cited claim can still fail experimentally. Weighting evaluation by replication on re-run optimizes for results that actually hold up, but replication is slow and expensive and needs sampling, prioritization, and proxy signals for findings that cannot be cheaply re-run.",
+          "chosen": "The design scores findings primarily by whether they replicate and whether every claim is grounded, with citation precision and operational signals as support, because science requires results that hold up, not answers that sound right."
+        }
+      ]
     }
   ],
   "finalDesign": {
