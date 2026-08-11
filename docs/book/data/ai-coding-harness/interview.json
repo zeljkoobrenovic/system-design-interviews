@@ -734,7 +734,8 @@
         "before": "Nothing.",
         "after": "Agent produces PRs; humans catch everything by reading.",
         "newRisk": "Review toil scales with agent output, and the agent repeats the same mistakes every session — nothing steers it before it acts."
-      }
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
     },
     {
       "id": "guides",
@@ -802,7 +803,8 @@
               "Guides"
             ],
             "caption": "Rules files, reference docs, and how-tos — inferential feedforward the model interprets."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/02-guides-opt1.jpg"
         },
         {
           "name": "Computational guides (LSP, scaffolds, codemods)",
@@ -838,7 +840,8 @@
               "CodeIntel"
             ],
             "caption": "Adds code intelligence and deterministic generators — feedforward the model cannot ignore."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/02-guides-opt2.jpg"
         }
       ],
       "whyNow": [
@@ -1186,7 +1189,8 @@
         "before": "Guides steered generation but nothing verified the output.",
         "after": "Deterministic sensors catch structural defects on every change and the agent fixes them itself.",
         "newRisk": "Structurally clean junk sails through: semantic duplication, redundant tests, overengineering — things no CPU check can judge."
-      }
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/03-sensors.jpg"
     },
     {
       "id": "review-agents",
@@ -1250,7 +1254,8 @@
               "CompSensors"
             ],
             "caption": "CPU-only sensing: reliable, cheap, and structurally blind to semantics."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-review-agents-opt1.jpg"
         },
         {
           "name": "Add inferential review agents",
@@ -1284,7 +1289,8 @@
               "ReviewAgents"
             ],
             "caption": "The two-tier sensor bank: CPU checks on every change, GPU judgment where structure can't decide."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-review-agents-opt2.jpg"
         }
       ],
       "whyNow": [
@@ -1560,7 +1566,8 @@
         "before": "Sensors existed but placement was ad hoc — per developer, per session.",
         "after": "Every control has a station: loop, pre-commit, human gate, pipeline; expensive checks run once, authoritatively.",
         "newRisk": "Lifecycle sensors only fire on changes — decay that accumulates between changes (dead code, rotting tests, drifting deps) is invisible to all of them."
-      }
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/05-lifecycle.jpg"
     },
     {
       "id": "drift",
@@ -1737,7 +1744,8 @@
         "before": "The harness saw every change but none of the decay between changes.",
         "after": "Scheduled scanners and runtime signals feed a throttled janitor fleet; maintenance became a continuous background process.",
         "newRisk": "Everything so far regulates code quality and architecture — whether the software functionally does what was intended still rests on tests the same agent wrote."
-      }
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/06-drift.jpg"
     },
     {
       "id": "behaviour",
@@ -1810,7 +1818,8 @@
               "CompSensors"
             ],
             "caption": "Automated-only behaviour evidence: green suite, coverage, mutation score — consistency, not verified intent."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-behaviour-opt1.jpg"
         },
         {
           "name": "Approved fixtures (human approves behaviour artifacts)",
@@ -1849,7 +1858,8 @@
               "Dev"
             ],
             "caption": "Selective human approval of behaviour fixtures where artifacts are reviewable — the human checks what, not how."
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-behaviour-opt2.jpg"
         }
       ],
       "whyNow": [
@@ -2127,7 +2137,8 @@
         "before": "Each team hand-built its harness; quality didn't compound and nobody knew if controls still worked.",
         "after": "Versioned per-topology templates, harnessability shaping tech choices, and a measured steering loop with escapes as its backlog.",
         "newRisk": "The harness is now infrastructure with its own failure modes — coherence, template drift, and dead sensors need the same engineering seriousness as production systems."
-      }
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/08-scale.jpg"
     }
   ],
   "finalDesign": {
@@ -2183,7 +2194,8 @@
         "feedforward",
         "feedback"
       ]
-    }
+    },
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
   },
   "satisfies": {
     "functional": [
@@ -2876,5 +2888,9 @@
   ],
   "assets": {
     "icon": "icon.png"
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
   }
 }
