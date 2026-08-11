@@ -317,6 +317,11 @@
           "id": "just-use-s3",
           "name": "Just Use S3!",
           "path": "data/just-use-s3/interview.json"
+        },
+        {
+          "id": "just-use-kubernetes",
+          "name": "Just Use Kubernetes!",
+          "path": "data/just-use-kubernetes/interview.json"
         }
       ]
     },
