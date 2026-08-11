@@ -297,6 +297,11 @@
           "id": "just-use-kafka",
           "name": "Just Use Kafka!",
           "path": "data/just-use-kafka/interview.json"
+        },
+        {
+          "id": "just-use-postgres",
+          "name": "Just Use Postgres!",
+          "path": "data/just-use-postgres/interview.json"
         }
       ]
     },
