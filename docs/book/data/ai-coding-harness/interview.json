@@ -2892,5 +2892,6 @@
   "aiVisuals": {
     "requirements": "assets/generated/ai-visuals/requirements.jpg",
     "capacity": "assets/generated/ai-visuals/capacity.jpg"
-  }
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
 }
