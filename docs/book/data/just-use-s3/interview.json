@@ -1,0 +1,2589 @@
+{
+  "title": "Just Use S3 — Object-Storage-Centric Systems Design",
+  "description": "Design a creator media platform — multi-gigabyte uploads, thumbnail/transcode processing, global delivery, usage analytics, and compliance archival — where object storage (S3 or any S3-compatible store) is deliberately the storage backbone. The organizing idea: almost everything that is 'a file problem' or 'a big data problem' maps onto the object-store contract — immutable objects under keys, presigned direct transfers, event notifications feeding processing pipelines, Parquet-on-object-storage as the data lake, lifecycle tiering and object lock for cost and compliance — while a small relational catalog stays the authority on what exists and who owns it.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Client",
+        "label": "Web / Mobile App",
+        "type": "client",
+        "category": "boundary",
+        "traits": [],
+        "description": "Creator uploading media and viewers streaming it; talks to the API for control, to storage and CDN for bytes."
+      },
+      {
+        "id": "LB",
+        "label": "API Gateway / LB",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Terminates TLS, authenticates, routes control-plane requests to the app tier — bytes don't flow here."
+      },
+      {
+        "id": "App",
+        "label": "Application Service",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Control plane: issues presigned URLs, owns the media catalog, enforces quotas and permissions. Never proxies media bytes."
+      },
+      {
+        "id": "DB",
+        "label": "Metadata Catalog (RDBMS)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The authority on what exists: media rows with bucket/key/version/checksum/state. Objects hold bytes; this holds truth."
+      },
+      {
+        "id": "Raw",
+        "label": "Object Store — Raw Uploads",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Immutable originals under hash-prefixed keys (media/raw/...). Written directly by clients via presigned multipart uploads."
+      },
+      {
+        "id": "Derived",
+        "label": "Object Store — Derivatives",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Thumbnails, transcodes, previews written by workers under derived/{media_id}/... — regenerable from the originals."
+      },
+      {
+        "id": "Lake",
+        "label": "Object Store — Data Lake (Parquet)",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Usage events and platform exports as partitioned Parquet under an Iceberg-style table layout; queried in place."
+      },
+      {
+        "id": "Archive",
+        "label": "Object Store — Versioned Archive (Object Lock)",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Versioned, WORM-locked, cross-region-replicated tier for compliance copies and ransomware-proof retention."
+      },
+      {
+        "id": "CDN",
+        "label": "CDN (signed delivery)",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Caches derivatives close to viewers; signed URLs/cookies gate access; shields the store from egress and request storms."
+      },
+      {
+        "id": "Events",
+        "label": "Event Notifications",
+        "type": "stream",
+        "category": "async",
+        "traits": [],
+        "description": "ObjectCreated/ObjectRemoved notifications from the raw bucket — at-least-once, unordered — fanned into the queue."
+      },
+      {
+        "id": "Queue",
+        "label": "Processing Queue",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Buffers object events for workers: retries, visibility timeouts, DLQ — the shock absorber between storage and compute."
+      },
+      {
+        "id": "Worker",
+        "label": "Processing Workers",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Consume events, GET the original, produce derivatives (thumbnail, transcode, scan), PUT them back, mark the catalog."
+      },
+      {
+        "id": "Batcher",
+        "label": "Event Batcher (usage -> Parquet)",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Buffers high-volume usage events and flushes them as ~1 GB partitioned Parquet files — the anti-tiny-objects valve."
+      },
+      {
+        "id": "Query",
+        "label": "Query Engine (Trino / Athena / DuckDB)",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "SQL directly over the lake's Parquet/Iceberg tables — no load step, no warehouse copy, pay per scan."
+      },
+      {
+        "id": "Analyst",
+        "label": "Analyst / Dashboard",
+        "type": "actor",
+        "category": "boundary",
+        "traits": [],
+        "description": "Product and finance people asking usage, growth, and cost questions against the lake."
+      },
+      {
+        "id": "Metrics",
+        "label": "Metrics & Alerting",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Watches request rates and errors per prefix, queue depth and age, orphan counts, storage growth by class, egress spend."
+      }
+    ],
+    "links": [
+      {
+        "id": "client-lb",
+        "from": "Client",
+        "to": "LB",
+        "label": "HTTPS (control plane)"
+      },
+      {
+        "id": "lb-app",
+        "from": "LB",
+        "to": "App",
+        "label": "route request"
+      },
+      {
+        "id": "app-db",
+        "from": "App",
+        "to": "DB",
+        "label": "catalog rows (intent -> stored)"
+      },
+      {
+        "id": "app-raw",
+        "from": "App",
+        "to": "Raw",
+        "label": "issue presigned URLs; HEAD verify"
+      },
+      {
+        "id": "client-raw",
+        "from": "Client",
+        "to": "Raw",
+        "label": "PUT parts directly (presigned multipart)"
+      },
+      {
+        "id": "client-cdn",
+        "from": "Client",
+        "to": "CDN",
+        "label": "GET media (signed URL)"
+      },
+      {
+        "id": "cdn-derived",
+        "from": "CDN",
+        "to": "Derived",
+        "label": "origin fetch on cache miss"
+      },
+      {
+        "id": "raw-events",
+        "from": "Raw",
+        "to": "Events",
+        "label": "ObjectCreated {key, version, sequencer}"
+      },
+      {
+        "id": "events-queue",
+        "from": "Events",
+        "to": "Queue",
+        "label": "fan into queue (at-least-once)"
+      },
+      {
+        "id": "worker-queue",
+        "from": "Worker",
+        "to": "Queue",
+        "label": "consume + ack (visibility timeout)"
+      },
+      {
+        "id": "worker-raw",
+        "from": "Worker",
+        "to": "Raw",
+        "label": "GET original (byte ranges)"
+      },
+      {
+        "id": "worker-derived",
+        "from": "Worker",
+        "to": "Derived",
+        "label": "PUT thumbnails / transcodes"
+      },
+      {
+        "id": "worker-db",
+        "from": "Worker",
+        "to": "DB",
+        "label": "mark processed (idempotent per key+version)"
+      },
+      {
+        "id": "app-batcher",
+        "from": "App",
+        "to": "Batcher",
+        "label": "usage events (view, play, share)"
+      },
+      {
+        "id": "batcher-lake",
+        "from": "Batcher",
+        "to": "Lake",
+        "label": "flush ~1 GB Parquet, partitioned by date"
+      },
+      {
+        "id": "query-lake",
+        "from": "Query",
+        "to": "Lake",
+        "label": "scan Parquet/Iceberg in place"
+      },
+      {
+        "id": "analyst-query",
+        "from": "Analyst",
+        "to": "Query",
+        "label": "SQL"
+      },
+      {
+        "id": "raw-archive",
+        "from": "Raw",
+        "to": "Archive",
+        "label": "replication + lifecycle to locked archive"
+      },
+      {
+        "id": "raw-metrics",
+        "from": "Raw",
+        "to": "Metrics",
+        "label": "request/error rates, storage by class"
+      },
+      {
+        "id": "queue-metrics",
+        "from": "Queue",
+        "to": "Metrics",
+        "label": "depth, oldest event age, DLQ"
+      },
+      {
+        "id": "app-metrics",
+        "from": "App",
+        "to": "Metrics",
+        "label": "presign rate, orphan GC counts"
+      }
+    ],
+    "types": [
+      {
+        "id": "object-tier",
+        "label": "Object Storage Tiers",
+        "nodes": [
+          "Raw",
+          "Derived",
+          "Lake",
+          "Archive"
+        ]
+      },
+      {
+        "id": "pipeline",
+        "label": "Event Processing",
+        "nodes": [
+          "Events",
+          "Queue",
+          "Worker",
+          "Batcher"
+        ]
+      },
+      {
+        "id": "ops",
+        "label": "Catalog & Ops",
+        "nodes": [
+          "DB",
+          "Metrics"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  Creator[Creator]",
+    "  Upload[Multi-GB uploads]",
+    "  Process[Thumbnails / transcodes]",
+    "  Deliver[Global delivery]",
+    "  Viewer[Viewer]",
+    "  Analytics[Usage analytics]",
+    "  Comply[Retention / compliance]",
+    "  Creator --> Upload",
+    "  Upload --> Process",
+    "  Process --> Deliver",
+    "  Deliver --> Viewer",
+    "  Viewer --> Analytics",
+    "  Upload --> Comply"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  U[Uploads ~3 TB/day]",
+    "  E[Object events ~250k/day]",
+    "  V[Delivery ~20k GET/s via CDN]",
+    "  A[Usage events ~100M/day]",
+    "  S3[Object store ~1 PB/yr]",
+    "  U --> S3",
+    "  E --> S3",
+    "  V --> S3",
+    "  A --> S3"
+  ],
+  "requirements": {
+    "functional": [
+      "Accept uploads from phones and browsers up to multi-GB video, resumable over flaky networks.",
+      "Produce derivatives automatically: thumbnails, web/mobile transcodes, content scan — within minutes of upload.",
+      "Deliver media globally with low latency, gated by per-user authorization.",
+      "Answer usage and growth questions (views, storage per creator, cost per feature) over months of history.",
+      "Retain compliance copies immutably for 7 years; delete user content on request everywhere it lives.",
+      "Know authoritatively what exists: every visible media item maps to verified, checksummed objects."
+    ],
+    "nonFunctional": [
+      "Durability first: originals survive disk, node, and AZ failures (11-nines-class design).",
+      "App tier stays stateless and byte-free: media bytes never flow through application servers.",
+      "Processing is at-least-once with idempotent effects; a burst of uploads backs up gracefully, never loses work.",
+      "Cost is architecture: egress, request counts, and storage classes are designed, not discovered on the bill.",
+      "Ransomware/mistake-proof: versioning plus WORM lock make destructive operations recoverable or impossible.",
+      "Honest limits: object storage is not a filesystem, not a database, and not a CDN — each boundary is named."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Uploads/day",
+      "value": "~200k photos + 5k videos",
+      "note": "~800 GB photos (4 MB avg) + ~2.5 TB video (500 MB avg) ≈ 3+ TB/day of originals — ~1 PB/year before derivatives and the lake."
+    },
+    {
+      "label": "Largest objects",
+      "value": "5–50 GB video",
+      "note": "Far past any sane single PUT: multipart upload in ~100 MB parts, parallel and resumable; parts retry independently."
+    },
+    {
+      "label": "Presign rate",
+      "value": "~500/s peak",
+      "note": "Control-plane only — the app signs URLs and writes intent rows; the bytes go straight from client to storage."
+    },
+    {
+      "label": "Delivery",
+      "value": "~20k GET/s peak",
+      "note": "~90% CDN hit rate leaves ~2k origin GET/s on the derivatives bucket — well inside per-prefix limits with sane key design."
+    },
+    {
+      "label": "Object events",
+      "value": "~250k/day",
+      "note": "Each upload emits ObjectCreated; each event fans to ~3 worker tasks (thumb, transcode, scan). At-least-once: duplicates are normal."
+    },
+    {
+      "label": "Per-prefix throughput",
+      "value": "~3.5k PUT / 5.5k GET per s",
+      "note": "The store auto-partitions by key prefix; hash-fanned prefixes (media/raw/a3/...) let throughput scale wide instead of hot-spotting one prefix."
+    },
+    {
+      "label": "Usage events",
+      "value": "~100M/day",
+      "note": "Written as ~100 batched ~1 GB Parquet files, not 100M objects: 100M PUTs/day is ~$500/day in request costs alone and makes listing useless — batching is the difference between a lake and a landfill."
+    },
+    {
+      "label": "Lake growth",
+      "value": "~100 GB/day columnar",
+      "note": "Partitioned by date; a month-scoped query scans ~3 TB max, and column pruning usually cuts that 10–50×."
+    },
+    {
+      "label": "Egress",
+      "value": "the bill-shock line",
+      "note": "A PB-scale library served without a CDN is ruinous; with ~90% edge cache hit the origin egress drops an order of magnitude. Egress, not storage, dominates naive designs."
+    },
+    {
+      "label": "Archive fraction",
+      "value": "~70% cold after 90 days",
+      "note": "Lifecycle transitions originals to infrequent-access/archive classes; storage cost per GB drops 2–20× for content nobody replays."
+    }
+  ],
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/uploads",
+      "description": "Start an upload: writes a catalog intent row (state=uploading) and returns presigned multipart part URLs. The client sends bytes directly to storage — the app never touches them.",
+      "request": "{ \"filename\": \"trip.mp4\", \"bytes\": 8123456789, \"sha256\": \"...\" }",
+      "response": "{ \"mediaId\": \"m_912\", \"uploadId\": \"...\", \"partUrls\": [\"https://...part=1&sig=...\", ...] }",
+      "sequence": {
+        "participants": [
+          {
+            "id": "Client"
+          },
+          {
+            "id": "App"
+          },
+          {
+            "id": "DB",
+            "label": "catalog"
+          },
+          {
+            "id": "Raw",
+            "label": "object store"
+          }
+        ],
+        "messages": [
+          {
+            "from": "Client",
+            "to": "App",
+            "arrow": "->>",
+            "label": "POST /uploads (size, sha256)"
+          },
+          {
+            "from": "App",
+            "to": "DB",
+            "arrow": "->>",
+            "label": "INSERT media (state=uploading)"
+          },
+          {
+            "from": "App",
+            "to": "Client",
+            "arrow": "-->>",
+            "label": "presigned part URLs"
+          },
+          {
+            "from": "Client",
+            "to": "Raw",
+            "arrow": "->>",
+            "label": "PUT parts 1..N in parallel (retry per part)"
+          },
+          {
+            "from": "Client",
+            "to": "App",
+            "arrow": "->>",
+            "label": "POST /uploads/{id}/complete (part etags)"
+          },
+          {
+            "from": "App",
+            "to": "Raw",
+            "arrow": "->>",
+            "label": "CompleteMultipartUpload; HEAD verify checksum"
+          },
+          {
+            "from": "App",
+            "to": "DB",
+            "arrow": "->>",
+            "label": "UPDATE media -> state=stored"
+          }
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/uploads/{id}/complete",
+      "description": "Finish the multipart upload: the store assembles parts, the app verifies size/checksum with HEAD, then flips the catalog row to stored — the moment the media officially exists.",
+      "request": "{ \"parts\": [ { \"n\": 1, \"etag\": \"...\" }, ... ] }",
+      "response": "{ \"mediaId\": \"m_912\", \"state\": \"stored\" }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/media/{id}",
+      "description": "Authorize against the catalog, then hand back short-lived signed CDN URLs for the requested renditions — the app gates access, the CDN moves bytes.",
+      "request": "(id in path; session)",
+      "response": "{ \"thumb\": \"https://cdn.../thumb_256.jpg?sig=...\", \"hls\": \"https://cdn.../master.m3u8?sig=...\" }"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v1/media/{id}",
+      "description": "Tombstone the catalog row, then delete every object it points to (original, derivatives, lake references queued for compaction) — catalog-first so nothing dangles visibly.",
+      "request": "(id in path; owner or admin)",
+      "response": "{ \"state\": \"deleting\" }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/usage",
+      "description": "Dashboards over the lake: the query engine scans partitioned Parquet in place (storage per creator, plays per rendition, egress per feature).",
+      "request": "?window=90d&groupBy=creator (admin token)",
+      "response": "{ \"rows\": [ { \"creator\": \"c_11\", \"storageGb\": 412, \"plays\": 90312 } ] }"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "media_catalog (RDBMS)",
+      "note": "The authority on existence and ownership. state machine: uploading -> stored -> processed -> deleting -> gone. An object without a stored/processed row is an orphan (GC sweeps it); a row without its object is a corruption alarm.",
+      "fields": [
+        {
+          "name": "media_id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "owner_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "bucket / key",
+          "type": "text (raw original location)"
+        },
+        {
+          "name": "version_id",
+          "type": "text (immutability handle)"
+        },
+        {
+          "name": "sha256 / bytes",
+          "type": "checksum + size (verified at complete)"
+        },
+        {
+          "name": "state",
+          "type": "enum(uploading, stored, processed, deleting)"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "name": "key layout (object store)",
+      "note": "Keys are names, not directories: design them for prefix throughput and privacy. A short hash fan-out spreads load across partitions; ids — never usernames or filenames — appear in keys (keys leak into logs, URLs, and inventories).",
+      "fields": [
+        {
+          "name": "original",
+          "type": "media/raw/{h2}/{media_id}/original.{ext}  (h2 = 2-hex hash fan-out)"
+        },
+        {
+          "name": "derivative",
+          "type": "derived/{media_id}/{rendition}.{ext}  (thumb_256, 720p, hls/...)"
+        },
+        {
+          "name": "lake",
+          "type": "lake/events/date=YYYY-MM-DD/hour=HH/part-{n}.parquet"
+        },
+        {
+          "name": "archive",
+          "type": "archive bucket: versioned, object-lock (compliance mode), replicated"
+        }
+      ]
+    },
+    {
+      "name": "object event (queue message)",
+      "note": "What workers actually consume: at-least-once and unordered, so handlers key their idempotency on (key, version_id) and treat the catalog as the arbiter of current truth.",
+      "fields": [
+        {
+          "name": "event",
+          "type": "ObjectCreated:CompleteMultipartUpload / ObjectRemoved"
+        },
+        {
+          "name": "bucket / key / version_id",
+          "type": "object identity"
+        },
+        {
+          "name": "bytes / etag",
+          "type": "sanity checks before processing"
+        },
+        {
+          "name": "sequencer",
+          "type": "opaque ordering hint per key (compare, don't trust order of arrival)"
+        }
+      ]
+    },
+    {
+      "name": "usage_events (lake table)",
+      "note": "Iceberg-style table over partitioned Parquet: schema evolution, snapshot isolation for readers, and compaction of small files — the 'database-ish' layer that makes objects queryable.",
+      "fields": [
+        {
+          "name": "event_time",
+          "type": "timestamp (partition: date/hour)"
+        },
+        {
+          "name": "event_type",
+          "type": "enum(view, play, complete, share)"
+        },
+        {
+          "name": "media_id / viewer_id",
+          "type": "uuid / bigint"
+        },
+        {
+          "name": "rendition",
+          "type": "string (thumb, 720p, hls)"
+        },
+        {
+          "name": "bytes_served",
+          "type": "bigint (egress attribution)"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: Files on the App Server (the baseline)",
+      "description": [
+        "Start with the simplest thing that works: uploads are POSTed through the app and written to the server's disk (or an NFS volume shared between servers); downloads stream back through the same app processes; a nightly rsync is the backup story; analytics is a script that walks the directory tree.",
+        "Every axis fails at once. Durability: one dead disk loses originals forever, and the rsync window loses a day. Scale: disks fill, and 'which server has the file?' makes the app tier sticky and unbalanceable — NFS just moves the bottleneck and adds locking folklore. Throughput: every upload and download occupies an app worker for its whole transfer, so a handful of 5 GB uploads starves the API. Delivery: every viewer's bytes cross the app tier and leave the datacenter at full price. Processing: thumbnails happen inline in the request, or not at all.",
+        "The fix is a purpose-built storage tier with a radically small contract — PUT, GET, LIST, DELETE on immutable objects under keys — that turns out to be enough to rebuild uploads, processing, delivery, analytics, and compliance on top. That contract, and its discipline, is the rest of this interview."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "DB"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-db"
+        ],
+        "caption": "Bytes flow through the app tier onto local disks; durability is a cron job and scale is 'buy a bigger disk'.",
+        "highlight": [
+          "App"
+        ]
+      },
+      "decisionPrompt": "A disk dies at 2 a.m. and a creator's only copy of yesterday's upload was on it. Walk the naive design's answer — then list what else is quietly wrong even when no disk dies.",
+      "whyNow": [
+        "Every object-store discipline in the later steps (immutability, direct transfer, events, cataloging) fixes a specific named failure of this baseline — start where the pain is concrete."
+      ],
+      "probeLinks": [
+        "s3-consistency-blog",
+        "minio"
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "Uploads, downloads, and 'backups' all work — through app servers onto mortal disks.",
+        "newRisk": "One disk failure loses originals; transfers monopolize app workers; the app tier is sticky; egress and processing have no story at all."
+      },
+      "traps": [
+        {
+          "trap": "Sharing a filesystem (NFS/EFS) between app servers as 'the fix'.",
+          "why": "It centralizes the same mortal disk with extra latency and locking semantics nobody fully knows, and it still streams every byte through the app tier.",
+          "instead": "An object store with an HTTP contract: durable by replication/erasure-coding, addressed by key, written and read directly by clients."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Filesystem familiarity vs. storage contract",
+          "description": "Local files are the API every developer knows — rename, append, seek all work — while the object store's tiny immutable contract feels restrictive; but the filesystem's flexibility is exactly what can't be made durable, scalable, and directly client-accessible at platform scale.",
+          "chosen": "The design trades filesystem semantics for a contract small enough to be eleven-nines durable and safely exposed to the internet."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+    },
+    {
+      "id": "objects",
+      "title": "2. The Object Contract — Keys, Immutability, Durability",
+      "description": [
+        "An object store is three ideas held rigidly. Objects are immutable blobs: you PUT a whole object, GET a whole object (or a byte range), and never modify one in place — 'update' means writing a new object or a new version. Keys are names in a flat namespace: media/raw/a3/m_912/original.mp4 is one string, not four directories — prefixes are a query convention (and a performance boundary), and there is no rename, only copy+delete. Durability is the product: objects are erasure-coded across devices and availability zones, giving the famous eleven-nines design durability — losing an object is designed to be a museum-grade event, which is why the originals can live here and nowhere else.",
+        "Two contract details do a lot of work. Consistency: modern S3 (and serious compatibles) is strongly consistent — after a successful PUT, any GET or LIST sees the new object; no more 'eventual' caveats on the read path (this was S3's 2020 change; design against the store you actually run). Metadata: objects carry content-type, checksums, and small user metadata — enough for verification and routing, and emphatically not a database.",
+        "Key design is the schema design of this world. Fan the keyspace with a short hash so throughput partitions spread (per-prefix request limits are real); group by lifecycle so retention rules bind to prefixes (raw/, derived/, lake/); never encode secrets or PII in keys — keys leak into URLs, logs, and inventory reports. And name the limits honestly while introducing the contract: latency is milliseconds-per-request, not microseconds (this is not a filesystem or a cache), LIST is paginated scan (not a query engine), and there are no cross-object transactions — the gap the catalog step closes."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Raw",
+          "Derived",
+          "Metrics"
+        ],
+        "links": [
+          "app-raw",
+          "raw-metrics"
+        ],
+        "caption": "Immutable objects under designed keys, erasure-coded across zones: the contract everything else builds on.",
+        "highlight": [
+          "Raw"
+        ]
+      },
+      "decisionPrompt": "There is no rename and no append. Walk through how each 'filesystem habit' (rename on finish, append a log line, edit in place) is re-expressed against immutable objects — and what you gain for giving them up.",
+      "concepts": [
+        {
+          "term": "Immutable object",
+          "definition": "A write-once blob addressed by key (and version); change means a new object or version, never mutation.",
+          "whyItMatters": "Immutability is what makes caching, replication, presigned sharing, and WORM compliance composable and safe.",
+          "example": "Re-upload = new version_id; the catalog points at the version that is true."
+        },
+        {
+          "term": "Flat keyspace + prefixes",
+          "definition": "Keys are strings; 'directories' are a display convention over shared prefixes.",
+          "whyItMatters": "Prefixes are simultaneously your query pattern, your lifecycle-rule scope, and your throughput partition — key design is schema design.",
+          "example": "media/raw/{h2}/{media_id}/original.mp4 — hash fan-out first, lifecycle grouping at the top."
+        },
+        {
+          "term": "Design durability (11 nines)",
+          "definition": "Erasure-coded redundancy across devices and zones targeting ~99.999999999% annual object survival.",
+          "whyItMatters": "It's why originals need no second home for durability — and why the remaining risks are your own deletes and account-level mistakes, not disk death.",
+          "example": "Versioning + object lock (step 7) cover the risks durability doesn't."
+        },
+        {
+          "term": "Strong read-after-write consistency",
+          "definition": "A successful PUT is immediately visible to GET and LIST.",
+          "whyItMatters": "Removes a whole class of retry/verify dances the older eventual model forced; the catalog, not the store, remains the only 'what exists' authority for business reasons, not consistency ones.",
+          "example": "Complete upload -> HEAD verifies immediately -> catalog flips to stored."
+        }
+      ],
+      "whyNow": [
+        "Every later capability leans on a contract detail introduced here — immutability for CDN/compliance, prefixes for lifecycle and throughput, durability for keeping originals in exactly one system."
+      ],
+      "probeLinks": [
+        "s3-consistency-blog",
+        "s3-performance",
+        "s3-security"
+      ],
+      "recap": {
+        "before": "Mortal disks behind a filesystem API.",
+        "after": "Immutable, checksummed, strongly consistent objects under designed keys, durable across zones by construction.",
+        "newRisk": "The app tier still shovels every byte in and out — uploads and downloads are still an application bottleneck."
+      },
+      "traps": [
+        {
+          "trap": "Treating keys like directories.",
+          "why": "'Rename the folder' is a copy of every object under a new prefix; deep 'paths' concentrate load on one partition; LIST-as-tree-walk becomes your slowest, priciest operation.",
+          "instead": "Design keys for lifecycle scope and hash fan-out; keep structure queries in the catalog, not in LIST."
+        },
+        {
+          "trap": "PII or secrets in keys and user metadata.",
+          "why": "Keys surface in presigned URLs, access logs, CDN logs, inventory reports, and error messages — far beyond your ACL story.",
+          "instead": "Opaque ids in keys; sensitive attributes live in the catalog behind real access control."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Contract austerity vs. capability ceiling",
+          "description": "No rename, no append, no transactions, millisecond latency — the store refuses everything a filesystem or database offers; that refusal is precisely what buys internet-facing safety, eleven-nines durability, and effectively infinite horizontal scale.",
+          "chosen": "The design embraces the austerity and assigns each refused capability to the right neighbor: mutability to versions, truth to the catalog, queries to the lake engine."
+        },
+        {
+          "name": "Key design up front vs. flexibility later",
+          "description": "Keys, like mappings in the search chapter, are forever: re-keying a petabyte is a copy of a petabyte; but over-designed key hierarchies calcify into fake directory trees.",
+          "chosen": "Three top-level lifecycle prefixes, hash fan-out, opaque ids — boring on purpose, and never revisited under pressure."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/02-objects.jpg"
+    },
+    {
+      "id": "transfer",
+      "title": "3. Direct Transfer — Presigned URLs, Multipart, CDN",
+      "description": [
+        "Rule one of object-storage architecture: the app tier handles permissions and pointers; the storage tier and CDN handle bytes. Both directions.",
+        "Uploads: the client asks the app to start an upload; the app writes a catalog intent row and returns presigned URLs — capability tokens that let the holder PUT exactly this key for the next few minutes, no credentials involved. Large files use multipart upload: ~100 MB parts, uploaded in parallel, each retryable alone, resumable across network drops; CompleteMultipartUpload assembles them atomically — until then, no object exists at the key (half-uploads are invisible, and a lifecycle rule sweeps abandoned part sets). The app then verifies (HEAD: size, checksum) and commits the catalog row. A phone on hotel Wi-Fi can push 8 GB reliably through a stateless app tier that never saw a byte.",
+        "Downloads: same inversion. The app authorizes and returns short-lived signed CDN URLs; the CDN serves from edge cache and fetches the derivative bucket only on miss. Byte-range GETs give players seeking without full downloads. The CDN isn't just latency — it's the egress and request shield: ~90% of a PB-scale library's traffic never touches the origin, which is the difference between a viable bill and a ruinous one.",
+        "Expiry discipline: presigned URLs are bearer capabilities — scope them to one key and verb, minutes-long, and never log them; treat a leaked long-lived presign like a leaked credential, because it is one."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "App",
+          "DB",
+          "Raw",
+          "CDN",
+          "Derived"
+        ],
+        "links": [
+          "client-lb",
+          "app-db",
+          "app-raw",
+          "client-raw",
+          "client-cdn",
+          "cdn-derived"
+        ],
+        "caption": "Control plane through the app; bytes straight between client, storage, and CDN — in both directions.",
+        "highlight": [
+          "Raw",
+          "CDN"
+        ]
+      },
+      "options": [
+        {
+          "name": "Presigned direct-to-storage (recommended)",
+          "description": "The app signs; the client transfers straight to the store; the CDN delivers. App servers never carry media bytes.",
+          "pros": [
+            "App tier stays small, stateless, and sized for control-plane QPS — not for concurrent gigabytes in flight.",
+            "Multipart retry/resume comes from the storage protocol instead of hand-rolled chunking endpoints.",
+            "The store's internet-facing surface (auth, throttling, TLS) is engineered for exactly this exposure."
+          ],
+          "cons": [
+            "Presigned URLs are bearer tokens: expiry, scoping, and no-logging discipline required.",
+            "The app can't inspect bytes in flight — validation happens after upload (HEAD, scan worker), not during.",
+            "Client code is more involved (part management, complete call) — SDKs mostly absorb this."
+          ],
+          "view": {
+            "nodes": [
+              "Client",
+              "App",
+              "Raw"
+            ],
+            "links": [
+              "client-lb",
+              "app-raw",
+              "client-raw"
+            ],
+            "caption": "Sign, then step aside: parts flow client -> store in parallel; the app sees only start and complete.",
+            "highlight": [
+              "Raw"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/03-transfer-opt1.jpg"
+        },
+        {
+          "name": "Proxy through the app tier",
+          "description": "Clients POST bytes to the app, which streams them into storage — the instinctive design, and an anti-pattern past small scale.",
+          "pros": [
+            "Inline validation and transformation while bytes stream through.",
+            "Simplest client (one POST); no presign machinery.",
+            "All traffic inside one auth perimeter."
+          ],
+          "cons": [
+            "Every transfer occupies an app worker for its duration — a few large uploads starve the API for everyone.",
+            "The app tier must now scale for bandwidth and connection lifetime, not request rate — the expensive way to scale.",
+            "You reinvent resume/retry (and double the egress path for downloads)."
+          ],
+          "view": {
+            "nodes": [
+              "Client",
+              "App",
+              "Raw"
+            ],
+            "links": [
+              "client-lb",
+              "app-raw"
+            ],
+            "caption": "Bytes shovel through app workers into storage: correct, and the first thing to fall over.",
+            "highlight": [
+              "App"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/03-transfer-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "An 8 GB upload from a train: enumerate what the presigned multipart design retries, resumes, and never re-sends — and what the proxy design does at each same failure point.",
+      "concepts": [
+        {
+          "term": "Presigned URL",
+          "definition": "A time-boxed, signature-carrying URL granting exactly one operation on one key.",
+          "whyItMatters": "Lets untrusted clients transfer directly against storage without holding credentials — the mechanism behind the byte/control split.",
+          "example": "PUT media/raw/a3/m_912/part-7, expires in 15 min."
+        },
+        {
+          "term": "Multipart upload",
+          "definition": "Upload independent parts in parallel; an atomic complete call assembles the object.",
+          "whyItMatters": "Retry-per-part makes huge uploads survivable on bad networks, and no object exists until complete — half-uploads can't be seen.",
+          "example": "8 GB = 80 × 100 MB parts; part 63 times out and retries alone."
+        },
+        {
+          "term": "Signed CDN delivery",
+          "definition": "Short-lived signed URLs/cookies authorize edge-cached reads of private content.",
+          "whyItMatters": "Authorization stays with the app, latency and egress move to the edge — the read-side twin of presigning.",
+          "example": "GET cdn/.../720p.mp4?Expires=...&Signature=... — cache hit, origin untouched."
+        }
+      ],
+      "whyNow": [
+        "Direct transfer removes the baseline's biggest structural fault (bytes through the app) and is prerequisite plumbing for every flow after it."
+      ],
+      "probeLinks": [
+        "s3-presigned",
+        "s3-multipart",
+        "s3-performance"
+      ],
+      "recap": {
+        "before": "Every byte crossed the app tier in both directions.",
+        "after": "Presigned multipart uploads and signed CDN reads: the app moved from data plane to control plane.",
+        "newRisk": "Objects now land in storage without anything noticing — nothing makes thumbnails, transcodes, or scans happen."
+      },
+      "traps": [
+        {
+          "trap": "Single-PUT uploads for large files.",
+          "why": "One dropped packet at 4.9 of 5 GB restarts the whole transfer; mobile clients simply fail.",
+          "instead": "Multipart beyond ~100 MB, parallel parts, resume by re-listing uploaded parts."
+        },
+        {
+          "trap": "Long-lived or loosely-scoped presigned URLs.",
+          "why": "A URL in a log, a chat, or a crash report is a credential; scoped-wide or week-long presigns turn a leak into an incident.",
+          "instead": "Minutes-long expiry, one key + one verb per URL, and log redaction — treat presigns as secrets."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Byte/control split vs. inline control",
+          "description": "Direct transfer gives up the app's ability to see bytes in flight (inline virus scan, on-the-fly transform) in exchange for an app tier that scales by request count; the pipeline step restores inspection as an async stage after landing.",
+          "chosen": "The design accepts post-hoc inspection — quarantine-until-scanned in the catalog — because the byte-free app tier is what keeps the platform's compute bill sane."
+        },
+        {
+          "name": "CDN cost vs. origin egress",
+          "description": "A CDN layer adds its own fees and cache-invalidation care, but every cache hit replaces origin egress at a fraction of the price; below some traffic floor the CDN is overhead, above it it's survival.",
+          "chosen": "At 20k GET/s of media the design fronts all delivery with signed CDN URLs and treats origin GETs as the exception to monitor."
+        }
+      ]
+    },
+    {
+      "id": "events",
+      "title": "4. Event-Driven Processing — Notifications, Queue, Workers",
+      "description": [
+        "The store announces its own writes: an ObjectCreated notification fires when the multipart upload completes, carrying bucket, key, version, size, etag. Route notifications into a real queue and let a worker fleet consume: GET the original (byte ranges for video), produce thumbnails/transcodes/scan verdicts, PUT them under derived/{media_id}/..., and mark the catalog row processed. Upload bursts pile into the queue, workers scale on depth, and nothing is dropped — the queue is the shock absorber between storage and compute.",
+        "The contract of notifications is at-least-once and effectively unordered: duplicates are normal, and a delete's event can arrive after a re-upload's. So handlers are idempotent per (key, version_id) — processing the same version twice must converge to the same derivatives — and consult the catalog for current truth before acting (the sequencer field orders events per key if you must compare). Failure handling is queue-native: visibility timeouts retry crashed workers, poison objects (corrupt video that kills the transcoder) go to a DLQ with the object reference intact, and the catalog row shows stuck-in-processing for anything that needs human eyes.",
+        "Notifications complement, never replace, reconciliation: events can be delayed or (rarely) missed, so a periodic inventory sweep — the store's own bucket inventory diffed against the catalog — catches anything the event path dropped. Event-driven for latency, inventory for truth: belt and suspenders that each cover the other's failure mode."
+      ],
+      "view": {
+        "nodes": [
+          "Raw",
+          "Events",
+          "Queue",
+          "Worker",
+          "Derived",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "raw-events",
+          "events-queue",
+          "worker-queue",
+          "worker-raw",
+          "worker-derived",
+          "worker-db",
+          "queue-metrics"
+        ],
+        "caption": "The store's own ObjectCreated events, buffered by a queue, drive an idempotent worker fleet that writes derivatives and marks the catalog.",
+        "highlight": [
+          "Events",
+          "Queue",
+          "Worker"
+        ],
+        "groups": [
+          "pipeline"
+        ]
+      },
+      "decisionPrompt": "A creator uploads, deletes, and re-uploads the same media in one minute, and the three events arrive out of order at two workers. Trace what (key, version_id) idempotency plus catalog-as-arbiter produce — and what a filename-keyed handler would have produced.",
+      "concepts": [
+        {
+          "term": "Object event notification",
+          "definition": "The store emits ObjectCreated/ObjectRemoved messages describing its own state changes.",
+          "whyItMatters": "Turns storage into the head of a pipeline — no polling, no LIST scans, processing latency measured in seconds.",
+          "example": "CompleteMultipartUpload -> ObjectCreated {key, version_id, sequencer} -> queue."
+        },
+        {
+          "term": "At-least-once + idempotent handler",
+          "definition": "Events may duplicate and reorder; handlers keyed on (key, version_id) converge on repeat.",
+          "whyItMatters": "The only honest delivery contract — same as every queue chapter in this catalog; version-keying also defuses the delete/re-upload race.",
+          "example": "Second delivery of m_912/v2 finds derivatives already present: no-op."
+        },
+        {
+          "term": "Inventory reconciliation",
+          "definition": "Periodic full listing (bucket inventory) diffed against the catalog.",
+          "whyItMatters": "Events optimize latency, not completeness; the sweep catches the dropped event, the crashed complete, the orphan.",
+          "example": "Nightly: inventory ∖ catalog -> orphan GC list; catalog(stored) ∖ inventory -> alarms."
+        }
+      ],
+      "whyNow": [
+        "Direct upload (step 3) removed the app from the byte path, so the app can no longer 'just call the thumbnailer' — the store's own events are now the only trustworthy signal that content arrived."
+      ],
+      "probeLinks": [
+        "s3-notifications",
+        "s3-inventory"
+      ],
+      "recap": {
+        "before": "Objects landed silently; derivatives had no trigger.",
+        "after": "Storage events drive a buffered, idempotent, DLQ-protected worker fleet; inventory sweeps backstop the event stream.",
+        "newRisk": "Objects and derivatives multiply, but nothing authoritative says what exists, who owns it, or which version is current."
+      },
+      "traps": [
+        {
+          "trap": "Assuming exactly-once, in-order event delivery.",
+          "why": "Duplicates re-transcode (cost), reordering lets a stale event overwrite fresh state, and a filename-keyed handler turns the delete/re-upload race into serving deleted content.",
+          "instead": "Idempotency on (key, version_id), catalog as arbiter, sequencer comparison where per-key order matters."
+        },
+        {
+          "trap": "Processing inline in the notification handler (no queue).",
+          "why": "A viral upload burst becomes concurrent transcodes with no buffer, no retry, no DLQ — dropped events and a melted fleet.",
+          "instead": "Notifications only enqueue; workers consume with visibility timeouts, backoff, and a dead-letter queue."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Upload lands — derivatives appear",
+          "note": "The queue absorbs bursts; a crashed worker's message reappears after the visibility timeout; a duplicate converges to a no-op.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Raw",
+                "label": "raw bucket"
+              },
+              {
+                "id": "Queue"
+              },
+              {
+                "id": "Worker"
+              },
+              {
+                "id": "Derived",
+                "label": "derived bucket"
+              },
+              {
+                "id": "DB",
+                "label": "catalog"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Raw",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "ObjectCreated m_912 v2 (via notification)"
+              },
+              {
+                "from": "Worker",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "receive (visibility timeout 5 min)"
+              },
+              {
+                "from": "Worker",
+                "to": "Raw",
+                "arrow": "->>",
+                "label": "GET original (ranged)"
+              },
+              {
+                "from": "Worker",
+                "to": "Derived",
+                "arrow": "->>",
+                "label": "PUT thumb_256, 720p, hls/*"
+              },
+              {
+                "from": "Worker",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "mark processed (idempotent on key+version)"
+              },
+              {
+                "type": "alt",
+                "label": "duplicate delivery",
+                "messages": [
+                  {
+                    "from": "Worker",
+                    "to": "DB",
+                    "arrow": "->>",
+                    "label": "already processed v2 -> ack, no-op"
+                  }
+                ],
+                "else": {
+                  "label": "poison object (transcoder crashes)",
+                  "messages": [
+                    {
+                      "from": "Queue",
+                      "to": "Queue",
+                      "arrow": "->>",
+                      "label": "retries exhausted -> DLQ + catalog flag"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Queue",
+            "Worker"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Event latency vs. reconciliation truth",
+          "description": "The event path gives seconds-fresh processing but is at-least-once and can (rarely) miss; the inventory sweep is hours-stale but complete; either alone is a design with a known hole.",
+          "chosen": "Both: events for the fast path, nightly inventory diff for the invariant — the same doorbell-plus-truth-table shape as the other golden hammers."
+        },
+        {
+          "name": "Worker autonomy vs. orchestration",
+          "description": "Independent queue consumers per derivative are simple and scale linearly, but multi-step media (scan gates transcode; HLS needs all renditions) starts wanting a workflow; a full orchestrator adds machinery this scale doesn't need yet.",
+          "chosen": "Queue-per-stage with catalog state gating (scan_passed before publish) — named upgrade path: a workflow engine when the DAG deepens."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/04-events.jpg"
+    },
+    {
+      "id": "catalog",
+      "title": "5. The Metadata Catalog — Pointers, Commit Order, GC",
+      "description": [
+        "The store knows objects; it cannot know your business. 'Which media does creator 11 own?', 'is this upload visible or quarantined?', 'which version is current?' — those are catalog questions, and the catalog is a small relational database of pointer rows: media_id, owner, bucket/key/version_id, checksum, state. Objects hold the bytes-truth; the catalog holds the existence-truth. Never invert this: LIST is a paginated scan for reconciliation jobs, not a query engine for the request path.",
+        "Because there's no transaction spanning the database and the store, the commit order is the correctness design. The recommended shape is intent-then-commit: write the catalog row first (state=uploading — an intent), let the client upload against it, verify on complete (HEAD: size, checksum against the intent), then flip to stored — the single authoritative moment the media exists. A crash anywhere leaves either an intent row with no object (timed out and swept) or a completed object with an uncommitted row (invisible, orphan-GC'd) — never a visible pointer to nothing.",
+        "Deletes run the same discipline in reverse: tombstone the row first (state=deleting — instantly invisible), then delete objects (original, every derivative, archive copies per policy), then remove the row. The GC sweeps both directions using bucket inventory: objects without live rows are orphans to delete; stored rows without objects are corruption alarms to page on. Checksums (sha256 verified at complete, stored in the row) make the pointer trustworthy end to end — the catalog doesn't just say the object exists, it says which bytes it should be."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "DB",
+          "Raw",
+          "Worker",
+          "Metrics"
+        ],
+        "links": [
+          "app-db",
+          "app-raw",
+          "worker-db",
+          "app-metrics"
+        ],
+        "caption": "A small relational catalog is the authority on existence, ownership, and state; commit order and GC keep pointers and objects agreeing.",
+        "highlight": [
+          "DB"
+        ]
+      },
+      "options": [
+        {
+          "name": "Intent-then-commit catalog (recommended)",
+          "description": "Row first (uploading), object second, verified commit third — every crash window resolves to invisible-and-sweepable.",
+          "pros": [
+            "No state where users can see media that isn't fully, verifiably there.",
+            "Quotas, permissions, and dedup checks run before any byte moves.",
+            "Abandoned uploads are just stale intent rows — trivial to expire alongside the store's own abandoned-part cleanup."
+          ],
+          "cons": [
+            "Every upload costs a catalog round trip before it starts.",
+            "GC and intent-expiry jobs are mandatory infrastructure, not hygiene.",
+            "The catalog DB joins the availability path for starting uploads."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "DB",
+              "Raw"
+            ],
+            "links": [
+              "app-db",
+              "app-raw",
+              "client-raw"
+            ],
+            "caption": "Intent row -> presigned upload -> verified commit: the row's state machine is the upload protocol.",
+            "highlight": [
+              "DB"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-catalog-opt1.jpg"
+        },
+        {
+          "name": "Store-first, reconcile by listing",
+          "description": "Upload freely, discover objects by LIST/inventory, build metadata after the fact — the 'bucket as database' shortcut.",
+          "pros": [
+            "No catalog write on the upload path; maximal simplicity day one.",
+            "Nothing to keep transactionally consistent — the bucket is the only state."
+          ],
+          "cons": [
+            "Ownership, quotas, and visibility have no authority — any discovered object is presumed legitimate.",
+            "LIST becomes the query engine: paginated scans on the request path, pricing and latency included.",
+            "Every downstream feature (delete-my-data, per-creator storage, quarantine) needs the catalog you skipped — built later, against a bucket full of unattributed objects."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Raw"
+            ],
+            "links": [
+              "app-raw",
+              "client-raw"
+            ],
+            "caption": "The bucket as its own record: fine for a weekend project, unaccountable as a platform.",
+            "highlight": [
+              "Raw"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-catalog-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "The app crashes between CompleteMultipartUpload succeeding and the catalog flip to stored. What exactly does the user see, what does the GC see, and why does the reversed commit order turn the same crash into a user-visible 404?",
+      "concepts": [
+        {
+          "term": "Pointer row",
+          "definition": "A catalog record binding business identity (owner, state, visibility) to object identity (bucket, key, version, checksum).",
+          "whyItMatters": "It's the only place 'exists' means what the product means; the store can't hold ownership or lifecycle state.",
+          "example": "media m_912 -> raw/a3/m_912/original.mp4 @ v2, sha256=..., state=processed."
+        },
+        {
+          "term": "Commit-order design",
+          "definition": "Choosing the row/object write sequence so every crash window resolves safely.",
+          "whyItMatters": "With no cross-system transaction, ordering is the correctness tool: intent-first makes all failures invisible rather than dangling.",
+          "example": "uploading -> (bytes land) -> verify -> stored; deleting -> (objects removed) -> gone."
+        },
+        {
+          "term": "Orphan GC + inventory diff",
+          "definition": "Scheduled comparison of bucket inventory against catalog rows, deleting orphans and alarming on missing objects.",
+          "whyItMatters": "Both drift directions are inevitable at scale; the diff is the invariant check that keeps pointer-truth and byte-truth converging.",
+          "example": "inventory ∖ rows -> delete after grace period; rows(stored) ∖ inventory -> page."
+        }
+      ],
+      "whyNow": [
+        "Uploads, events, and derivatives (steps 3–4) now create objects from three directions; before analytics and lifecycle build on top, something must own 'what exists' — and it isn't LIST."
+      ],
+      "probeLinks": [
+        "s3-inventory",
+        "outbox-pattern-s3"
+      ],
+      "recap": {
+        "before": "Objects and derivatives accumulated with no authority on existence, ownership, or state.",
+        "after": "A checksummed pointer catalog with intent-then-commit ordering, tombstoned deletes, and inventory-driven GC.",
+        "newRisk": "Usage analytics still have nowhere to live — and the instinct will be to write one object per event."
+      },
+      "traps": [
+        {
+          "trap": "Using LIST as the request-path query engine.",
+          "why": "Paginated prefix scans are slow, priced per request, and can't answer ownership or visibility at all — the request path inherits reconciliation-tool semantics.",
+          "instead": "Catalog queries on the request path; LIST/inventory only in batch jobs."
+        },
+        {
+          "trap": "Deleting objects before tombstoning the row.",
+          "why": "The crash window leaves a live catalog row pointing at nothing — user-visible 404s on content that 'exists'.",
+          "instead": "Tombstone first (instantly invisible), delete objects second, drop the row last; GC handles the leftovers."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Upload commit protocol — every crash window safe",
+          "note": "The row's state machine is the protocol: each failure leaves either a sweepable intent or an invisible orphan, never a visible lie.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "DB",
+                "label": "catalog"
+              },
+              {
+                "id": "Raw",
+                "label": "raw bucket"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "start upload"
+              },
+              {
+                "from": "App",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "INSERT intent (state=uploading, sha256)"
+              },
+              {
+                "from": "Client",
+                "to": "Raw",
+                "arrow": "->>",
+                "label": "multipart parts -> complete"
+              },
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "complete {etags}"
+              },
+              {
+                "from": "App",
+                "to": "Raw",
+                "arrow": "->>",
+                "label": "assemble + HEAD (size, checksum vs intent)"
+              },
+              {
+                "type": "alt",
+                "label": "verified",
+                "messages": [
+                  {
+                    "from": "App",
+                    "to": "DB",
+                    "arrow": "->>",
+                    "label": "state -> stored (media now exists)"
+                  }
+                ],
+                "else": {
+                  "label": "crash / mismatch",
+                  "messages": [
+                    {
+                      "from": "App",
+                      "to": "DB",
+                      "arrow": "->>",
+                      "label": "intent expires -> GC deletes parts/object; nothing was ever visible"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "DB"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Catalog authority vs. bucket self-description",
+          "description": "A catalog adds a database, commit-order discipline, and GC jobs; skipping it makes the bucket self-describing but strips the platform of ownership, quotas, visibility, and deletion guarantees — features that all arrive later and retroactively.",
+          "chosen": "The design pays the catalog tax from day one; 'what exists' is a business fact and business facts live in the database."
+        },
+        {
+          "name": "Verify-on-commit cost vs. trust",
+          "description": "HEAD + checksum verification adds a round trip to every completed upload; skipping it makes the pointer a hope rather than a fact and moves corruption discovery to playback time.",
+          "chosen": "Always verify at the commit moment — it's the cheapest point at which a bad byte stream can still be rejected cleanly."
+        }
+      ]
+    },
+    {
+      "id": "lake",
+      "title": "6. The Data Lake — Parquet, Partitions, Query-in-Place",
+      "description": [
+        "The platform emits ~100M usage events a day (views, plays, bytes served), and the same object store is the analytics backbone — with two disciplines that separate a lake from a landfill.",
+        "Discipline one: batch, never trickle. One object per event is 100M PUTs a day — ~$500/day in request fees before a single query, and a keyspace no engine can list efficiently. The batcher buffers events and flushes ~1 GB Parquet files. Columnar format matters as much as size: a 'plays per rendition last month' query reads two columns of date-pruned files — column pruning plus partition pruning routinely cuts scans 10–50×.",
+        "Discipline two: partition by how you query. lake/events/date=2026-08-11/hour=12/part-0042.parquet makes time-scoped queries touch only their partitions. A table format (Iceberg-style) on top adds what raw prefixes can't: real schema evolution, snapshot-isolated reads while writers append, and small-file compaction as a managed background job — the 'database-ish' layer that makes objects behave like tables.",
+        "Then query in place: Trino/Athena/DuckDB read Parquet straight off the store — no load step, no warehouse copy, pay per scan. The same lake feeds dashboards, finance's cost attribution, and ML feature jobs. This pattern is also the decade's broader lesson: entire databases now use object storage as their only disk (log systems, LSM engines, vector stores) because eleven-nines bytes plus a consistency-owning metadata layer compose into almost anything — which is precisely the architecture this design already has: store for bytes, catalog for truth, engines on top."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Batcher",
+          "Lake",
+          "Query",
+          "Analyst"
+        ],
+        "links": [
+          "app-batcher",
+          "batcher-lake",
+          "query-lake",
+          "analyst-query"
+        ],
+        "caption": "Batched Parquet under date partitions, an Iceberg-style table layer, and engines that query the objects where they lie.",
+        "highlight": [
+          "Lake",
+          "Batcher"
+        ],
+        "groups": [
+          "object-tier"
+        ]
+      },
+      "decisionPrompt": "Finance asks for 'egress cost per creator, last quarter'. Walk the scan: which partitions, which columns, roughly how many bytes — then re-run it against a bucket of 9 billion one-event JSON objects.",
+      "concepts": [
+        {
+          "term": "Batching (anti-tiny-objects)",
+          "definition": "Buffer high-volume events and write few large objects instead of many small ones.",
+          "whyItMatters": "Request fees, listing behavior, and scan efficiency all price per object; ~1 GB Parquet files are 5–6 orders of magnitude fewer objects than per-event writes.",
+          "example": "100M events/day -> ~100 Parquet files, not 100M JSONs."
+        },
+        {
+          "term": "Partition + column pruning",
+          "definition": "Skip whole files by partition key; read only referenced columns within files.",
+          "whyItMatters": "The two multipliers that make pay-per-scan engines affordable — both are layout decisions made at write time.",
+          "example": "date=2026-08-* ∧ columns(rendition, bytes_served) -> ~2% of raw bytes scanned."
+        },
+        {
+          "term": "Table format (Iceberg-style)",
+          "definition": "A metadata layer over object files giving schema evolution, snapshot isolation, and compaction.",
+          "whyItMatters": "Raw prefixes can't rename a column or give readers a consistent view mid-write; the table format is the lake's catalog — the same pointer-truth pattern as step 5.",
+          "example": "ALTER TABLE ... ADD COLUMN with no rewrite; readers pin a snapshot while the batcher appends."
+        }
+      ],
+      "whyNow": [
+        "The platform's own exhaust (usage, cost, growth) is the first analytics customer, and it arrives exactly when the object patterns to serve it cheaply — batching, partitioning, cataloged pointers — are already established."
+      ],
+      "probeLinks": [
+        "parquet",
+        "iceberg",
+        "warpstream",
+        "slatedb"
+      ],
+      "recap": {
+        "before": "Usage questions had no home; the temptation was one JSON object per event.",
+        "after": "A partitioned, table-formatted Parquet lake queried in place — analytics without a warehouse copy.",
+        "newRisk": "A petabyte a year now accumulates at hot-tier prices forever, and nothing yet makes deletion or retention provable."
+      },
+      "traps": [
+        {
+          "trap": "One object per event.",
+          "why": "Request costs alone dwarf storage, LIST becomes unusable, and every query pays per-object overhead millions of times — the landfill pattern.",
+          "instead": "Batch to ~1 GB Parquet through the batcher (or a firehose-style service), compact stragglers via the table format."
+        },
+        {
+          "trap": "Partitioning by what's convenient to write (or not at all).",
+          "why": "Every query then scans everything; the pay-per-scan bill grows with history instead of with the question.",
+          "instead": "Partition by the dominant query dimension (time), and let the table format's metadata prune the rest."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Query-in-place vs. warehouse copy",
+          "description": "Scanning Parquet on the store means no second storage system and no load pipeline, but per-query latency is seconds-to-minutes and concurrency costs scan money; a warehouse gives interactive speed at the price of a copy, a pipeline, and drift.",
+          "chosen": "The lake is the system of record for events; a warehouse (or cached extracts) is the named upgrade when dashboard concurrency demands it."
+        },
+        {
+          "name": "Batching latency vs. event freshness",
+          "description": "Minutes-level flush intervals make analytics minutes-stale; per-event writes are fresh and ruinous. Streaming engines close the gap at real complexity cost.",
+          "chosen": "Minutes of staleness is correct for usage analytics; anything needing seconds (fraud, live ops) reads the queue, not the lake."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/06-lake.jpg"
+    },
+    {
+      "id": "protect",
+      "title": "7. Lifecycle, Cost & Protection — Tiers, Versioning, Lock",
+      "description": [
+        "A petabyte a year forces the last discipline: storage as a managed budget with provable protection.",
+        "Cost model first — the bill has three axes: storage per GB (by class), requests per operation (why tiny objects lose), and egress per GB (why the CDN exists). Storage classes span hot standard through infrequent-access to archive tiers priced 2–20× apart, with retrieval cost and latency rising as storage cost falls. Lifecycle rules automate the slide down: originals to infrequent-access at 90 days, archive at一 year; abandoned multipart parts swept at 7 days; old noncurrent versions expired on schedule. Rules bind to prefixes — which is why step 2 grouped the keyspace by lifecycle. Intelligent tiering (below) trades a per-object monitoring fee for not having to know access patterns in advance.",
+        "Protection second — eleven-nines durability protects against hardware, not against you. Versioning makes every overwrite and delete recoverable (a delete is just a marker; the bytes remain until version expiry). Object lock in compliance mode makes the archive bucket WORM — write once, read many, deletable by no credential until retention expires: this is the ransomware answer and the regulator answer in one mechanism, and it only works because objects are immutable. Cross-region replication puts the compliance copy in a different failure and blast domain. And deletion must be as provable as retention: 'delete user data everywhere' walks the catalog — original, derivatives, lake compaction queue, replica bucket — with the archive's lock policy explicitly scoped so legal holds and privacy erasure don't collide.",
+        "Guard the perimeter with defaults, not vigilance: block-public-access at the account level, default encryption (KMS) on every bucket, access only via roles and presigns — a media platform's buckets have no legitimate 'public' state, so make the misconfiguration impossible rather than audited."
+      ],
+      "view": {
+        "nodes": [
+          "Raw",
+          "Derived",
+          "Lake",
+          "Archive",
+          "Metrics"
+        ],
+        "links": [
+          "raw-archive",
+          "raw-metrics"
+        ],
+        "caption": "Lifecycle rules slide objects down the price curve; versioning, WORM lock, and cross-region replication make loss and tampering recoverable or impossible.",
+        "highlight": [
+          "Archive"
+        ],
+        "groups": [
+          "object-tier"
+        ]
+      },
+      "options": [
+        {
+          "name": "Explicit lifecycle rules (recommended)",
+          "description": "Age- and prefix-based transitions you author: predictable, free, and aligned with the key design.",
+          "pros": [
+            "Zero per-object overhead; the rules are the documentation of your retention policy.",
+            "Deterministic cost modeling: finance can compute next year's bill from the rules.",
+            "Binds naturally to the lifecycle-grouped prefixes designed in step 2."
+          ],
+          "cons": [
+            "You must actually know the access pattern; a wrong guess parks hot data cold (retrieval fees) or cold data hot (storage fees).",
+            "Rules multiply per prefix and class; auditing them is real work.",
+            "Access-pattern shifts (an old video goes viral) need manual class exceptions."
+          ],
+          "view": {
+            "nodes": [
+              "Raw",
+              "Archive"
+            ],
+            "links": [
+              "raw-archive"
+            ],
+            "caption": "Authored transitions: raw -> IA at 90 d -> archive at 365 d; parts swept at 7 d; versions expired on schedule.",
+            "highlight": [
+              "Archive"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-protect-opt1.jpg"
+        },
+        {
+          "name": "Intelligent tiering",
+          "description": "The store watches each object's access and moves it between tiers automatically, for a per-object monitoring fee.",
+          "pros": [
+            "No access-pattern homework; objects that re-heat move back up automatically.",
+            "One rule covers heterogeneous content (creators' libraries vary wildly).",
+            "No retrieval-fee surprises within the automatic tiers."
+          ],
+          "cons": [
+            "Monitoring fee is per object — the tiny-objects anti-pattern now costs monthly forever.",
+            "Cost becomes behavior-dependent and harder to forecast.",
+            "Deep-archive transitions still need explicit opt-in rules."
+          ],
+          "view": {
+            "nodes": [
+              "Raw",
+              "Archive"
+            ],
+            "links": [
+              "raw-archive"
+            ],
+            "caption": "The store observes access per object and tiers it automatically — pattern-free, fee-per-object.",
+            "highlight": [
+              "Raw"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-protect-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "Ransomware gets your deploy credentials and issues deletes across every bucket. Walk what versioning, object lock, and replication each stop — and which single misconfiguration would have made the archive deletable after all.",
+      "concepts": [
+        {
+          "term": "Storage classes + lifecycle",
+          "definition": "Price/latency tiers with authored rules transitioning objects by age and prefix.",
+          "whyItMatters": "Turns a monotonically growing bill into a designed curve; retention policy becomes executable configuration.",
+          "example": "raw/: IA@90d, archive@365d; noncurrent versions expire@30d; parts abort@7d."
+        },
+        {
+          "term": "Versioning",
+          "definition": "Every overwrite/delete creates a new version or delete marker; old bytes remain until expired.",
+          "whyItMatters": "The undo button durability doesn't give you — fat-finger deletes and bad deploys become recoverable events.",
+          "example": "DELETE -> marker; GET versionId=prev restores instantly."
+        },
+        {
+          "term": "Object lock (WORM)",
+          "definition": "Compliance-mode retention that no credential can shorten until it expires.",
+          "whyItMatters": "The mechanism that answers both the regulator (retention proof) and the attacker (undeletable copies) — enabled by immutability.",
+          "example": "Archive bucket: 7-year compliance lock + cross-region replica."
+        }
+      ],
+      "whyNow": [
+        "Cost and protection are petabyte problems, and the platform just committed to accumulating petabytes — the disciplines must land before the first bill shock or incident, not after."
+      ],
+      "probeLinks": [
+        "s3-storage-classes",
+        "s3-lifecycle",
+        "s3-versioning",
+        "s3-object-lock",
+        "s3-replication",
+        "s3-security"
+      ],
+      "recap": {
+        "before": "Everything accumulated hot forever; deletes were trusted and irreversible; the bill was a surprise.",
+        "after": "Lifecycle-managed tiers, versioned and WORM-locked protection, replicated compliance copies, deny-by-default perimeter.",
+        "newRisk": "Operational steady state: watching prefix heat, queue lag, orphan counts, class distribution, and egress — and honoring the boundary of what object storage is not."
+      },
+      "traps": [
+        {
+          "trap": "Versioning on with no noncurrent-version expiry.",
+          "why": "Every overwrite quietly doubles storage; a churn-heavy prefix costs multiples of its visible size — protection becomes a slow leak.",
+          "instead": "Pair versioning with lifecycle expiry of noncurrent versions sized to your undo window."
+        },
+        {
+          "trap": "Trusting deny-by-vigilance instead of deny-by-default.",
+          "why": "One misapplied bucket policy in a hurry is a public data leak; audits find it after the crawler does.",
+          "instead": "Account-level block-public-access, default KMS encryption, access exclusively via roles and short presigns."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Retrieval latency vs. storage price",
+          "description": "Archive tiers cut storage cost up to 20× but retrievals cost money and (for the deepest tiers) hours — parking the wrong data cold converts storage savings into retrieval bills and product latency.",
+          "chosen": "Originals slide down on a conservative schedule with a re-heat path; anything player-reachable stays no colder than infrequent-access."
+        },
+        {
+          "name": "Undeletability vs. erasure obligations",
+          "description": "Compliance-mode lock is absolute until expiry — the same property that defeats ransomware collides with privacy-law erasure if personal data lands in the locked tier.",
+          "chosen": "The archive holds only what retention law actually requires, keyed by opaque ids, with erasure satisfied by catalog unlinking plus key-scoped crypto-shredding where mandated."
+        }
+      ]
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design — Object Storage as the Platform Backbone",
+    "description": "A byte-free control plane and an object-storage data plane. The app tier authorizes, writes catalog intent rows, and signs URLs; clients move bytes directly — presigned multipart uploads into the raw bucket, signed CDN reads of derivatives — so application servers scale by request count, never by gigabytes in flight. The store's own ObjectCreated events, buffered through a queue with visibility timeouts and a DLQ, drive idempotent workers (keyed on key + version) that write derivatives and mark the catalog; nightly inventory diffs backstop the event stream and feed orphan GC. The relational catalog is the authority on existence: intent-then-commit ordering on upload, tombstone-first on delete, checksums verified at the commit moment — every crash window resolves invisible, never dangling. Usage lands in the same store as a real lake: batched ~1 GB Parquet under date partitions with an Iceberg-style table layer, queried in place by Trino/Athena/DuckDB. Lifecycle rules slide objects down the price curve by prefix; versioning plus compliance-mode object lock plus cross-region replication make loss recoverable and tampering impossible; block-public-access and default KMS encryption are account-level defaults. The boundaries stay named: milliseconds not microseconds, LIST is not a query engine, no cross-object transactions — truth lives in the catalog, bytes live forever. Just use S3 — for everything that is honestly a bytes problem.",
+    "view": {
+      "nodes": [
+        "Client",
+        "LB",
+        "App",
+        "DB",
+        "Raw",
+        "Derived",
+        "Lake",
+        "Archive",
+        "CDN",
+        "Events",
+        "Queue",
+        "Worker",
+        "Batcher",
+        "Query",
+        "Analyst",
+        "Metrics"
+      ],
+      "links": [
+        "client-lb",
+        "lb-app",
+        "app-db",
+        "app-raw",
+        "client-raw",
+        "client-cdn",
+        "cdn-derived",
+        "raw-events",
+        "events-queue",
+        "worker-queue",
+        "worker-raw",
+        "worker-derived",
+        "worker-db",
+        "app-batcher",
+        "batcher-lake",
+        "query-lake",
+        "analyst-query",
+        "raw-archive",
+        "raw-metrics",
+        "queue-metrics",
+        "app-metrics"
+      ],
+      "caption": "One object store, four lifecycle tiers, a byte-free control plane, an event-driven pipeline, and a catalog that owns the truth.",
+      "groups": [
+        "object-tier",
+        "pipeline",
+        "ops"
+      ]
+    },
+    "flows": [
+      {
+        "name": "Upload to playback — end to end",
+        "note": "Intent, direct bytes, verified commit, event-driven derivatives, signed edge delivery — the whole platform in one pass.",
+        "sequence": {
+          "participants": [
+            {
+              "id": "Client"
+            },
+            {
+              "id": "App"
+            },
+            {
+              "id": "DB",
+              "label": "catalog"
+            },
+            {
+              "id": "Raw",
+              "label": "raw"
+            },
+            {
+              "id": "Queue"
+            },
+            {
+              "id": "Worker"
+            },
+            {
+              "id": "CDN"
+            }
+          ],
+          "messages": [
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "start upload -> intent row + presigns"
+            },
+            {
+              "from": "Client",
+              "to": "Raw",
+              "arrow": "->>",
+              "label": "multipart parts, parallel, resumable"
+            },
+            {
+              "from": "App",
+              "to": "DB",
+              "arrow": "->>",
+              "label": "verify (HEAD, sha256) -> state=stored"
+            },
+            {
+              "from": "Raw",
+              "to": "Queue",
+              "arrow": "->>",
+              "label": "ObjectCreated -> queue"
+            },
+            {
+              "from": "Worker",
+              "to": "Raw",
+              "arrow": "->>",
+              "label": "GET original; PUT derivatives; mark processed"
+            },
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "view -> authorize -> signed CDN URLs"
+            },
+            {
+              "from": "Client",
+              "to": "CDN",
+              "arrow": "->>",
+              "label": "GET 720p (edge hit; origin only on miss)"
+            }
+          ]
+        },
+        "highlight": [
+          "Raw",
+          "Queue",
+          "CDN"
+        ]
+      }
+    ],
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Resumable multi-GB uploads from any client",
+        "how": "Catalog intent + presigned multipart: parallel ~100 MB parts, per-part retry, atomic assembly, checksum-verified commit.",
+        "steps": [
+          "transfer",
+          "catalog"
+        ]
+      },
+      {
+        "requirement": "Automatic derivatives within minutes",
+        "how": "ObjectCreated events through a buffered queue into idempotent workers writing thumbnails/transcodes and marking the catalog.",
+        "steps": [
+          "events"
+        ]
+      },
+      {
+        "requirement": "Global, authorized delivery",
+        "how": "App-side authorization issuing short-lived signed CDN URLs; edge cache serves ~90% of traffic, origin GETs are the monitored exception.",
+        "steps": [
+          "transfer"
+        ]
+      },
+      {
+        "requirement": "Usage and cost analytics over months",
+        "how": "Batched partitioned Parquet with an Iceberg-style table layer, queried in place by SQL engines — no warehouse copy.",
+        "steps": [
+          "lake"
+        ]
+      },
+      {
+        "requirement": "7-year immutable retention + provable deletion",
+        "how": "Compliance-mode object lock on a replicated archive bucket; catalog-driven deletion walking original, derivatives, lake, and replicas.",
+        "steps": [
+          "protect",
+          "catalog"
+        ]
+      },
+      {
+        "requirement": "Authoritative 'what exists'",
+        "how": "Checksummed pointer rows with intent-then-commit ordering; inventory-vs-catalog diffs alarm on drift in either direction.",
+        "steps": [
+          "catalog"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Originals survive disk/node/AZ loss",
+        "how": "Erasure-coded eleven-nines object durability; versioning and locked replicas cover the human and adversarial risks durability doesn't.",
+        "steps": [
+          "objects",
+          "protect"
+        ]
+      },
+      {
+        "requirement": "Byte-free, stateless app tier",
+        "how": "Presigned uploads and signed CDN downloads keep media bytes off application servers entirely — control plane scales by request count.",
+        "steps": [
+          "transfer"
+        ]
+      },
+      {
+        "requirement": "Burst-safe, loss-free processing",
+        "how": "Queue-buffered at-least-once events, visibility-timeout retries, DLQ for poison objects, inventory sweep as the completeness backstop.",
+        "steps": [
+          "events"
+        ]
+      },
+      {
+        "requirement": "Designed, forecastable cost",
+        "how": "CDN against egress, batching against request fees, lifecycle classes against storage growth — the three bill axes each get a mechanism.",
+        "steps": [
+          "transfer",
+          "lake",
+          "protect"
+        ]
+      },
+      {
+        "requirement": "Ransomware/mistake recoverability",
+        "how": "Versioning (undo), compliance-mode WORM lock (undeletable archive), cross-region replication (blast-domain separation), deny-by-default perimeter.",
+        "steps": [
+          "protect"
+        ]
+      },
+      {
+        "requirement": "Honest platform boundaries",
+        "how": "Millisecond latency, LIST-as-scan, and no cross-object transactions are named limits with assigned owners: CDN for edge speed, catalog for truth, table format for table semantics.",
+        "steps": [
+          "objects",
+          "catalog",
+          "lake"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Frame it as a creator media platform: multi-GB resumable uploads, automatic derivatives, global authorized delivery, usage analytics, compliance retention.",
+        "State the twist: object storage is the storage backbone for all of it — the interview is the contract, the disciplines around it, and the small catalog that owns truth."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 3 min",
+      "say": [
+        "Start from files on app-server disks and name the simultaneous failures: mortal disks, sticky app tier, workers occupied per transfer, full-price egress, no processing story."
+      ]
+    },
+    {
+      "phase": "Capability tour",
+      "time": "next 15 min",
+      "say": [
+        "Establish the contract (immutable objects, designed keys, 11-nines durability, strong consistency) and its refusals — no rename, no append, no transactions.",
+        "Then the disciplines: presigned multipart + signed CDN (bytes never touch the app), event-queue-worker processing with (key, version) idempotency, the intent-then-commit catalog with GC, and the batched-Parquet lake queried in place.",
+        "Spend a beat on commit order — it's the correctness design in a world without cross-system transactions, and it's where strong candidates separate."
+      ]
+    },
+    {
+      "phase": "Make it real",
+      "time": "final 5 min",
+      "say": [
+        "Close on the bill's three axes (storage class, requests, egress) and the mechanism against each; then protection — versioning, compliance-mode lock, cross-region replicas, deny-by-default.",
+        "End on the boundary: milliseconds not microseconds, LIST is not a query engine, truth lives in the catalog. Just use S3 — for what's honestly a bytes problem."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Moves files off app servers into object storage and can explain presigned upload/download.",
+        "Knows objects are immutable and that a database tracks what was uploaded."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Designs multipart upload with per-part retry and an atomic complete; fronts delivery with a signed CDN.",
+        "Builds the event -> queue -> worker pipeline with at-least-once awareness and a DLQ; keys idempotency on object version.",
+        "Partitions the lake by date, batches events into Parquet, and can say why tiny objects are ruinous."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Treats commit order as the correctness design: intent-then-commit, tombstone-first deletes, inventory-diff GC with both drift directions alarmed.",
+        "Designs the cost curve deliberately — CDN vs. egress, request fees vs. batching, lifecycle classes vs. retrieval risk — and can defend the numbers.",
+        "Handles the adversarial and legal corners: compliance-mode lock vs. erasure obligations, crypto-shredding, deny-by-default perimeter, and names what must never be built on LIST or object metadata."
+      ]
+    }
+  ],
+  "followUps": [
+    "A creator disputes deletion: prove their content is gone from original, derivatives, CDN caches, lake files, and the locked archive — walk the mechanism for each store.",
+    "Design safe re-keying: marketing wants vanity paths for a petabyte of existing objects. What do you actually change, and what never moves?",
+    "The transcoding DAG deepens (scan gates transcode; HLS needs all renditions before publish). When do queue-per-stage semantics break and what does a workflow engine change?",
+    "An old video goes viral from the archive tier: trace the retrieval path, its latency and fees, and design the re-heat mechanism that stops the second spike from paying them again.",
+    "Multi-region active-active uploads: how do you keep intent-then-commit correct when the catalog is regional and buckets replicate asynchronously?",
+    "Your event volume grows 100×: at what point do S3 notifications -> SQS give way to a log-based pipeline, and what ordering guarantees change?",
+    "Compare building the derivative pipeline on Lambda-style functions vs. a worker fleet: cold starts, 15-minute limits, and cost at your transcode profile.",
+    "The 'S3 as the only database' wave (WarpStream, slatedb): what workload properties make LSM-on-object-storage viable, and which of this platform's components could adopt it?"
+  ],
+  "technologyChoices": [
+    {
+      "concern": "Object storage core",
+      "steps": [
+        "objects",
+        "protect"
+      ],
+      "selfHosted": [
+        {
+          "name": "MinIO",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Ceph",
+          "icon": "assets/tech-icons/ceph.png"
+        },
+        {
+          "name": "Garage",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "SeaweedFS",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "S3",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          },
+          {
+            "name": "S3 Glacier",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service-Glacier_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Storage",
+            "icon": "assets/tech-icons/Storage-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Blob Storage",
+            "icon": "assets/tech-icons/10781-icon-service-Blob-Page.svg"
+          },
+          {
+            "name": "Azure Data Lake Storage",
+            "icon": "assets/tech-icons/10090-icon-service-Data-Lake-Storage-Gen1.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Managed object storage sells the hardest property — multi-AZ eleven-nines durability — as a line item; self-hosting it means owning erasure coding, repair, and capacity ops.",
+        "S3-compatible self-hosted stores (MinIO/Ceph) matter for sovereignty, edge, and air-gapped deployments, and keep the same application contract.",
+        "Whatever the store, the disciplines (keys, immutability, catalog, lifecycle) transfer unchanged — that's the point of the contract."
+      ],
+      "makesIrrelevant": "Managed storage removes disk, repair, and capacity operations wholesale; key design, commit order, and cost curves remain entirely yours."
+    },
+    {
+      "concern": "CDN and delivery",
+      "steps": [
+        "transfer"
+      ],
+      "selfHosted": [
+        {
+          "name": "Nginx",
+          "icon": "assets/tech-icons/nginx.png"
+        },
+        {
+          "name": "Varnish",
+          "icon": "assets/tech-icons/varnish.png"
+        },
+        {
+          "name": "HAProxy",
+          "icon": "assets/tech-icons/haproxy.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudFront",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudFront_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud CDN",
+            "icon": "assets/tech-icons/Networking-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Front Door",
+            "icon": "assets/tech-icons/10073-icon-service-Front-Door-and-CDN-Profiles.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A managed CDN's signed-URL/cookie support integrates directly with the presign model and prices egress far below origin rates.",
+        "Self-hosted caches make sense as regional shields or inside private networks, not as a global edge.",
+        "Invalidation is the sharp edge either way — immutable, versioned object keys (new rendition = new key) sidestep it almost entirely."
+      ],
+      "makesIrrelevant": "Immutable content addressed by versioned keys makes cache invalidation a non-problem — the CDN never needs to be told anything changed."
+    },
+    {
+      "concern": "Event transport and processing queue",
+      "steps": [
+        "events"
+      ],
+      "selfHosted": [
+        {
+          "name": "RabbitMQ",
+          "icon": "assets/tech-icons/rabbitmq.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "NATS (JetStream)",
+          "icon": "assets/tech-icons/nats.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "SQS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Queue-Service_64.png"
+          },
+          {
+            "name": "EventBridge",
+            "icon": "assets/tech-icons/Arch_Amazon-EventBridge_64.png"
+          },
+          {
+            "name": "SNS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Notification-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          },
+          {
+            "name": "Cloud Tasks",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          },
+          {
+            "name": "Event Grid",
+            "icon": "assets/tech-icons/10221-icon-service-Event-Grid-Subscriptions.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Native store-notification integrations (S3 -> SQS/EventBridge-style) are zero-infrastructure and reliable; a queue with visibility timeouts and DLQs is the minimum viable consumer side.",
+        "A log (Kafka-style) enters when event volume needs replay, multiple independent consumers, or strict per-key ordering beyond the sequencer hint.",
+        "Delivery is at-least-once in every variant — idempotency on (key, version) is non-negotiable regardless of transport."
+      ],
+      "makesIrrelevant": "Store-native notifications remove polling and LIST-diff change detection; the inventory reconciliation sweep stays, because events optimize latency, not completeness."
+    },
+    {
+      "concern": "Media processing workers",
+      "steps": [
+        "events"
+      ],
+      "selfHosted": [
+        {
+          "name": "FFmpeg",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Kubernetes",
+          "icon": "assets/tech-icons/kubernetes.png"
+        },
+        {
+          "name": "ImageMagick",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Elemental MediaConvert",
+            "icon": "assets/tech-icons/tech.png"
+          },
+          {
+            "name": "Lambda",
+            "icon": "assets/tech-icons/Arch_AWS-Lambda_64.png"
+          },
+          {
+            "name": "ECS",
+            "icon": "assets/tech-icons/Arch_Amazon-Elastic-Container-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Transcoder API",
+            "icon": "assets/tech-icons/tech.png"
+          },
+          {
+            "name": "Cloud Run",
+            "icon": "assets/tech-icons/ServerlessComputing-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Functions",
+            "icon": "assets/tech-icons/10029-icon-service-Function-Apps.svg"
+          },
+          {
+            "name": "AKS",
+            "icon": "assets/tech-icons/10023-icon-service-Kubernetes-Services.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Function platforms fit small, bursty derivatives (thumbnails) but hit duration/memory walls on long video transcodes.",
+        "Container worker fleets on queue depth handle heavyweight transcodes predictably and keep FFmpeg pipelines portable.",
+        "Managed transcode services trade per-minute fees for codec/packaging expertise (HLS/DASH ladders, DRM) that is genuinely expensive to build."
+      ],
+      "makesIrrelevant": "A managed transcoder removes codec-ladder and packaging engineering; the event pipeline, idempotency, and catalog marking around it don't change."
+    },
+    {
+      "concern": "Metadata catalog",
+      "steps": [
+        "catalog"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "MySQL",
+          "icon": "assets/tech-icons/mysql.png"
+        },
+        {
+          "name": "CockroachDB",
+          "icon": "assets/tech-icons/cockroach.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora (PostgreSQL)",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          },
+          {
+            "name": "DynamoDB",
+            "icon": "assets/tech-icons/Arch_Amazon-DynamoDB_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A relational catalog gives the state machine, constraints, and ownership queries the pointer pattern needs; scale is modest (rows, not bytes).",
+        "A key-value catalog works when access is strictly by media id, but per-creator listings and quota queries push back toward SQL.",
+        "The catalog is small but availability-critical: it gates upload starts and every authorization decision."
+      ],
+      "makesIrrelevant": "Nothing — the catalog is the one component the object store can never absorb; every commit-order and deletion guarantee hangs off it."
+    },
+    {
+      "concern": "Lake table format and query engines",
+      "steps": [
+        "lake"
+      ],
+      "selfHosted": [
+        {
+          "name": "Trino",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "DuckDB",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Apache Spark",
+          "icon": "assets/tech-icons/spark.png"
+        },
+        {
+          "name": "ClickHouse",
+          "icon": "assets/tech-icons/clickhouse.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Athena",
+            "icon": "assets/tech-icons/Arch_Amazon-Athena_64.png"
+          },
+          {
+            "name": "AWS Glue",
+            "icon": "assets/tech-icons/Arch_AWS-Glue_64.png"
+          },
+          {
+            "name": "EMR",
+            "icon": "assets/tech-icons/Arch_Amazon-EMR_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "BigQuery",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Dataproc",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Synapse Analytics",
+            "icon": "assets/tech-icons/00606-icon-service-Azure-Synapse-Analytics.svg"
+          },
+          {
+            "name": "Microsoft Fabric",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Serverless scanners (Athena-style) are zero-ops pay-per-scan — ideal at this volume; heavy or constant workloads justify a running Trino/warehouse.",
+        "An Iceberg-style table format is what makes the lake evolvable and transactional-ish; skipping it means schema changes and compaction become manual archaeology.",
+        "DuckDB-class engines make the same Parquet queryable on a laptop — the lake's openness is a feature, keep formats open."
+      ],
+      "makesIrrelevant": "Query-in-place removes the mandatory warehouse load pipeline; a warehouse returns only as a performance cache for dashboard concurrency."
+    },
+    {
+      "concern": "Event batching into the lake",
+      "steps": [
+        "lake"
+      ],
+      "selfHosted": [
+        {
+          "name": "Vector",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Fluent Bit",
+          "icon": "assets/tech-icons/fluentd.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Kinesis Firehose",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          },
+          {
+            "name": "Dataflow",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Stream Analytics",
+            "icon": "assets/tech-icons/00042-icon-service-Stream-Analytics-Jobs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Firehose-style managed batchers do exactly the buffer-and-flush-Parquet job with size/time knobs and no fleet to run.",
+        "A log + consumer gives replay and multiple destinations when the same events feed lake, fraud, and metrics.",
+        "Either way the deliverable is identical: few, large, partitioned columnar files — the batcher exists to defeat the tiny-object pattern."
+      ],
+      "makesIrrelevant": "A managed delivery stream removes the hand-rolled buffering fleet; partition layout and schema governance stay design work."
+    },
+    {
+      "concern": "Keys, encryption, and perimeter",
+      "steps": [
+        "protect"
+      ],
+      "selfHosted": [
+        {
+          "name": "HashiCorp Vault",
+          "icon": "assets/tech-icons/hashicorp_vault.png"
+        },
+        {
+          "name": "OpenBao",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "KMS",
+            "icon": "assets/tech-icons/Arch_AWS-Key-Management-Service_64.png"
+          },
+          {
+            "name": "IAM",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud KMS",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Key Vault",
+            "icon": "assets/tech-icons/10245-icon-service-Key-Vaults.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Default bucket encryption with managed KMS keys is free discipline; per-tenant keys add crypto-shredding as a deletion mechanism at real key-management cost.",
+        "Account-level block-public-access and role-only access are deny-by-default moves — configuration, not vigilance.",
+        "Self-hosted secret management earns its keep in multi-cloud or sovereignty setups, at unseal/backup/audit operational cost."
+      ],
+      "makesIrrelevant": "Managed KMS with default bucket encryption removes hand-rolled envelope encryption; access-policy design and presign discipline remain yours."
+    },
+    {
+      "concern": "Storage observability and cost governance",
+      "steps": [
+        "protect",
+        "events"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "OpenCost",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "S3 Storage Lens",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          },
+          {
+            "name": "Cost Explorer",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          },
+          {
+            "name": "Microsoft Cost Management",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Storage-native analytics (Storage Lens-class) surface class distribution, tiny-object counts, and incomplete multiparts — the exact anti-patterns this design guards against.",
+        "Generic metrics cover the pipeline (queue depth, worker errors, orphan counts); the storage bill needs its own dashboards.",
+        "Alert on trends, not just thresholds: egress growth, hot-prefix concentration, and noncurrent-version accumulation are slow-burn incidents."
+      ],
+      "makesIrrelevant": "Managed storage analytics remove custom inventory-crunching jobs for cost hygiene; deciding the budgets and acting on them stays human work."
+    }
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "s3-consistency-blog",
+        "group": "The Object Contract",
+        "groupDescription": "What the store guarantees — and refuses — by design.",
+        "title": "Amazon S3 strong read-after-write consistency",
+        "url": "https://aws.amazon.com/blogs/aws/amazon-s3-update-strong-read-after-write-consistency/",
+        "source": "AWS News Blog",
+        "type": "Announcement",
+        "year": "2020",
+        "why": "The change that retired a decade of eventual-consistency folklore — know which consistency model your design actually targets."
+      },
+      {
+        "id": "s3-performance",
+        "group": "The Object Contract",
+        "groupDescription": "What the store guarantees — and refuses — by design.",
+        "title": "Best practices design patterns: optimizing S3 performance",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Per-prefix request rates, auto-partitioning, and parallelism — the throughput physics behind hash-fanned key design."
+      },
+      {
+        "id": "s3-security",
+        "group": "The Object Contract",
+        "groupDescription": "What the store guarantees — and refuses — by design.",
+        "title": "Security best practices for Amazon S3",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/security-best-practices.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Block-public-access, encryption defaults, and policy patterns — the deny-by-default perimeter checklist."
+      },
+      {
+        "id": "s3-presigned",
+        "group": "Moving Bytes",
+        "groupDescription": "Direct transfer between clients, storage, and the edge.",
+        "title": "Working with presigned URLs",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-presigned-url.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "The capability-token mechanism behind the byte-free app tier — scoping, expiry, and signing mechanics."
+      },
+      {
+        "id": "s3-multipart",
+        "group": "Moving Bytes",
+        "groupDescription": "Direct transfer between clients, storage, and the edge.",
+        "title": "Multipart upload overview",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Parallel parts, atomic completion, and abandoned-part cleanup — how multi-GB uploads survive real networks."
+      },
+      {
+        "id": "s3-notifications",
+        "group": "Event-Driven Storage",
+        "groupDescription": "The store as the head of a processing pipeline.",
+        "title": "Amazon S3 Event Notifications",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Event types, delivery destinations, and the at-least-once contract the worker pipeline is designed around."
+      },
+      {
+        "id": "s3-inventory",
+        "group": "Event-Driven Storage",
+        "groupDescription": "The store as the head of a processing pipeline.",
+        "title": "Amazon S3 Inventory",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-inventory.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "The scheduled full listing that powers reconciliation and orphan GC — completeness where events give latency."
+      },
+      {
+        "id": "s3-storage-classes",
+        "group": "Cost & Protection",
+        "groupDescription": "Managing petabytes as a budget with provable protection.",
+        "title": "Understanding and managing Amazon S3 storage classes",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "The price/latency tier menu — and the retrieval-fee fine print — behind the lifecycle design."
+      },
+      {
+        "id": "s3-lifecycle",
+        "group": "Cost & Protection",
+        "groupDescription": "Managing petabytes as a budget with provable protection.",
+        "title": "Managing your storage lifecycle",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Transition and expiration rules by prefix and age — retention policy as executable configuration."
+      },
+      {
+        "id": "s3-versioning",
+        "group": "Cost & Protection",
+        "groupDescription": "Managing petabytes as a budget with provable protection.",
+        "title": "Using versioning in S3 buckets",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Delete markers, noncurrent versions, and their expiry — the undo mechanism and its cost leak."
+      },
+      {
+        "id": "s3-object-lock",
+        "group": "Cost & Protection",
+        "groupDescription": "Managing petabytes as a budget with provable protection.",
+        "title": "Using S3 Object Lock",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Compliance vs. governance modes and legal holds — the WORM mechanism answering both regulators and ransomware."
+      },
+      {
+        "id": "s3-replication",
+        "group": "Cost & Protection",
+        "groupDescription": "Managing petabytes as a budget with provable protection.",
+        "title": "Replicating objects within and across Regions",
+        "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/replication.html",
+        "source": "AWS",
+        "type": "Docs",
+        "why": "Cross-region replication mechanics for the blast-domain-separated compliance copy."
+      },
+      {
+        "id": "parquet",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "Apache Parquet",
+        "url": "https://parquet.apache.org/",
+        "source": "Apache",
+        "type": "Docs",
+        "why": "The columnar format whose column pruning makes pay-per-scan analytics affordable."
+      },
+      {
+        "id": "iceberg",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "Apache Iceberg",
+        "url": "https://iceberg.apache.org/",
+        "source": "Apache",
+        "type": "Docs",
+        "why": "Schema evolution, snapshot isolation, and compaction over object files — the table layer that makes the lake behave."
+      },
+      {
+        "id": "warpstream",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "Kafka is dead, long live Kafka (WarpStream)",
+        "url": "https://www.warpstream.com/blog/kafka-is-dead-long-live-kafka",
+        "source": "WarpStream",
+        "type": "Explainer",
+        "year": "2023",
+        "why": "A Kafka-compatible log rebuilt with object storage as the only disk — the pattern's most famous production argument."
+      },
+      {
+        "id": "slatedb",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "SlateDB — an LSM on object storage",
+        "url": "https://slatedb.io/",
+        "source": "SlateDB",
+        "type": "Repository",
+        "why": "An embedded database whose only durable medium is an object store — the logical endpoint of 'just use S3'."
+      },
+      {
+        "id": "minio",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "MinIO",
+        "url": "https://min.io/",
+        "source": "MinIO",
+        "type": "Docs",
+        "why": "The reference S3-compatible self-hosted store — proof the contract, not the vendor, is the architecture."
+      },
+      {
+        "id": "outbox-pattern-s3",
+        "group": "The Lake & The New Databases",
+        "groupDescription": "Objects as tables — and object storage as the only disk.",
+        "title": "Pattern: Transactional outbox",
+        "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+        "source": "microservices.io",
+        "type": "Pattern",
+        "why": "The commit-ordering family the catalog's intent-then-commit protocol belongs to — same problem, no cross-system transaction."
+      }
+    ]
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
+}

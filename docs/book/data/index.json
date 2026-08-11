@@ -161,6 +161,11 @@
           "path": "data/ai-coding-cli/interview.json"
         },
         {
+          "id": "ai-coding-harness",
+          "name": "Coding Agent Harness",
+          "path": "data/ai-coding-harness/interview.json"
+        },
+        {
           "id": "gpu-scheduler",
           "name": "GPU Job Scheduler",
           "path": "data/gpu-scheduler/interview.json"
@@ -307,6 +312,11 @@
           "id": "just-use-elasticsearch",
           "name": "Just Use Elasticsearch!",
           "path": "data/just-use-elasticsearch/interview.json"
+        },
+        {
+          "id": "just-use-s3",
+          "name": "Just Use S3!",
+          "path": "data/just-use-s3/interview.json"
         }
       ]
     },
