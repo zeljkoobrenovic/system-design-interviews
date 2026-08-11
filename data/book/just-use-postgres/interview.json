@@ -825,7 +825,8 @@
           "description": "Specialized stores each beat Postgres at their one thing, but every added stateful system multiplies HA, backup, upgrade, security, and on-call work — and adds a consistency seam that glue code must patrol forever.",
           "chosen": "The design trades peak per-workload performance for one platform whose capabilities are good enough at this scale, and defers specialization until a workload proves it needs it."
         }
-      ]
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
     },
     {
       "id": "relational-core",
@@ -977,7 +978,8 @@
           "description": "Normalized tables keep one fact in one place and make updates cheap and consistent, but hot read paths pay for joins; denormalized copies read fast and drift unless something owns their maintenance.",
           "chosen": "The core stays normalized; the derived shapes that reads want (rollups, search vectors) are declared derived and maintained transactionally in later steps."
         }
-      ]
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/02-relational-core.jpg"
     },
     {
       "id": "jsonb",
@@ -1054,7 +1056,8 @@
           "description": "A dedicated document DB offers richer document APIs, but it reintroduces the sync seam and second ops story; in-row JSONB joins with everything and commits with everything.",
           "chosen": "Documents live in the row: transactional consistency with orders and search outweighs a fancier document API at this scale."
         }
-      ]
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/03-jsonb.jpg"
     },
     {
       "id": "search",
@@ -1120,7 +1123,8 @@
               "Search",
               "GeoVec"
             ]
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-search-opt1.jpg"
         },
         {
           "name": "External search engine (the graduation path)",
@@ -1150,7 +1154,8 @@
             "highlight": [
               "ZooSearch"
             ]
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-search-opt2.jpg"
         }
       ],
       "decisionPrompt": "The search box needs typo tolerance, 'near me', and semantic matching. What does bolting on Elasticsearch on day one cost you that four Postgres indexes do not — and what future signal justifies paying that cost?",
@@ -1351,7 +1356,8 @@
             "groups": [
               "async"
             ]
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-queue-opt1.jpg"
         },
         {
           "name": "External broker (the graduation path)",
@@ -1384,7 +1390,8 @@
               "ZooBroker"
             ],
             "groups": []
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-queue-opt2.jpg"
         }
       ],
       "decisionPrompt": "A booking commits but the process crashes a millisecond later. With a broker, where did the confirmation-email job go? With a jobs table in the same transaction, why can that question not even arise?",
@@ -1688,7 +1695,8 @@
           "description": "Every LISTEN pins a dedicated server connection outside the transaction pool, so naive per-request listeners would exhaust the connection budget; a few listeners per node fanning out in-process keep latency low and connections bounded.",
           "chosen": "The design centralizes listening — one or two sessions per app node — and fans out in memory, spending connections on throughput instead of signaling."
         }
-      ]
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/06-notify.jpg"
     },
     {
       "id": "analytics",
@@ -1751,7 +1759,8 @@
             "highlight": [
               "Rollups"
             ]
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-analytics-opt1.jpg"
         },
         {
           "name": "Materialized views (for the heavy shapes)",
@@ -1783,7 +1792,8 @@
             "highlight": [
               "Rollups"
             ]
-          }
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-analytics-opt2.jpg"
         }
       ],
       "decisionPrompt": "GMV must match finance to the cent, the funnel can be an hour old, and an analyst wants to scan two years of orders. Which of the three tools serves each — and what breaks if you swap them?",
@@ -1971,7 +1981,8 @@
           "description": "Scaling the primary up keeps transactions local, operations simple, and the whole tour's atomicity intact; sharding scales writes horizontally but reintroduces cross-shard coordination — the very complexity consolidation removed.",
           "chosen": "The design rides vertical scale plus replicas to the ceiling, and treats sharding/Citus as a named graduation path, not a default."
         }
-      ]
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/08-scale-ha.jpg"
     }
   ],
   "finalDesign": {
@@ -2109,7 +2120,8 @@
           "PubSub"
         ]
       }
-    ]
+    ],
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
   },
   "satisfies": {
     "functional": [
@@ -2918,5 +2930,10 @@
         "why": "A famous account of how far plain Postgres carried a hypergrowth product — and what principled graduation (sharding in Postgres itself) looked like."
       }
     ]
-  }
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
 }

@@ -302,6 +302,11 @@
           "id": "just-use-postgres",
           "name": "Just Use Postgres!",
           "path": "data/just-use-postgres/interview.json"
+        },
+        {
+          "id": "just-use-elasticsearch",
+          "name": "Just Use Elasticsearch!",
+          "path": "data/just-use-elasticsearch/interview.json"
         }
       ]
     },

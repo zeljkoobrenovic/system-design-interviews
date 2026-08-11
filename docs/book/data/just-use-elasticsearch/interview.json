@@ -1,0 +1,2584 @@
+{
+  "title": "Just Use Elasticsearch — Search-Centric Systems Design",
+  "description": "Design the search and discovery platform for a 50M-product marketplace — relevance-ranked full-text search, instant autocomplete, faceted navigation, 'near me' and semantic search — plus the company's log analytics, all on Elasticsearch. The organizing idea: each discovery feature maps to the Elasticsearch capability that fits it best — the inverted index and BM25 for relevance, analyzers for language, suggesters for as-you-type, aggregations for facets, geo and kNN vectors for spatial and semantic, data streams with ILM for logs — while the relational database stays the source of truth and a CDC pipeline keeps the derived indexes honest.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Client",
+        "label": "Web / Mobile App",
+        "type": "client",
+        "category": "boundary",
+        "traits": [],
+        "description": "Shopper's browser or app: types in the search box, browses facets, opens product pages."
+      },
+      {
+        "id": "LB",
+        "label": "API Gateway / LB",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Terminates TLS, authenticates, routes to the app tier."
+      },
+      {
+        "id": "App",
+        "label": "Search API / Storefront BFF",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Stateless service that translates product-search requests into Elasticsearch queries and reads the record from the DB."
+      },
+      {
+        "id": "DB",
+        "label": "System of Record (RDBMS)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Authoritative products, prices, inventory, and orders. Elasticsearch is a derived view of this — never the other way around."
+      },
+      {
+        "id": "Pipeline",
+        "label": "Indexing Pipeline (CDC -> _bulk)",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Tails the DB outbox/CDC stream, transforms rows into documents (including embeddings), and upserts them with _bulk keyed by _id and version — idempotent and replayable."
+      },
+      {
+        "id": "Products",
+        "label": "ES — Product Index (BM25)",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "The inverted index over product documents: analyzed text fields, keyword subfields, BM25 relevance, bool queries with cached filters."
+      },
+      {
+        "id": "Suggest",
+        "label": "ES — Autocomplete (search_as_you_type)",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Prefix-indexed suggest fields (search_as_you_type / edge n-grams, or a completion suggester FST) serving every keystroke."
+      },
+      {
+        "id": "Facets",
+        "label": "ES — Aggregations (Facets)",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "The aggregation capability over the product index: terms aggs on keyword fields, range/histogram on price, post_filter for multi-select facet counts."
+      },
+      {
+        "id": "GeoVecES",
+        "label": "ES — Geo + kNN Vectors",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "geo_point fields with geo_distance filters and geo-grid aggs; dense_vector fields with HNSW kNN for semantic search, fused with BM25 via RRF."
+      },
+      {
+        "id": "LogsDS",
+        "label": "ES — Log Data Streams (ILM)",
+        "type": "index",
+        "category": "async",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Time-series log indices behind a data stream: rollover by size/age, hot-warm-cold tiers, delete by lifecycle policy."
+      },
+      {
+        "id": "Agents",
+        "label": "Log Shippers (Filebeat / OTel)",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Agents on every service host that batch and ship structured logs into the log data stream."
+      },
+      {
+        "id": "Kibana",
+        "label": "Kibana (Explore / Dashboards / Alerts)",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Engineers explore logs, build dashboards, and define alerts on the log data streams."
+      },
+      {
+        "id": "Snap",
+        "label": "Snapshot Repository (Object Storage)",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "SLM-scheduled snapshots of the indexes to object storage; restore drills keep them honest."
+      },
+      {
+        "id": "Metrics",
+        "label": "Cluster Health & Monitoring",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Watches shard health, heap and GC, indexing/search latency, queue rejections, ILM progress, and pipeline lag."
+      }
+    ],
+    "links": [
+      {
+        "id": "client-lb",
+        "from": "Client",
+        "to": "LB",
+        "label": "HTTPS"
+      },
+      {
+        "id": "lb-app",
+        "from": "LB",
+        "to": "App",
+        "label": "route request"
+      },
+      {
+        "id": "app-db",
+        "from": "App",
+        "to": "DB",
+        "label": "record reads/writes (detail page, checkout)"
+      },
+      {
+        "id": "db-pipeline",
+        "from": "DB",
+        "to": "Pipeline",
+        "label": "outbox / CDC change events"
+      },
+      {
+        "id": "pipeline-products",
+        "from": "Pipeline",
+        "to": "Products",
+        "label": "_bulk upsert (_id, version)"
+      },
+      {
+        "id": "pipeline-suggest",
+        "from": "Pipeline",
+        "to": "Suggest",
+        "label": "suggest fields"
+      },
+      {
+        "id": "pipeline-geovec",
+        "from": "Pipeline",
+        "to": "GeoVecES",
+        "label": "geo points + embeddings"
+      },
+      {
+        "id": "app-products",
+        "from": "App",
+        "to": "Products",
+        "label": "bool query: BM25 + cached filters"
+      },
+      {
+        "id": "app-suggest",
+        "from": "App",
+        "to": "Suggest",
+        "label": "prefix query per keystroke"
+      },
+      {
+        "id": "app-facets",
+        "from": "App",
+        "to": "Facets",
+        "label": "aggs: terms / range + post_filter"
+      },
+      {
+        "id": "app-geovec",
+        "from": "App",
+        "to": "GeoVecES",
+        "label": "geo_distance + kNN (RRF)"
+      },
+      {
+        "id": "agents-logs",
+        "from": "Agents",
+        "to": "LogsDS",
+        "label": "bulk-ship structured logs"
+      },
+      {
+        "id": "kibana-logs",
+        "from": "Kibana",
+        "to": "LogsDS",
+        "label": "query, visualize, alert"
+      },
+      {
+        "id": "products-snap",
+        "from": "Products",
+        "to": "Snap",
+        "label": "SLM snapshot / restore"
+      },
+      {
+        "id": "logs-snap",
+        "from": "LogsDS",
+        "to": "Snap",
+        "label": "snapshot before delete phase"
+      },
+      {
+        "id": "products-metrics",
+        "from": "Products",
+        "to": "Metrics",
+        "label": "shard health, heap, rejections"
+      },
+      {
+        "id": "logs-metrics",
+        "from": "LogsDS",
+        "to": "Metrics",
+        "label": "ingest rate, ILM progress"
+      },
+      {
+        "id": "pipeline-metrics",
+        "from": "Pipeline",
+        "to": "Metrics",
+        "label": "indexing lag"
+      },
+      {
+        "id": "app-metrics",
+        "from": "App",
+        "to": "Metrics",
+        "label": "suggest/search p95"
+      }
+    ],
+    "types": [
+      {
+        "id": "es-tier",
+        "label": "Elasticsearch Platform",
+        "nodes": [
+          "Products",
+          "Suggest",
+          "Facets",
+          "GeoVecES",
+          "LogsDS"
+        ]
+      },
+      {
+        "id": "ingest",
+        "label": "Ingestion",
+        "nodes": [
+          "Pipeline",
+          "Agents"
+        ]
+      },
+      {
+        "id": "ops",
+        "label": "Snapshots & Ops",
+        "nodes": [
+          "Snap",
+          "Metrics",
+          "Kibana"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  User[Shopper]",
+    "  Suggest[Autocomplete]",
+    "  Search[Ranked search + facets]",
+    "  Near[Geo + semantic]",
+    "  Detail[Product page]",
+    "  Eng[Engineer]",
+    "  Logs[Log analytics]",
+    "  User --> Suggest",
+    "  Suggest --> Search",
+    "  Search --> Near",
+    "  Search --> Detail",
+    "  Eng --> Logs"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  S[Suggest ~10k/s]",
+    "  Q[Search ~3k/s]",
+    "  U[Product updates ~200/s]",
+    "  L[Logs ~50k events/s]",
+    "  ES[Search cluster + logs cluster]",
+    "  S --> ES",
+    "  Q --> ES",
+    "  U --> ES",
+    "  L --> ES"
+  ],
+  "requirements": {
+    "functional": [
+      "Full-text product search with merchandising-grade relevance ranking, stemming, and synonyms.",
+      "Instant autocomplete on every keystroke, tolerant of typos.",
+      "Faceted navigation (brand, category, price ranges) with correct counts under multi-select.",
+      "Geo search ('available near me') and semantic search ('something for a rainy hike' finds rain jackets).",
+      "Product data searchable within seconds of an update; catalog rebuildable from the source of truth.",
+      "Centralized log search, dashboards, and alerting for all services, with a bounded retention window."
+    ],
+    "nonFunctional": [
+      "Autocomplete p95 under ~50 ms; full search p95 under ~200 ms at peak.",
+      "Search is derived state: the RDBMS stays authoritative, and every index must be rebuildable from it.",
+      "Near-real-time freshness (~1 s refresh), stated honestly — not read-your-writes.",
+      "The log workload must never degrade product search (workload isolation).",
+      "Survive node loss without data loss visible to users: replicas, quorum masters, snapshots with restore drills.",
+      "Bounded costs: log retention by lifecycle policy, shard counts sized deliberately."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Catalog size",
+      "value": "50M products",
+      "note": "~1 KB per document plus suggest fields; primary index data ~60–80 GB before replicas."
+    },
+    {
+      "label": "Suggest queries/sec",
+      "value": "~10,000",
+      "note": "Every keystroke is a query — autocomplete traffic runs 3–5× the full-search rate and sets the latency budget."
+    },
+    {
+      "label": "Search queries/sec",
+      "value": "~3,000",
+      "note": "Bool queries with BM25 scoring plus 3–6 aggregations each; filters are cached, scoring is not."
+    },
+    {
+      "label": "Product updates/sec",
+      "value": "~200 steady",
+      "note": "Price/inventory/description changes flowing DB -> CDC -> _bulk. Full 50M-doc reindex (mapping change, model upgrade) runs in hours via parallel _bulk — plan for it as a routine, not an emergency."
+    },
+    {
+      "label": "Embeddings",
+      "value": "384-dim ≈ 1.5 KB/doc",
+      "note": "~75 GB of vectors at 50M docs; HNSW graphs live off-heap — RAM, not disk, sizes the vector tier. (1536-dim would quadruple this: dimension choice is a capacity decision.)"
+    },
+    {
+      "label": "Refresh interval",
+      "value": "~1 s",
+      "note": "Near-real-time: a committed update becomes searchable on the next refresh. UX copy and tests must not assume read-your-writes."
+    },
+    {
+      "label": "Log volume",
+      "value": "~50k events/s, ~100 GB/day",
+      "note": "30-day retention via ILM hot (3 d) -> warm (11 d) -> cold (16 d) -> delete ≈ 3 TB on the logs cluster."
+    },
+    {
+      "label": "Search cluster",
+      "value": "3 masters + 6 data nodes",
+      "note": "~12 primary shards (~15–30 GB each) × 1 replica across 6 data nodes (64 GB RAM, ~30 GB heap); dedicated master-eligible trio for quorum."
+    },
+    {
+      "label": "Logs cluster",
+      "value": "separate, tiered",
+      "note": "Rollover at ~50 GB per backing index; hot nodes take the write load, warm/cold nodes are cheaper and denser. Separate cluster so a log burst can never evict product-search caches."
+    },
+    {
+      "label": "Snapshots",
+      "value": "SLM every 30 min",
+      "note": "RPO for search is soft — indexes are rebuildable from the DB — but snapshots turn a multi-hour reindex into a minutes-long restore."
+    }
+  ],
+  "api": [
+    {
+      "method": "GET",
+      "path": "/v1/suggest",
+      "description": "Autocomplete: prefix query against the search_as_you_type fields (or completion suggester), fuzziness for typos, top 8 by weight.",
+      "request": "?q=re  (fires on every keystroke)",
+      "response": "{ \"suggestions\": [\"red dress\", \"red shoes\", \"realme phone\"] }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/search",
+      "description": "Full search: one ES request with a bool query (BM25-scored multi_match in must, cached term/range filters in filter), aggregations for every facet group, post_filter for the multi-select facet, optional geo_distance and kNN clauses fused via RRF, paged with search_after.",
+      "request": "?q=red+dress&brand=Zara,Mango&price=25-100&near=52.1,4.3&after=<sort-key>",
+      "response": "{ \"hits\": [...], \"facets\": { \"brand\": {...}, \"price\": {...} }, \"nextAfter\": \"...\" }",
+      "sequence": {
+        "participants": [
+          {
+            "id": "Client"
+          },
+          {
+            "id": "App"
+          },
+          {
+            "id": "Suggest",
+            "label": "suggest fields"
+          },
+          {
+            "id": "Products",
+            "label": "product index"
+          },
+          {
+            "id": "Facets",
+            "label": "aggregations"
+          }
+        ],
+        "messages": [
+          {
+            "from": "Client",
+            "to": "App",
+            "arrow": "->>",
+            "label": "keystrokes: 're', 'red d…'"
+          },
+          {
+            "from": "App",
+            "to": "Suggest",
+            "arrow": "->>",
+            "label": "prefix query (fuzziness AUTO)"
+          },
+          {
+            "from": "Suggest",
+            "to": "Client",
+            "arrow": "-->>",
+            "label": "top-8 suggestions (<50 ms)"
+          },
+          {
+            "from": "Client",
+            "to": "App",
+            "arrow": "->>",
+            "label": "submit: 'red dress' + facet picks"
+          },
+          {
+            "from": "App",
+            "to": "Products",
+            "arrow": "->>",
+            "label": "bool: multi_match (BM25) + cached filters"
+          },
+          {
+            "from": "App",
+            "to": "Facets",
+            "arrow": "->>",
+            "label": "aggs per facet group + post_filter"
+          },
+          {
+            "from": "Products",
+            "to": "App",
+            "arrow": "-->>",
+            "label": "ranked hits + facet counts"
+          },
+          {
+            "from": "App",
+            "to": "Client",
+            "arrow": "-->>",
+            "label": "page 1 + facets (search_after cursor)"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/v1/products/{id}",
+      "description": "The product detail page reads the system of record, not the search index — the index ranks and points, the DB answers.",
+      "request": "(id in path)",
+      "response": "{ \"id\": 84211, \"name\": \"...\", \"price\": ..., \"stock\": ... }  // from the RDBMS"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/admin/reindex",
+      "description": "Zero-downtime mapping/model change: build products_v2 alongside v1 via _reindex + CDC dual-feed, verify counts and sampled relevance, then atomically flip the 'products' alias.",
+      "request": "{ \"target\": \"products_v2\" } (admin token)",
+      "response": "{ \"status\": \"backfilling\", \"docs\": 50000000 }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/search-health",
+      "description": "Operational snapshot: cluster status, indexing pipeline lag, suggest/search p95, rejected-thread counts, ILM step for the log streams.",
+      "request": "(admin token)",
+      "response": "{ \"cluster\": \"green\", \"pipelineLagS\": 2, \"suggestP95Ms\": 31 }"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "products (RDBMS — source of truth)",
+      "note": "The authoritative catalog row. Everything in Elasticsearch is derived from here and can be rebuilt from here.",
+      "fields": [
+        {
+          "name": "product_id",
+          "type": "bigint PK"
+        },
+        {
+          "name": "name / description",
+          "type": "text"
+        },
+        {
+          "name": "brand_id / category_id",
+          "type": "FK (constrained)"
+        },
+        {
+          "name": "price_cents",
+          "type": "int"
+        },
+        {
+          "name": "lat / lon",
+          "type": "numeric (store pickup point)"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamptz (CDC ordering)"
+        }
+      ]
+    },
+    {
+      "name": "outbox_events (RDBMS)",
+      "note": "Transactional outbox: written in the same transaction as the product change; the pipeline relays them in commit order. Gives the index exactly the change stream the DB actually committed.",
+      "fields": [
+        {
+          "name": "event_id",
+          "type": "bigint PK (monotonic; version for ES upserts)"
+        },
+        {
+          "name": "product_id",
+          "type": "bigint"
+        },
+        {
+          "name": "op",
+          "type": "enum(upsert, delete)"
+        },
+        {
+          "name": "state",
+          "type": "enum(pending, relayed)"
+        }
+      ]
+    },
+    {
+      "name": "product document (ES mapping)",
+      "note": "Explicit mapping — dynamic mapping off. Text fields analyzed for search with .keyword subfields for aggs/sort; suggest, geo, and vector fields are purpose-built. Mappings are append-only: field type changes mean a new index + alias flip.",
+      "fields": [
+        {
+          "name": "_id",
+          "type": "product_id (idempotent upserts)"
+        },
+        {
+          "name": "name",
+          "type": "text (analyzer: std+lowercase+synonyms) + name.keyword"
+        },
+        {
+          "name": "name.suggest",
+          "type": "search_as_you_type"
+        },
+        {
+          "name": "brand / category",
+          "type": "keyword (terms aggs, filters)"
+        },
+        {
+          "name": "price",
+          "type": "scaled_float (range aggs)"
+        },
+        {
+          "name": "location",
+          "type": "geo_point"
+        },
+        {
+          "name": "embedding",
+          "type": "dense_vector(384, index: hnsw, cosine)"
+        },
+        {
+          "name": "version",
+          "type": "outbox event_id (external versioning)"
+        }
+      ]
+    },
+    {
+      "name": "log event (ES data stream)",
+      "note": "ECS-shaped structured logs in a data stream: writes always hit the latest backing index; rollover + ILM move backing indices through hot/warm/cold and delete them on schedule.",
+      "fields": [
+        {
+          "name": "@timestamp",
+          "type": "date (routing + retention)"
+        },
+        {
+          "name": "service / host",
+          "type": "keyword"
+        },
+        {
+          "name": "level",
+          "type": "keyword"
+        },
+        {
+          "name": "message",
+          "type": "text (match_only_text)"
+        },
+        {
+          "name": "trace_id",
+          "type": "keyword (correlation)"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: LIKE Search on the System of Record (the baseline)",
+      "description": [
+        "Start with the obvious: search is a SQL query on the products table — WHERE name ILIKE '%red dress%' ORDER BY created_at. Logs are grep over SSH. It works in the demo.",
+        "At 50M products and thousands of queries per second it fails on every axis that matters. ILIKE is a sequential scan with no ranking — 'red dress' matches a red dress duster coat before the best-selling dress. There is no stemming ('dresses' misses), no typo tolerance ('drss' finds nothing), no facets without a full extra scan per facet group, and no autocomplete worth shipping. And every one of those scans competes with checkout transactions for the same database.",
+        "To be fair — and to keep the golden hammers honest — Postgres full-text search is the right first move at small scale (see the Just Use Postgres chapter). This chapter starts where that one graduates: a 50M-doc catalog, four-figure QPS, merchandising-grade relevance, instant suggest, and a second tenant (logs) that wants the same engine. That is a dedicated search platform's job — with its one non-negotiable cost, the sync pipeline, taken seriously in step 3."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "DB"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-db"
+        ],
+        "caption": "Search, facets, and even log-grepping all run against the transactional database (and the hosts themselves).",
+        "highlight": [
+          "DB"
+        ]
+      },
+      "decisionPrompt": "What are the four distinct failures of ILIKE search at this scale — and which of them is about load, which about relevance, and which about product features you simply cannot build?",
+      "whyNow": [
+        "Naming precisely why LIKE fails (scan cost, no ranking, no language handling, no facets) gives every later step a concrete defect to remove."
+      ],
+      "probeLinks": [
+        "es-query-filter",
+        "amazingcto-es"
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "Search 'works' as an unranked scan on the OLTP database; logs are grep.",
+        "newRisk": "Sequential scans compete with checkout, relevance is nonexistent, and autocomplete/facets/semantic search are unbuildable on this foundation."
+      },
+      "traps": [
+        {
+          "trap": "Shipping LIKE '%term%' as search.",
+          "why": "It quietly becomes the most-run, slowest query in the system, with relevance so poor that search-driven revenue never materializes.",
+          "instead": "A dedicated inverted index with analysis and BM25 ranking — the next step."
+        },
+        {
+          "trap": "Jumping to Elasticsearch without pricing the pipeline.",
+          "why": "A search cluster with no disciplined feed drifts from the catalog — wrong prices, deleted products still ranking — which is worse than slow search.",
+          "instead": "Adopt the engine and the CDC/outbox feed as one decision (step 3), with the DB staying authoritative."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "One store vs. a dedicated search platform",
+          "description": "Keeping search in the record database means one system and transactional freshness, but at this catalog and QPS the scan cost, relevance ceiling, and missing features (suggest, facets, semantic) are structural; a search engine fixes them at the price of a derived-store pipeline and a second stateful platform.",
+          "chosen": "The design accepts the second platform — and spends the rest of the interview making its derived nature explicit and safe."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+    },
+    {
+      "id": "index",
+      "title": "2. The Inverted Index — Analyzers and BM25",
+      "description": [
+        "The core mechanism: instead of scanning documents for a term, precompute term -> posting list (which documents contain it). A query intersects posting lists — milliseconds at any catalog size. Everything Elasticsearch does well sits on this inversion.",
+        "Analysis decides what a 'term' is. At index time and query time, text runs through an analyzer: tokenizer (split words), then filters — lowercase, stemming ('dresses' -> 'dress'), synonyms ('sofa' <-> 'couch'), stopwords. Index-time and query-time analysis must agree, which is why analyzers live in the mapping. Mappings are explicit here — dynamic mapping is off — because mappings are append-only: you can add fields, but changing a field's type means a new index (step 3 makes that routine).",
+        "Relevance is BM25: term frequency with saturation (the 10th occurrence of 'dress' adds less than the 2nd), inverse document frequency (rare terms weigh more than 'the'), and length normalization (a match in a short title beats one buried in a long description). Compose queries with bool: the must clause carries the scored multi_match with per-field boosts (name^3, brand^2, description), and the filter clause carries the yes/no predicates — brand, price range, in-stock. Filter context is crucial: filters don't score, so their results are cached as bitsets and reused across queries.",
+        "When ranking surprises you, _explain shows the arithmetic per document — relevance debugging is a first-class operation, not guesswork."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Products",
+          "DB",
+          "Metrics"
+        ],
+        "links": [
+          "app-products",
+          "app-db",
+          "products-metrics"
+        ],
+        "caption": "Queries hit the analyzed inverted index with BM25 scoring and cached filters; the DB remains the record behind it.",
+        "highlight": [
+          "Products"
+        ]
+      },
+      "decisionPrompt": "Why does 'brand:Zara AND price<100' belong in filter context while 'red summer dress' belongs in must — and what does that split buy you in cache behavior and latency?",
+      "concepts": [
+        {
+          "term": "Inverted index",
+          "definition": "A map from each analyzed term to the posting list of documents containing it.",
+          "whyItMatters": "Turns search from O(catalog) scanning into posting-list intersection — the reason a 50M-doc query returns in milliseconds.",
+          "example": "'dress' -> [84211, 84302, ...] ∩ 'red' -> [84211, ...]"
+        },
+        {
+          "term": "Analyzer",
+          "definition": "The tokenizer + filter chain that turns text into index terms, applied identically at index and query time.",
+          "whyItMatters": "Stemming, synonyms, and lowercase happen here — relevance quality is mostly analysis quality.",
+          "example": "'Red Dresses' -> [red, dress]"
+        },
+        {
+          "term": "BM25",
+          "definition": "The default relevance function: saturating term frequency × inverse document frequency × length normalization.",
+          "whyItMatters": "Explains why rare terms dominate, why keyword stuffing plateaus, and why title matches beat description matches.",
+          "example": "match in 3-word title ≫ match in 300-word description."
+        },
+        {
+          "term": "Query vs. filter context",
+          "definition": "Scored clauses contribute to _score; filter clauses are boolean, cacheable bitsets.",
+          "whyItMatters": "Moving yes/no predicates into filter context is the single cheapest performance win in ES query design.",
+          "example": "bool: { must: multi_match(...), filter: [term(brand), range(price)] }"
+        }
+      ],
+      "whyNow": [
+        "The inverted index and BM25 are the mechanism every later feature (suggest, facets, hybrid) builds on — establish them before the conveniences."
+      ],
+      "probeLinks": [
+        "es-analysis",
+        "es-bm25",
+        "es-query-filter"
+      ],
+      "recap": {
+        "before": "Unranked ILIKE scans on the OLTP database.",
+        "after": "Analyzed, BM25-ranked search over an explicit-mapped inverted index, with cached filter bitsets.",
+        "newRisk": "The index is empty and drifts immediately: nothing keeps 50M documents in sync with the catalog."
+      },
+      "traps": [
+        {
+          "trap": "Trusting dynamic mappings.",
+          "why": "First-seen values pick the types: numeric-looking SKUs become longs, every string doubles into text+keyword, and a malformed document can poison the mapping forever.",
+          "instead": "Explicit mappings with dynamic: strict for the product index; schema design didn't disappear, it moved."
+        },
+        {
+          "trap": "Debugging relevance by tweaking boosts blindly.",
+          "why": "Boost roulette overfits one query and breaks ten others.",
+          "instead": "_explain per surprising document, a golden set of judged queries, and boost changes verified against it."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Ranked search — analysis, intersection, scoring",
+          "note": "The query analyzes to terms, posting lists intersect, cached filters prune, and BM25 orders what remains.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Products",
+                "label": "inverted index"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "GET /search?q=red dresses&brand=Zara"
+              },
+              {
+                "from": "App",
+                "to": "Products",
+                "arrow": "->>",
+                "label": "bool: must multi_match('red dress') + filter term(brand)"
+              },
+              {
+                "from": "Products",
+                "to": "Products",
+                "arrow": "->>",
+                "label": "analyze -> intersect postings -> apply cached filter bitset"
+              },
+              {
+                "from": "Products",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "top-k by BM25 (_score)"
+              },
+              {
+                "from": "App",
+                "to": "Client",
+                "arrow": "-->>",
+                "label": "ranked results"
+              }
+            ]
+          },
+          "highlight": [
+            "Products"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Index-time work vs. query-time speed",
+          "description": "Analysis, posting lists, and per-field boost structure all cost work and space at index time; the payoff is that queries touch precomputed structure instead of raw text — the same write-amplification-for-read-speed trade the whole platform makes.",
+          "chosen": "The design pays at index time everywhere: products are written hundreds of times a second but searched thousands."
+        },
+        {
+          "name": "Relevance power vs. mapping rigidity",
+          "description": "Rich analysis chains and typed fields make ranking excellent, but mappings are append-only — evolving analysis means building and swapping a new index rather than editing in place.",
+          "chosen": "The design accepts rigidity and makes reindex-behind-an-alias a routine operation (next step) instead of pretending mappings can flex."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/02-index.jpg"
+    },
+    {
+      "id": "ingest",
+      "title": "3. Feeding the Index — CDC, Idempotent Upserts, Alias Flips",
+      "description": [
+        "Elasticsearch is a derived store. It has no multi-document transactions, it acknowledges writes before they're searchable, and under failure its answer is 'rebuild from the source'. That's not a weakness to hide — it's the contract to design around: the RDBMS stays authoritative, and the index is a view you must be able to regenerate.",
+        "The feed: the product transaction writes an outbox_events row in the same commit (the same transactional-outbox move the other golden hammers use); the indexing pipeline relays events in commit order, transforms rows into documents (denormalizing brand/category names, computing embeddings), and writes with _bulk. Upserts are idempotent: _id = product_id, and the outbox event_id rides along as an external version so a replayed or out-of-order event can never overwrite a newer document with an older one. Deletes are events too — a removed product must leave the index, or it ranks forever.",
+        "Freshness is near-real-time, not immediate: documents become searchable at the next refresh (~1 s). Say that out loud in the design — 'your edit appears in search within seconds' — and never build UX or tests that assume read-your-writes against the index.",
+        "Mapping changes are the other pipeline duty. Because mappings are append-only, changing an analyzer or field type means: create products_v2 with the new mapping, _reindex the corpus into it while CDC dual-feeds both, verify counts and sampled relevance, then atomically switch the products alias from v1 to v2. Clients only ever know the alias, so the flip is invisible. Aliases from day one — an index named directly in app config is future downtime."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "DB",
+          "Pipeline",
+          "Products",
+          "Suggest",
+          "GeoVecES",
+          "Metrics"
+        ],
+        "links": [
+          "app-db",
+          "db-pipeline",
+          "pipeline-products",
+          "pipeline-suggest",
+          "pipeline-geovec",
+          "pipeline-metrics"
+        ],
+        "caption": "The outbox/CDC pipeline is the only writer to the indexes: ordered, idempotent, replayable — and the reindex machinery for mapping changes.",
+        "highlight": [
+          "Pipeline"
+        ],
+        "groups": [
+          "ingest"
+        ]
+      },
+      "options": [
+        {
+          "name": "Outbox/CDC pipeline (recommended)",
+          "description": "The DB transaction emits the change; a relay feeds ES in commit order with versions. One writer, replayable history.",
+          "pros": [
+            "No lost updates: the event exists iff the transaction committed, and event order is commit order.",
+            "Idempotent + versioned upserts make replays and backfills safe — a full rebuild is 'replay from zero'.",
+            "One writer to the index means relevance/ops changes have a single choke point to reason about."
+          ],
+          "cons": [
+            "Real infrastructure: a relay/connector to run and monitor (lag becomes a first-class metric).",
+            "Freshness = CDC lag + refresh interval, typically a few seconds end to end.",
+            "Schema evolution needs the dual-feed + alias-flip routine."
+          ],
+          "view": {
+            "nodes": [
+              "DB",
+              "Pipeline",
+              "Products"
+            ],
+            "links": [
+              "db-pipeline",
+              "pipeline-products"
+            ],
+            "caption": "Commit-ordered events, versioned _bulk upserts: the index can always be rebuilt by replaying.",
+            "highlight": [
+              "Pipeline"
+            ],
+            "groups": [
+              "ingest"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/03-ingest-opt1.jpg"
+        },
+        {
+          "name": "Dual-write from the app",
+          "description": "The service writes the DB, then writes ES directly. Simple on day one — and the classic drift factory.",
+          "pros": [
+            "No pipeline infrastructure; freshest possible index writes.",
+            "Trivial to implement for a prototype."
+          ],
+          "cons": [
+            "A crash between DB commit and ES write silently drifts the index — no record of what was missed.",
+            "Two racing writers can interleave: an older update can land after a newer one with no version to stop it.",
+            "No replay: a full rebuild means writing a bespoke backfill job under pressure."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "DB",
+              "Products"
+            ],
+            "links": [
+              "app-db",
+              "app-products"
+            ],
+            "caption": "The app writes both stores and hopes: any crash or race between the two writes becomes silent drift.",
+            "highlight": [
+              "Products"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/03-ingest-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "A product's price changes twice in one second and the second event is delivered first. What exact mechanism prevents the stale price from winning — and what would the dual-write version have done?",
+      "concepts": [
+        {
+          "term": "Derived store",
+          "definition": "A queryable copy whose truth lives elsewhere and which can be rebuilt from that source.",
+          "whyItMatters": "Declaring ES derived resolves every hard question — durability, transactions, drift — by pointing at the DB and the replayable feed.",
+          "example": "Index lost? Restore snapshot, replay outbox from the snapshot's version."
+        },
+        {
+          "term": "External versioning",
+          "definition": "Upserts carry a monotonic version (the outbox event id); ES rejects writes older than the stored version.",
+          "whyItMatters": "Makes the pipeline idempotent and order-tolerant — replays and races cannot resurrect stale data.",
+          "example": "_bulk index _id=84211, version=118422, version_type=external"
+        },
+        {
+          "term": "Alias flip",
+          "definition": "Clients query an alias; reindexing builds a new physical index and repoints the alias atomically.",
+          "whyItMatters": "Turns 'mappings are forever' from a crisis into a routine: analyzer changes, model upgrades, and shard-count changes all ride the same move.",
+          "example": "products -> products_v2 in one aliases action."
+        }
+      ],
+      "whyNow": [
+        "Before adding more index features, the write path must be trustworthy — every later capability (suggest fields, embeddings) is fed by this same pipeline."
+      ],
+      "probeLinks": [
+        "debezium",
+        "outbox-pattern",
+        "es-aliases",
+        "es-reindex"
+      ],
+      "recap": {
+        "before": "A well-designed index with no disciplined way to fill or evolve it.",
+        "after": "A commit-ordered, idempotent, replayable feed; alias-fronted indexes; reindex as routine.",
+        "newRisk": "Search works — but the search box itself is still dumb: no as-you-type, no typo rescue, no facet navigation."
+      },
+      "traps": [
+        {
+          "trap": "Dual-writing the DB and the index from the app.",
+          "why": "Crashes and races between the two writes create silent, unfixable drift — the index lies and nothing knows.",
+          "instead": "One writer: the outbox/CDC pipeline, with versions; the app never writes ES directly."
+        },
+        {
+          "trap": "Pointing applications at physical index names.",
+          "why": "The first mapping change then requires either in-place magic that doesn't exist or coordinated client downtime.",
+          "instead": "Alias per logical index from day one; reindex behind it and flip."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Product update — outbox to searchable",
+          "note": "The stale-event race is decided by external versioning; visibility waits for the next refresh (~1 s).",
+          "sequence": {
+            "participants": [
+              {
+                "id": "App"
+              },
+              {
+                "id": "DB",
+                "label": "RDBMS + outbox"
+              },
+              {
+                "id": "Pipeline",
+                "label": "CDC relay"
+              },
+              {
+                "id": "Products",
+                "label": "product index"
+              }
+            ],
+            "messages": [
+              {
+                "from": "App",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "TX: UPDATE product + INSERT outbox_event"
+              },
+              {
+                "from": "DB",
+                "to": "Pipeline",
+                "arrow": "->>",
+                "label": "event {id: 118422, product: 84211}"
+              },
+              {
+                "from": "Pipeline",
+                "to": "Products",
+                "arrow": "->>",
+                "label": "_bulk upsert _id=84211 version=118422 (external)"
+              },
+              {
+                "type": "alt",
+                "label": "version newer than stored",
+                "messages": [
+                  {
+                    "from": "Products",
+                    "to": "Pipeline",
+                    "arrow": "-->>",
+                    "label": "ok — searchable at next refresh (~1 s)"
+                  }
+                ],
+                "else": {
+                  "label": "stale replay/race",
+                  "messages": [
+                    {
+                      "from": "Products",
+                      "to": "Pipeline",
+                      "arrow": "-->>",
+                      "label": "version conflict — ignored (correct)"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Pipeline",
+            "Products"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Pipeline rigor vs. day-one simplicity",
+          "description": "The outbox/CDC feed costs a relay, monitoring, and a few seconds of lag; dual-write costs nothing today and corrupts silently forever after — the failure appears months later as 'search shows the old price sometimes'.",
+          "chosen": "The design pays the pipeline cost up front; a search platform whose index can lie is worse than no search platform."
+        },
+        {
+          "name": "Freshness honesty vs. perceived immediacy",
+          "description": "Claiming instant searchability invites building UX on read-your-writes that NRT cannot deliver; stating 'seconds' plainly constrains some flows but never breaks them.",
+          "chosen": "The design states NRT freshness explicitly and routes any read-your-writes need to the system of record."
+        }
+      ]
+    },
+    {
+      "id": "discover",
+      "title": "4. Search UX — Autocomplete, Fuzziness, Facets",
+      "description": [
+        "Relevance gets users to good results; search UX gets them to the query. Three features carry it, each with a dedicated mechanism.",
+        "Autocomplete answers every keystroke, so it's the highest-QPS, tightest-latency surface in the system (~10k/s, p95 < 50 ms). Two implementations: a search_as_you_type field indexes shingled prefixes into the ordinary inverted index — flexible (mid-phrase matching, fuzziness works, ranks with BM25), one more field fed by the same pipeline; or a completion suggester, an in-memory FST — the fastest possible prefix lookup, but prefix-only, weight-ranked rather than scored, and memory-resident. Marketplace search boxes usually want the flexible one; the FST wins for strict, curated suggestions.",
+        "Typos: fuzziness=AUTO on match/multi_match tolerates edit distance scaled by term length ('drss' -> 'dress'), and a phrase suggester powers 'did you mean' from what's actually in the index. Fuzziness costs query-time term expansion — cap it (prefix_length=1) so the suggest path stays inside budget.",
+        "Facets are aggregations running alongside the query: terms aggs on keyword fields (brand, category), range/histogram on price — computed over the filtered result set in the same round trip. The subtle part is multi-select: after picking brand=Zara, the brand facet must still show other brands' counts. That's post_filter — the facet-group's own filter applies to hits but not to that group's aggregation — plus per-group filtered aggs. Get it wrong and facet counts contradict the result list, the most-reported search bug there is. And terms aggs need keyword fields: aggregating an analyzed text field is a classic error (that's what .keyword subfields are for)."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Suggest",
+          "Products",
+          "Facets"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-suggest",
+          "app-products",
+          "app-facets"
+        ],
+        "caption": "Every keystroke hits the suggest fields; the submitted query fans into BM25 ranking plus per-facet aggregations with post_filter.",
+        "highlight": [
+          "Suggest",
+          "Facets"
+        ]
+      },
+      "options": [
+        {
+          "name": "search_as_you_type + fuzziness (recommended)",
+          "description": "Prefix shingles in the ordinary index: flexible matching, BM25-ranked, typo-tolerant, fed by the same pipeline.",
+          "pros": [
+            "Matches mid-phrase ('dre' finds 'red dress'), works with fuzziness, ranks with the same relevance model.",
+            "Just another mapped field — no separate data structure or feed to operate.",
+            "Suggestions reflect the live index: new products suggest as soon as they're indexed."
+          ],
+          "cons": [
+            "Slower than an FST (still comfortably inside 50 ms with a warmed index).",
+            "Prefix shingles inflate the index noticeably (2-3x on the suggest field).",
+            "Ranking suggestions well may still need business signals (popularity boosts) layered on."
+          ],
+          "view": {
+            "nodes": [
+              "Client",
+              "App",
+              "Suggest"
+            ],
+            "links": [
+              "client-lb",
+              "app-suggest"
+            ],
+            "caption": "Keystroke -> prefix query over shingled fields -> BM25-ranked suggestions.",
+            "highlight": [
+              "Suggest"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-discover-opt1.jpg"
+        },
+        {
+          "name": "Completion suggester (FST)",
+          "description": "A purpose-built in-memory finite-state transducer over curated suggestion inputs.",
+          "pros": [
+            "The fastest option — microsecond-scale in-memory prefix walks.",
+            "Deterministic, curated suggestions with explicit weights.",
+            "Isolated from query load on the main index."
+          ],
+          "cons": [
+            "Prefix-only: no mid-phrase or fuzzy matching beyond limited fuzzy-FST support.",
+            "Weights are managed data — someone must maintain popularity/curation.",
+            "FSTs live in memory and rebuild on segment merges; big suggestion sets cost heap."
+          ],
+          "view": {
+            "nodes": [
+              "Client",
+              "App",
+              "Suggest"
+            ],
+            "links": [
+              "client-lb",
+              "app-suggest"
+            ],
+            "caption": "Curated inputs compiled into an in-memory FST: fastest, strictest, prefix-only.",
+            "highlight": [
+              "Suggest"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-discover-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "The user has brand=Zara selected. Why must the brand facet's counts ignore that filter while the price facet's counts respect it — and which query feature implements exactly that asymmetry?",
+      "concepts": [
+        {
+          "term": "search_as_you_type",
+          "definition": "A field type that indexes prefix shingles so ordinary queries match partial input.",
+          "whyItMatters": "Autocomplete with the full power of the index — fuzziness, ranking, freshness — instead of a side structure.",
+          "example": "'red d' matches name.suggest._2gram 'red dress'."
+        },
+        {
+          "term": "post_filter",
+          "definition": "A filter applied to hits after aggregations are computed.",
+          "whyItMatters": "The mechanism behind correct multi-select facet counts — the facet you're filtering by still shows its alternatives.",
+          "example": "brand filter in post_filter; brand terms agg unfiltered; price agg filtered by brand."
+        },
+        {
+          "term": "Fuzziness (edit distance)",
+          "definition": "Match terms within a bounded number of character edits, scaled by term length (AUTO).",
+          "whyItMatters": "Rescues the large fraction of queries with typos — at a query-expansion cost you must bound.",
+          "example": "fuzziness=AUTO, prefix_length=1: 'drss' -> 'dress'."
+        }
+      ],
+      "whyNow": [
+        "With a trustworthy index and feed in place, UX features are index fields and query shapes — cheap to add now, impossible to bolt onto the LIKE baseline."
+      ],
+      "probeLinks": [
+        "es-search-as-you-type",
+        "es-suggesters",
+        "es-aggregations",
+        "es-post-filter"
+      ],
+      "recap": {
+        "before": "A ranked but bare query box.",
+        "after": "As-you-type suggestions, typo rescue, did-you-mean, and multi-select facets with correct counts.",
+        "newRisk": "Discovery is still text-only: 'near me' and 'something for a rainy hike' return nothing useful."
+      },
+      "traps": [
+        {
+          "trap": "Terms aggregations on analyzed text fields.",
+          "why": "You get facet buckets of stemmed tokens ('dress', 'red') instead of values ('Red Dress Midi'), or an outright error on newer versions.",
+          "instead": "Aggregate and sort on .keyword subfields; analyzed text is for matching, keyword is for identity."
+        },
+        {
+          "trap": "Implementing multi-select facets with plain filters.",
+          "why": "Selecting brand=Zara makes the brand facet show only Zara — users can't broaden, and counts contradict the UI.",
+          "instead": "post_filter for the selected group plus per-group filtered aggs."
+        },
+        {
+          "trap": "Unbounded fuzziness on the suggest path.",
+          "why": "High-fuzziness prefix queries expand to huge term sets and blow the 50 ms budget precisely on the hottest endpoint.",
+          "instead": "fuzziness=AUTO with prefix_length=1, and measure the suggest p95 as its own SLO."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Keystroke to facet click",
+          "note": "Suggest answers each keystroke from prefix shingles; the submitted query computes hits and facet counts in one round trip, with post_filter keeping multi-select counts honest.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Suggest",
+                "label": "search_as_you_type"
+              },
+              {
+                "id": "Facets",
+                "label": "aggs + post_filter"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "'re' … 'red d'"
+              },
+              {
+                "from": "App",
+                "to": "Suggest",
+                "arrow": "->>",
+                "label": "prefix query, fuzziness AUTO"
+              },
+              {
+                "from": "Suggest",
+                "to": "Client",
+                "arrow": "-->>",
+                "label": "'red dress', 'red shoes', …"
+              },
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "search 'red dress' + brand=Zara"
+              },
+              {
+                "from": "App",
+                "to": "Facets",
+                "arrow": "->>",
+                "label": "query + aggs; brand in post_filter"
+              },
+              {
+                "from": "Facets",
+                "to": "Client",
+                "arrow": "-->>",
+                "label": "Zara hits + all-brand counts + Zara-filtered price buckets"
+              }
+            ]
+          },
+          "highlight": [
+            "Suggest",
+            "Facets"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Flexible suggest vs. fastest suggest",
+          "description": "search_as_you_type rides the inverted index — flexible, fuzzy, fresh, ranked — at millisecond cost and index bloat; the completion FST is near-instant and curated but prefix-only and memory-resident.",
+          "chosen": "The marketplace box uses search_as_you_type for organic matching; an FST layer is the named upgrade if curated suggestions become a product surface."
+        },
+        {
+          "name": "Facet richness vs. query cost",
+          "description": "Every facet group is an aggregation computed per search; six facet groups can cost more than the scored query itself, and high-cardinality terms aggs are approximate under sharding.",
+          "chosen": "The design budgets facets deliberately: keyword fields only, bounded bucket counts, and facet-heavy pages measured as their own latency class."
+        }
+      ]
+    },
+    {
+      "id": "geovec",
+      "title": "5. Geo & Vectors — Near Me and Semantic Search",
+      "description": [
+        "Two discovery modes no amount of keyword tuning provides: filtering by the physical world, and matching by meaning.",
+        "Geo: map each product's pickup point to a geo_point field. 'Within 5 km' is a geo_distance filter — filter context, so it caches and composes with everything else; 'nearest first' is a distance sort or a distance-decay function score folded into the ranking. For map views, geo-grid aggregations bucket results into cells for clustering. This is the same aggregation/filter machinery as step 4, pointed at coordinates.",
+        "Semantic: the pipeline embeds each product (title + description -> a 384-dim vector from a sentence-encoder) into a dense_vector field with an HNSW index; the query embeds the same way, and kNN retrieves nearest neighbors — 'something for a rainy hike' finds rain jackets that never say 'rainy'. Filters apply to kNN (pre-filtered graph walks), so 'semantic + in-stock + under €100 + within 5 km' is one query.",
+        "Neither mode replaces keywords: exact SKUs, brand names, and model numbers are BM25's home turf, and a pure-vector box fails them embarrassingly. Hybrid retrieval runs both and fuses with reciprocal rank fusion (RRF) — documents ranked well by either retriever surface, no score-scale tuning required. Operationally, vectors are a capacity feature: HNSW graphs live in off-heap memory (dimension choice quadruples or quarters the bill), num_candidates trades recall for latency, and a model upgrade re-embeds the corpus — which is exactly the reindex-behind-an-alias routine from step 3."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "GeoVecES",
+          "Products",
+          "Pipeline"
+        ],
+        "links": [
+          "app-geovec",
+          "app-products",
+          "pipeline-geovec"
+        ],
+        "caption": "geo_point filters and HNSW kNN extend the same index; hybrid queries fuse BM25 and vector rankings with RRF.",
+        "highlight": [
+          "GeoVecES"
+        ]
+      },
+      "decisionPrompt": "A user searches 'nike air max 90' and another searches 'shoes for a muddy trail run'. Which retriever should win each query, and how does RRF let you serve both without hand-tuning score weights?",
+      "concepts": [
+        {
+          "term": "geo_distance in filter context",
+          "definition": "A yes/no radius predicate over geo_point fields.",
+          "whyItMatters": "Caches like any filter and composes with text, facets, and kNN — geography becomes just another clause.",
+          "example": "filter: geo_distance(location, 52.1,4.3, 5km)"
+        },
+        {
+          "term": "HNSW kNN",
+          "definition": "Approximate nearest-neighbor search over a navigable small-world graph of vectors.",
+          "whyItMatters": "Millisecond semantic retrieval at 50M docs; recall/latency tuned via num_candidates, memory set by dimensions.",
+          "example": "knn: { field: embedding, k: 50, num_candidates: 500, filter: [...] }"
+        },
+        {
+          "term": "Reciprocal rank fusion (RRF)",
+          "definition": "Fuse multiple rankings by summing 1/(rank+k) per document across retrievers.",
+          "whyItMatters": "Combines BM25 and kNN without commensurable scores — robust hybrid ranking with no weight tuning.",
+          "example": "rank: { rrf: { retrievers: [bm25_query, knn_query] } }"
+        }
+      ],
+      "whyNow": [
+        "Both modes reuse everything already built — mapped fields fed by the pipeline, filters, aggregations, alias-based reindex — so they arrive as increments, not new systems."
+      ],
+      "probeLinks": [
+        "es-knn",
+        "es-geo"
+      ],
+      "recap": {
+        "before": "Text-only discovery.",
+        "after": "Radius filters, distance ranking, and hybrid BM25+kNN semantic search in the same query surface.",
+        "newRisk": "Search is feature-complete — and the org now wants the same engine for its second workload: logs."
+      },
+      "traps": [
+        {
+          "trap": "Replacing keyword search with pure vector search.",
+          "why": "Embeddings blur exact identifiers — SKU, brand, and model queries return 'similar' products instead of the product.",
+          "instead": "Hybrid retrieval with RRF: BM25 handles identity, kNN handles intent, fusion serves both."
+        },
+        {
+          "trap": "Choosing embedding dimensions casually.",
+          "why": "1536-dim vectors cost 4x the off-heap memory of 384-dim at 50M docs — the difference between fitting the existing nodes and buying a new tier.",
+          "instead": "Benchmark a small model first; treat dimension count as a capacity decision with a stated recall target."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Semantic recall vs. memory and reindex cost",
+          "description": "Bigger embedding models raise recall on intent queries but multiply off-heap memory and turn every model upgrade into a full re-embed + reindex of 50M documents.",
+          "chosen": "The design starts at 384 dimensions with RRF hybrid — measured relevance lift per GB, upgrading the model only against the golden query set."
+        },
+        {
+          "name": "One engine for geo vs. a dedicated geo store",
+          "description": "PostGIS-class engines exceed ES for advanced spatial analytics, but marketplace geo needs (radius, distance sort, clustering) sit comfortably in ES — and splitting them out would re-add a store and a seam.",
+          "chosen": "Geo stays in the search index; the design names GIS analytics as the workload that would justify a specialist."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/05-geovec.jpg"
+    },
+    {
+      "id": "logs",
+      "title": "6. The Second Tenant — Logs, Data Streams, ILM",
+      "description": [
+        "Here's the golden-hammer moment: the engine bought for product search is also the industry default for log analytics — same inverted index, opposite workload. Products are read-heavy, long-lived, update-in-place; logs are write-heavy (50k events/s), append-only, and worthless after 30 days. Serving both well is a topology decision, not a query trick.",
+        "The log-native machinery: shippers (Filebeat/OTel collectors) bulk structured events into a data stream — a write alias over generations of backing indices. Rollover cuts a new backing index at ~50 GB or 1 day, keeping shards uniform. ILM walks each generation through tiers: hot (fast NVMe nodes take writes and the last days of queries), warm (denser nodes, read-only, shrunk and force-merged), cold (cheapest, rarely queried), then delete — retention as policy, not as cron jobs. Kibana rides the streams for exploration, dashboards, and alerting; trace_id correlation turns 'the checkout is slow' into a query.",
+        "The topology decision: a log burst — a deploy gone wrong, a retry storm — will saturate indexing threads, evict page cache, and trigger circuit breakers. If logs share the product-search cluster, your search p95 now depends on your least careful service's log volume. Separate clusters isolate the workloads completely (and let versions, sizing, and risk tolerance differ); shared-cluster-with-dedicated-tiers is the budget compromise that demands real discipline (shard quotas, separate node roles, per-tier watermarks).",
+        "This step is also where the ES operational skillset compounds: the logs cluster is where the team learns rollover, ILM, shard hygiene, and snapshot discipline at low stakes — exactly the muscles the revenue-bearing search cluster needs."
+      ],
+      "view": {
+        "nodes": [
+          "Agents",
+          "LogsDS",
+          "Kibana",
+          "Snap",
+          "Metrics"
+        ],
+        "links": [
+          "agents-logs",
+          "kibana-logs",
+          "logs-snap",
+          "logs-metrics"
+        ],
+        "caption": "A second, write-heavy tenant on its own cluster: data streams roll over, ILM ages generations through tiers, Kibana serves the humans.",
+        "highlight": [
+          "LogsDS"
+        ]
+      },
+      "options": [
+        {
+          "name": "Separate logs cluster (recommended)",
+          "description": "Product search and logs each get a cluster sized and tuned for their opposite workloads.",
+          "pros": [
+            "Total isolation: no log burst can touch search latency or caches.",
+            "Independent sizing, versions, upgrade windows, and risk tolerance.",
+            "Cheap hardware profiles for warm/cold log tiers without contaminating the search nodes."
+          ],
+          "cons": [
+            "Two clusters to operate, monitor, and upgrade.",
+            "Cross-cluster search needed if anyone wants to query both at once.",
+            "Somewhat higher idle-capacity cost."
+          ],
+          "view": {
+            "nodes": [
+              "Agents",
+              "LogsDS",
+              "Kibana",
+              "Snap"
+            ],
+            "links": [
+              "agents-logs",
+              "kibana-logs",
+              "logs-snap"
+            ],
+            "caption": "Logs land on their own cluster and hardware; search never feels them.",
+            "highlight": [
+              "LogsDS"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/06-logs-opt1.jpg"
+        },
+        {
+          "name": "Shared cluster, dedicated tiers",
+          "description": "One cluster; log indices pinned to their own hot/warm nodes via tier routing.",
+          "pros": [
+            "One cluster to run; spare capacity is shared.",
+            "Simpler for a small team on a budget.",
+            "Cross-workload queries are trivial."
+          ],
+          "cons": [
+            "Shared cluster state and masters: a shard explosion in logs degrades search management operations.",
+            "Isolation is by configuration (routing, quotas) — one mistake and the blast radius is everything.",
+            "Upgrades and incidents couple the workloads."
+          ],
+          "view": {
+            "nodes": [
+              "Agents",
+              "LogsDS",
+              "Products",
+              "Kibana"
+            ],
+            "links": [
+              "agents-logs",
+              "kibana-logs",
+              "app-products"
+            ],
+            "caption": "One cluster, roles and routing keeping tenants apart — cheaper, and only as safe as its configuration.",
+            "highlight": [
+              "LogsDS",
+              "Products"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/06-logs-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "A bad deploy multiplies log volume 20x for an hour. Trace exactly how that hurts product search on a shared cluster — indexing threads, page cache, circuit breakers, cluster state — and which of those the dedicated-tier compromise actually fixes.",
+      "concepts": [
+        {
+          "term": "Data stream + rollover",
+          "definition": "A write alias over generations of backing indices, cutting a new one at a size/age threshold.",
+          "whyItMatters": "Keeps time-series shards uniform and makes retention an index-drop, never a document-delete.",
+          "example": "logs-app -> .ds-logs-app-000042 at 50 GB."
+        },
+        {
+          "term": "ILM tiers (hot/warm/cold/delete)",
+          "definition": "Lifecycle policy moving index generations across node classes until deletion.",
+          "whyItMatters": "Retention and cost become declarative policy; old logs migrate to cheap hardware automatically.",
+          "example": "hot 3d -> warm 11d (shrink+force-merge) -> cold 16d -> delete."
+        },
+        {
+          "term": "Workload isolation",
+          "definition": "Keeping the write-heavy tenant from sharing failure domains with the latency-critical one.",
+          "whyItMatters": "Search p95 must not depend on the noisiest service's log volume — isolation is a topology property, not a query option.",
+          "example": "Separate clusters; or tier routing + shard quotas if shared."
+        }
+      ],
+      "whyNow": [
+        "The logs workload arrives in every real org the moment a search cluster exists; deciding its topology deliberately — before it appears — is the difference between a platform and an incident."
+      ],
+      "probeLinks": [
+        "es-data-streams",
+        "es-ilm"
+      ],
+      "recap": {
+        "before": "Logs were grep over SSH; search owned the only cluster.",
+        "after": "A second, isolated, ILM-managed cluster serves log search, dashboards, and alerts at 50k events/s.",
+        "newRisk": "Two clusters of derived state now carry the business — sizing, quorum, snapshots, and honest limits become the whole game."
+      },
+      "traps": [
+        {
+          "trap": "Pointing service logs at the product-search cluster 'for now'.",
+          "why": "Log volume is spiky and unbounded; the first retry storm evicts search caches and rejects indexing — revenue search paged by someone else's debug logging.",
+          "instead": "A separate logs cluster (or rigorously quota'd tiers), decided before the first shipper is deployed."
+        },
+        {
+          "trap": "Daily indices with default shard counts.",
+          "why": "5 primaries × N services × 365 days = a cluster-state explosion of thousands of tiny shards — heap pressure and slow master operations with no data to show for it.",
+          "instead": "Data streams with size-based rollover (~50 GB) and ILM shrink in warm."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Isolation vs. consolidation",
+          "description": "Separate clusters double the operational objects but decouple the failure domains of a latency-critical and a burst-prone workload; a shared cluster halves the bill and couples every incident.",
+          "chosen": "The design separates clusters — the cost asymmetry (search downtime is revenue, log lag is annoyance) decides it."
+        },
+        {
+          "name": "Retention depth vs. cost",
+          "description": "Longer log retention aids forensics but grows linearly in storage; tiering pushes old generations to cheap nodes yet 90-day hot-question access patterns would still pay dearly.",
+          "chosen": "30 days tiered, with snapshots before delete for the rare deep audit — retention is a policy number, revisited with evidence."
+        }
+      ]
+    },
+    {
+      "id": "scale-ha",
+      "title": "7. Scale & Survive — Shards, Replicas, Snapshots",
+      "description": [
+        "An index is physically primary shards, each a Lucene index, each with replicas on other nodes. Shard count is set at creation (another 'decided up front' — like mappings), so size it deliberately: target ~15–50 GB per shard. Too few shards and you can't parallelize or rebalance; too many and cluster state, heap, and per-shard overhead eat the cluster — oversharding is the most common self-inflicted ES wound. Replicas do double duty: failover copies and read throughput (search fans out to one copy of every shard; suggest QPS scales with replica count).",
+        "Topology: three dedicated master-eligible nodes form the quorum that owns cluster state — masters do no data work, and a two-node 'HA' cluster is a split-brain story. Data nodes hold shards (tiered for the logs cluster); coordinating-only nodes can absorb the scatter-gather fan-out for very high QPS. Heap stays ≤ ~30 GB (compressed pointers) and ~50% of RAM — the other half is the OS page cache that actually serves searches; HNSW vectors add their own off-heap budget.",
+        "Durability, stated precisely: writes hit the translog and replicate before acking, but Elasticsearch is still not the system of record. The layered answer: replicas survive node loss; SLM snapshots to object storage survive cluster loss and turn a multi-hour rebuild into a restore; and the outbox replay (step 3) is the ultimate backstop that makes even 'restore + catch up' routine. Restore drills apply here exactly as they did for the database.",
+        "Query-side scale discipline: deep pagination with from+size holds the whole window on the coordinating node and caps at 10k — cursor with search_after instead; circuit breakers and adaptive replica selection keep one slow node from dragging p99; index sorting and preference routing squeeze the hot paths.",
+        "And the honest boundary that closes the tour: Elasticsearch is a spectacular derived view and a terrible primary database — no multi-document transactions, no joins worth the name, NRT visibility, mappings set in stone. Orders, inventory, money, and truth live in the RDBMS; the moment a workload needs those properties, it doesn't belong here. Just use Elasticsearch — for what it's for."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "DB",
+          "Pipeline",
+          "Products",
+          "Suggest",
+          "Facets",
+          "GeoVecES",
+          "LogsDS",
+          "Agents",
+          "Kibana",
+          "Snap",
+          "Metrics"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-db",
+          "db-pipeline",
+          "pipeline-products",
+          "pipeline-suggest",
+          "pipeline-geovec",
+          "app-products",
+          "app-suggest",
+          "app-facets",
+          "app-geovec",
+          "agents-logs",
+          "kibana-logs",
+          "products-snap",
+          "logs-snap",
+          "products-metrics",
+          "logs-metrics",
+          "pipeline-metrics",
+          "app-metrics"
+        ],
+        "caption": "The full platform: sharded, replicated, quorum-mastered clusters; snapshots + outbox replay as the recovery ladder; the RDBMS still holding the truth.",
+        "highlight": [
+          "Snap",
+          "Metrics"
+        ],
+        "groups": [
+          "es-tier",
+          "ingest",
+          "ops"
+        ]
+      },
+      "decisionPrompt": "You lose a data node, then (separately) the whole search cluster. Walk the recovery ladder — replicas, snapshot restore, outbox replay — and state what users see at each rung and for how long.",
+      "concepts": [
+        {
+          "term": "Shard sizing",
+          "definition": "Choosing primary count so shards land in the ~15–50 GB sweet spot at expected corpus size.",
+          "whyItMatters": "Fixed at creation; too many tiny shards poison cluster state, too few block parallelism — the central ES capacity decision.",
+          "example": "~700 GB total (docs+vectors, pre-replica) -> ~12–24 primaries, revisited via reindex."
+        },
+        {
+          "term": "Dedicated masters (quorum)",
+          "definition": "Three master-eligible, data-free nodes owning cluster state by majority election.",
+          "whyItMatters": "Cluster metadata must stay writable and single-headed through node loss; data-node pressure must never stall it.",
+          "example": "3 small masters + N data nodes; never 2 masters."
+        },
+        {
+          "term": "search_after",
+          "definition": "Cursor pagination by the sort key of the last hit instead of from+size offsets.",
+          "whyItMatters": "Deep offset paging materializes the whole window per shard and caps at 10k — cursors make page 400 cost like page 1.",
+          "example": "sort: [_score, _id]; after: [3.72, '84211']."
+        },
+        {
+          "term": "Recovery ladder",
+          "definition": "Replicas -> snapshot restore -> replay-from-source, in escalating scope.",
+          "whyItMatters": "Because the index is derived, every failure has a rebuild path — but each rung has an RTO you must know in advance.",
+          "example": "Node loss: minutes, invisible. Cluster loss: restore snapshot, replay outbox from the snapshot's version."
+        }
+      ],
+      "whyNow": [
+        "Every earlier step created derived state worth protecting; this one prices its survival — and draws the line that keeps the record where it belongs."
+      ],
+      "probeLinks": [
+        "es-shard-sizing",
+        "es-snapshots",
+        "es-paginate",
+        "instagram-sharding-es"
+      ],
+      "recap": {
+        "before": "Feature-complete search and logs on implicitly-sized, implicitly-durable clusters.",
+        "after": "Deliberate shards and replicas, quorum masters, SLM snapshots with drills, cursor pagination — and an explicit recovery ladder ending at the source of truth.",
+        "newRisk": "Operational steady-state: shard hygiene, heap and page-cache balance, pipeline lag, ILM progress — and the discipline to keep transactional workloads out."
+      },
+      "traps": [
+        {
+          "trap": "Oversharding.",
+          "why": "Thousands of small shards bloat cluster state and heap on every node and slow every master operation — capacity spent on bookkeeping, not data.",
+          "instead": "Size shards to ~15–50 GB via expected corpus math, use rollover for time-series, and shrink in warm."
+        },
+        {
+          "trap": "from+size deep pagination.",
+          "why": "Page 500 makes every shard return 5,000+ hits for the coordinator to sort and discard, and hard-caps at 10k anyway.",
+          "instead": "search_after cursors for browsing; PIT (point-in-time) for consistent exports."
+        },
+        {
+          "trap": "Letting Elasticsearch become the system of record.",
+          "why": "No transactions, NRT visibility, and append-only mappings mean truth stored here is truth you can silently lose or can no longer reshape.",
+          "instead": "The RDBMS owns truth; ES is a rebuildable view — the recovery ladder depends on that direction never reversing."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Replica count vs. cost",
+          "description": "Each replica adds a full copy of the data and linear read throughput for the suggest/search fan-out, while write amplification and storage grow with it; one replica survives node loss, more replicas buy QPS.",
+          "chosen": "The design runs 1 replica on the search cluster (suggest QPS is the scaling driver to watch) and 1 on logs' hot tier only — cold generations are snapshot-backed instead."
+        },
+        {
+          "name": "Derived-store durability vs. rebuild cost",
+          "description": "Making ES pseudo-durable (more replicas, aggressive fsync) chases a guarantee it can't own; leaning on snapshots + source replay accepts minutes-to-hours of degraded search in a disaster in exchange for architectural honesty.",
+          "chosen": "The design keeps durability layered — replicas for nodes, snapshots for clusters, the outbox for everything — and rehearses the ladder instead of denying it."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/07-scale-ha.jpg"
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design — Elasticsearch as the Discovery Platform",
+    "description": "Stateless app servers translate discovery requests into Elasticsearch queries while the RDBMS remains the system of record: detail pages and checkout read the database, search only ranks and points. A transactional outbox feeds a CDC indexing pipeline — the sole writer to the indexes — doing commit-ordered, externally-versioned _bulk upserts (and deletes), so the index is idempotent under replay and rebuildable from zero; freshness is near-real-time (~1 s refresh), stated honestly. The product index carries the whole discovery surface: explicit mappings with analyzed text + keyword subfields, BM25 bool queries with cached filters, search_as_you_type suggest fields answering ~10k keystrokes/s, aggregations with post_filter for correct multi-select facet counts, geo_point radius filters, and 384-dim HNSW vectors fused with BM25 via RRF for hybrid semantic search. Aliases front every index so mapping and model changes are reindex-then-flip routines. Logs run as a second tenant on a separate cluster — shippers into data streams, size-based rollover, ILM hot/warm/cold/delete, Kibana on top — so a log burst can never touch search p95. Both clusters run 3 dedicated quorum masters, deliberately sized shards (~15–50 GB) with replicas for failover and suggest QPS, SLM snapshots to object storage, and search_after pagination. The recovery ladder — replicas, snapshot restore, outbox replay — works because one rule is never broken: Elasticsearch is a derived, rebuildable view; truth lives upstream. Just use Elasticsearch — for what it's for.",
+    "view": {
+      "nodes": [
+        "Client",
+        "LB",
+        "App",
+        "DB",
+        "Pipeline",
+        "Products",
+        "Suggest",
+        "Facets",
+        "GeoVecES",
+        "LogsDS",
+        "Agents",
+        "Kibana",
+        "Snap",
+        "Metrics"
+      ],
+      "links": [
+        "client-lb",
+        "lb-app",
+        "app-db",
+        "db-pipeline",
+        "pipeline-products",
+        "pipeline-suggest",
+        "pipeline-geovec",
+        "app-products",
+        "app-suggest",
+        "app-facets",
+        "app-geovec",
+        "agents-logs",
+        "kibana-logs",
+        "products-snap",
+        "logs-snap",
+        "products-metrics",
+        "logs-metrics",
+        "pipeline-metrics",
+        "app-metrics"
+      ],
+      "caption": "Every discovery capability mapped to the Elasticsearch feature that fits it, fed by one disciplined pipeline, with the record kept upstream.",
+      "groups": [
+        "es-tier",
+        "ingest",
+        "ops"
+      ]
+    },
+    "flows": [
+      {
+        "name": "Discovery end to end — keystroke, hybrid search, fresh index",
+        "note": "Suggest serves keystrokes from prefix shingles; the submitted query fuses BM25, kNN, geo, and facets in one request; meanwhile the pipeline keeps the index seconds-fresh from the record.",
+        "sequence": {
+          "participants": [
+            {
+              "id": "Client"
+            },
+            {
+              "id": "App"
+            },
+            {
+              "id": "Suggest",
+              "label": "suggest"
+            },
+            {
+              "id": "Products",
+              "label": "hybrid query"
+            },
+            {
+              "id": "DB",
+              "label": "record"
+            },
+            {
+              "id": "Pipeline",
+              "label": "CDC"
+            }
+          ],
+          "messages": [
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "'rain j…'"
+            },
+            {
+              "from": "App",
+              "to": "Suggest",
+              "arrow": "->>",
+              "label": "prefix + fuzziness"
+            },
+            {
+              "from": "Suggest",
+              "to": "Client",
+              "arrow": "-->>",
+              "label": "'rain jacket' (<50 ms)"
+            },
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "search 'rain jacket' near me, facets"
+            },
+            {
+              "from": "App",
+              "to": "Products",
+              "arrow": "->>",
+              "label": "RRF(BM25, kNN) + geo filter + aggs/post_filter"
+            },
+            {
+              "from": "Products",
+              "to": "App",
+              "arrow": "-->>",
+              "label": "ranked hits + facet counts"
+            },
+            {
+              "from": "App",
+              "to": "DB",
+              "arrow": "->>",
+              "label": "hydrate detail on click (record read)"
+            },
+            {
+              "from": "DB",
+              "to": "Pipeline",
+              "arrow": "->>",
+              "label": "meanwhile: price change event"
+            },
+            {
+              "from": "Pipeline",
+              "to": "Products",
+              "arrow": "->>",
+              "label": "versioned upsert -> searchable in ~1 s"
+            }
+          ]
+        },
+        "highlight": [
+          "Suggest",
+          "Products",
+          "Pipeline"
+        ]
+      }
+    ],
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Relevance-ranked full-text search",
+        "how": "Explicit-mapped inverted index, analyzers with stemming/synonyms, BM25 via boosted multi_match in bool queries with cached filters.",
+        "steps": [
+          "index"
+        ]
+      },
+      {
+        "requirement": "Instant, typo-tolerant autocomplete",
+        "how": "search_as_you_type prefix shingles with bounded fuzziness, measured as its own <50 ms SLO; completion-suggester FST named as the curated upgrade.",
+        "steps": [
+          "discover"
+        ]
+      },
+      {
+        "requirement": "Faceted navigation with correct multi-select counts",
+        "how": "Terms/range aggregations on keyword fields computed with the query; post_filter plus per-group filtered aggs keep counts honest.",
+        "steps": [
+          "discover"
+        ]
+      },
+      {
+        "requirement": "Geo and semantic search",
+        "how": "geo_point radius filters and distance ranking; 384-dim HNSW kNN fused with BM25 via RRF so identity and intent queries both win.",
+        "steps": [
+          "geovec"
+        ]
+      },
+      {
+        "requirement": "Searchable within seconds; rebuildable catalog",
+        "how": "Outbox/CDC pipeline with commit ordering and external versions; NRT refresh (~1 s); full rebuild = replay; alias flips for reindex.",
+        "steps": [
+          "ingest"
+        ]
+      },
+      {
+        "requirement": "Centralized logs with bounded retention",
+        "how": "Shippers into data streams on a separate cluster; size-based rollover; ILM hot/warm/cold/delete; Kibana dashboards and alerts.",
+        "steps": [
+          "logs"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Suggest p95 < 50 ms, search p95 < 200 ms",
+        "how": "In-memory prefix shingles, cached filter bitsets, replicas scaling the fan-out, page-cache-sized nodes, coordinating capacity for scatter-gather.",
+        "steps": [
+          "discover",
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "ES stays derived; DB stays authoritative",
+        "how": "Single-writer pipeline, versioned upserts, detail/checkout reads from the RDBMS, and the no-truth-in-ES rule enforced in the design review.",
+        "steps": [
+          "ingest",
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Honest near-real-time freshness",
+        "how": "~1 s refresh stated as the contract; read-your-writes needs routed to the record, never promised of the index.",
+        "steps": [
+          "ingest"
+        ]
+      },
+      {
+        "requirement": "Log workload cannot degrade search",
+        "how": "Separate clusters with independent sizing and failure domains; tier routing named as the disciplined budget alternative.",
+        "steps": [
+          "logs"
+        ]
+      },
+      {
+        "requirement": "Survive node and cluster loss",
+        "how": "Replicas per shard, 3 dedicated quorum masters, SLM snapshots to object storage with restore drills, outbox replay as the final rung.",
+        "steps": [
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Bounded shard and retention costs",
+        "how": "~15–50 GB shard targets, rollover + ILM shrink for time-series, retention as policy with snapshots before delete.",
+        "steps": [
+          "logs",
+          "scale-ha"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Frame it as the discovery platform for a 50M-product marketplace — ranked search, autocomplete, facets, geo, semantic — plus centralized log analytics.",
+        "State the twist: Elasticsearch is the platform for all of it, and the design's spine is keeping it honest as a derived store with the RDBMS authoritative."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 3 min",
+      "say": [
+        "Start from ILIKE on the record database and name the four failures: scan load on OLTP, no ranking, no language handling, no facets/suggest — and note Postgres FTS as the smaller-scale answer this design has outgrown."
+      ]
+    },
+    {
+      "phase": "Capability tour",
+      "time": "next 15 min",
+      "say": [
+        "Walk the mechanism first (inverted index, analyzers, BM25, query-vs-filter), then the pipeline (outbox/CDC, versioned upserts, NRT, alias flips) — the pipeline is where strong candidates separate.",
+        "Then the features as index fields and query shapes: search_as_you_type + fuzziness, aggs + post_filter, geo_distance, HNSW kNN with RRF hybrid.",
+        "Give logs its own beat: data streams, rollover, ILM tiers — and argue the separate-cluster topology from the noisy-neighbor failure mode."
+      ]
+    },
+    {
+      "phase": "Make it real",
+      "time": "final 5 min",
+      "say": [
+        "Close on shard sizing math, 3 quorum masters, replicas for suggest QPS, SLM snapshots, and search_after.",
+        "End with the recovery ladder — replicas, snapshot restore, outbox replay — and the boundary: truth never lives in Elasticsearch."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Explains the inverted index and why LIKE doesn't scale; can sketch DB -> indexer -> ES with search on top.",
+        "Knows text vs. keyword fields and that facets come from aggregations."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Designs the CDC/outbox feed with idempotent, versioned upserts and can say why dual-write drifts.",
+        "Correct search UX mechanics: search_as_you_type vs. completion suggester, fuzziness bounds, post_filter for multi-select facets.",
+        "States NRT freshness honestly and fronts every index with an alias."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Argues topology from failure modes: separate logs cluster, dedicated masters, shard-size math, replica-vs-QPS reasoning, heap/page-cache/off-heap-vector budgeting.",
+        "Owns the recovery ladder (replicas -> snapshots -> replay) with RTO estimates, and treats reindex-behind-alias as routine change management.",
+        "Draws the derived-store boundary unprompted — what may never live in ES and why — and prices hybrid search (RRF, embedding dimensions) as capacity decisions."
+      ]
+    }
+  ],
+  "followUps": [
+    "Relevance keeps regressing as merchandisers add boosts — design the offline evaluation loop (judged query set, interleaving or A/B, guardrail metrics) that makes ranking changes safe.",
+    "Your 12-primary product index needs 24 shards next year. Walk the resize options — _split, reindex-behind-alias, rollover — and their downtime/ordering constraints.",
+    "Multi-tenant search (each merchant queries only their catalog): compare filter-per-query, routing by tenant, and index-per-tenant at 10k tenants — cluster-state and hot-spot consequences included.",
+    "The suggest p95 doubles during the daily reindex backfill. Diagnose the interference (merges, page cache, indexing threads) and redesign the backfill to protect it.",
+    "How do document-level security and field-level redaction interact with cached filter bitsets and aggregation counts?",
+    "Score-based hybrid (convex combination) vs. RRF: when is each wrong, and how would you tune either against the golden set?",
+    "Design cross-cluster replication for an active-active two-region search deployment — what breaks with NRT freshness and versioned upserts?",
+    "The CFO asks why the logs cluster costs more than the search cluster. Walk the levers: retention, tiering, searchable snapshots, sampling, and match_only_text mappings."
+  ],
+  "technologyChoices": [
+    {
+      "concern": "Search engine core",
+      "steps": [
+        "index",
+        "discover",
+        "geovec"
+      ],
+      "selfHosted": [
+        {
+          "name": "Elasticsearch",
+          "icon": "assets/tech-icons/elasticsearch.png"
+        },
+        {
+          "name": "OpenSearch",
+          "icon": "assets/tech-icons/opensearch.png"
+        },
+        {
+          "name": "Apache Solr",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Meilisearch",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Typesense",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "OpenSearch Service",
+            "icon": "assets/tech-icons/Arch_Amazon-OpenSearch-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Vertex AI Search",
+            "icon": "assets/tech-icons/AIMachineLearning-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure AI Search",
+            "icon": "assets/tech-icons/10044-icon-service-Cognitive-Search.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Elasticsearch/OpenSearch bring the full toolbox this design uses — analyzers, aggregations, suggesters, kNN, ILM — with the largest operational knowledge base.",
+        "Lightweight engines (Meilisearch, Typesense) are superb for smaller catalogs with instant setup, but thin out at aggregation depth, log workloads, and cluster-scale operations.",
+        "Managed search services trade version/plugin control for removing node operations; check analyzer, scripting, and vector limits before committing."
+      ],
+      "makesIrrelevant": "A managed cluster removes node provisioning, upgrades, and snapshot plumbing — not shard sizing, mapping design, or the ingestion pipeline."
+    },
+    {
+      "concern": "Change-data-capture and indexing pipeline",
+      "steps": [
+        "ingest"
+      ],
+      "selfHosted": [
+        {
+          "name": "Debezium",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Kafka Connect",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Logstash",
+          "icon": "assets/tech-icons/logstash.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          },
+          {
+            "name": "Kinesis",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Datastream",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          },
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          },
+          {
+            "name": "Azure Data Factory",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Log-based CDC (Debezium-style) captures commit order with no app changes; an application-level outbox is simpler infrastructure and gives you explicit, versioned events by construction.",
+        "A broker in the middle buys replay, backpressure, and multiple consumers (search, cache, analytics) at the cost of running it.",
+        "Whatever the transport, the invariants live at the ES boundary: _id keying, external versions, delete events, and a replayable history."
+      ],
+      "makesIrrelevant": "A managed CDC service removes connector operations, but not the versioning/idempotency design that keeps the index truthful."
+    },
+    {
+      "concern": "Embedding generation for semantic search",
+      "steps": [
+        "geovec"
+      ],
+      "selfHosted": [
+        {
+          "name": "Hugging Face",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "PyTorch",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "ONNX Runtime",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Bedrock",
+            "icon": "assets/tech-icons/Arch_Amazon-Bedrock_64.png"
+          },
+          {
+            "name": "SageMaker",
+            "icon": "assets/tech-icons/Arch_Amazon-SageMaker-AI_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Vertex AI",
+            "icon": "assets/tech-icons/AIMachineLearning-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure OpenAI",
+            "icon": "assets/tech-icons/03438-icon-service-Azure-OpenAI.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Self-hosted small encoders (384-dim class) are cheap at 200 docs/s and keep embeddings deterministic and private.",
+        "Hosted embedding APIs remove model serving but meter every re-embed — a full-corpus model upgrade at 50M docs is a priced event.",
+        "Pin model versions: mixing embeddings from different models in one field silently destroys kNN quality."
+      ],
+      "makesIrrelevant": "A hosted embedding API removes GPU serving infrastructure; it does not remove the re-embed + reindex routine on model change."
+    },
+    {
+      "concern": "Log shipping and collection",
+      "steps": [
+        "logs"
+      ],
+      "selfHosted": [
+        {
+          "name": "Filebeat",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Fluent Bit",
+          "icon": "assets/tech-icons/fluentd.png"
+        },
+        {
+          "name": "OpenTelemetry Collector",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Vector",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "Kinesis Firehose",
+            "icon": "assets/tech-icons/Arch_Amazon-Kinesis_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Logging",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Lightweight agents with disk-buffered batching survive endpoint outages without dropping logs.",
+        "OTel-based collection keeps logs, traces, and metrics in one pipeline and one correlation model.",
+        "Cloud-native log services can replace the ES logs cluster wholesale — a legitimate alternative when search-grade log queries aren't needed."
+      ],
+      "makesIrrelevant": "Managed collection removes agent fleet care; structured-logging discipline (ECS fields, trace ids) remains an application concern."
+    },
+    {
+      "concern": "Dashboards, exploration, and alerting",
+      "steps": [
+        "logs"
+      ],
+      "selfHosted": [
+        {
+          "name": "Kibana",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "OpenSearch Dashboards",
+            "icon": "assets/tech-icons/tech.png"
+          },
+          {
+            "name": "Managed Grafana",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Grafana_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Managed Grafana",
+            "icon": "assets/tech-icons/02905-icon-service-Azure-Managed-Grafana.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kibana/OpenSearch Dashboards are native to the index APIs — discover, lens, and alerting with zero glue.",
+        "Grafana centralizes across data sources when ES is one of several backends.",
+        "Alert on platform symptoms too: pipeline lag, ILM step failures, rejection counts — not just application errors."
+      ],
+      "makesIrrelevant": "Native dashboards remove custom log-viewer builds; alert curation and runbooks stay human work."
+    },
+    {
+      "concern": "Snapshot storage and disaster recovery",
+      "steps": [
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "MinIO",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Ceph",
+          "icon": "assets/tech-icons/ceph.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "S3",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Storage-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Storage",
+            "icon": "assets/tech-icons/Storage-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Blob Storage",
+            "icon": "assets/tech-icons/10781-icon-service-Blob-Page.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Object storage is the natural snapshot target: cheap, versioned, cross-zone; SLM schedules and prunes automatically.",
+        "Searchable snapshots can serve cold log tiers straight from object storage, collapsing cold-node costs.",
+        "Snapshots restore clusters; only the source-of-truth replay restores correctness — keep both rungs rehearsed."
+      ],
+      "makesIrrelevant": "SLM against managed object storage removes hand-rolled backup scripts; restore drills remain non-negotiable."
+    },
+    {
+      "concern": "Cluster orchestration and operations",
+      "steps": [
+        "scale-ha",
+        "logs"
+      ],
+      "selfHosted": [
+        {
+          "name": "Kubernetes",
+          "icon": "assets/tech-icons/kubernetes.png"
+        },
+        {
+          "name": "Elastic Cloud on Kubernetes (ECK)",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Ansible",
+          "icon": "assets/tech-icons/ansible.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "OpenSearch Service",
+            "icon": "assets/tech-icons/Arch_Amazon-OpenSearch-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Elastic Cloud",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Elastic Cloud (Azure Native)",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "ECK-style operators codify node roles, tiers, rolling upgrades, and scaling as declarative config.",
+        "Fully managed offerings take the 2 a.m. pages for node failure, at the price of version lag and instance-type menus.",
+        "Either way, capacity review (shards, heap, page cache, vector memory) is a recurring engineering ritual, not a setup task."
+      ],
+      "makesIrrelevant": "Managed platforms remove OS/JVM/node lifecycle work — shard hygiene and workload isolation decisions stay yours."
+    },
+    {
+      "concern": "System of record behind the search platform",
+      "steps": [
+        "naive",
+        "ingest",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "MySQL",
+          "icon": "assets/tech-icons/mysql.png"
+        },
+        {
+          "name": "CockroachDB",
+          "icon": "assets/tech-icons/cockroach.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora (PostgreSQL)",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A relational record gives the transactions, constraints, and outbox that the derived index leans on for every guarantee it lacks.",
+        "At smaller scale, Postgres FTS makes the entire search cluster unnecessary — the honest lower bound this design consciously outgrew.",
+        "Keep detail-page and checkout reads on the record: the index ranks and points, the database answers."
+      ],
+      "makesIrrelevant": "Nothing here — the record is the one component the search platform can never absorb; every recovery path ends at it."
+    }
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "es-analysis",
+        "group": "Core Search Mechanics",
+        "groupDescription": "Official references for the index, analysis, and relevance machinery.",
+        "title": "Text analysis",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/analysis.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "Tokenizers, filters, and custom analyzers — the chain that decides what a searchable term is."
+      },
+      {
+        "id": "es-bm25",
+        "group": "Core Search Mechanics",
+        "groupDescription": "Official references for the index, analysis, and relevance machinery.",
+        "title": "Practical BM25: the algorithm and its variables",
+        "url": "https://www.elastic.co/blog/practical-bm25-part-2-the-bm25-algorithm-and-its-variables",
+        "source": "Elastic",
+        "type": "Explainer",
+        "why": "TF saturation, IDF, and length normalization explained with the actual formula — the why behind every _score."
+      },
+      {
+        "id": "es-query-filter",
+        "group": "Core Search Mechanics",
+        "groupDescription": "Official references for the index, analysis, and relevance machinery.",
+        "title": "Query and filter context",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/query-filter-context.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The scored-vs-cached split that structures every bool query in the design."
+      },
+      {
+        "id": "es-search-as-you-type",
+        "group": "Search UX",
+        "groupDescription": "Autocomplete, suggesters, and facet mechanics.",
+        "title": "search_as_you_type field type",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/search-as-you-type.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The prefix-shingle field behind the recommended autocomplete option."
+      },
+      {
+        "id": "es-suggesters",
+        "group": "Search UX",
+        "groupDescription": "Autocomplete, suggesters, and facet mechanics.",
+        "title": "Suggesters (completion, term, phrase)",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/search-suggesters.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The FST-based completion suggester and the did-you-mean machinery — the alternative option's reference."
+      },
+      {
+        "id": "es-aggregations",
+        "group": "Search UX",
+        "groupDescription": "Autocomplete, suggesters, and facet mechanics.",
+        "title": "Aggregations",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "Terms, range, and histogram aggregations — the facet engine, and its shard-level approximation caveats."
+      },
+      {
+        "id": "es-post-filter",
+        "group": "Search UX",
+        "groupDescription": "Autocomplete, suggesters, and facet mechanics.",
+        "title": "Filter search results (post_filter)",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/filter-search-results.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The exact mechanism for correct multi-select facet counts."
+      },
+      {
+        "id": "es-knn",
+        "group": "Geo & Vectors",
+        "groupDescription": "Spatial and semantic retrieval references.",
+        "title": "kNN search",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/knn-search.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "dense_vector, HNSW, num_candidates, filtered kNN, and RRF hybrid — the semantic-search reference."
+      },
+      {
+        "id": "es-geo",
+        "group": "Geo & Vectors",
+        "groupDescription": "Spatial and semantic retrieval references.",
+        "title": "Geo queries",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/geo-queries.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "geo_distance, bounding box, and geo-grid aggregations behind 'near me' and map clustering."
+      },
+      {
+        "id": "es-data-streams",
+        "group": "Logs & Lifecycle",
+        "groupDescription": "The time-series/log side of the platform.",
+        "title": "Data streams",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/data-streams.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The write-alias-over-generations model that makes append-only log storage uniform and cheap to retire."
+      },
+      {
+        "id": "es-ilm",
+        "group": "Logs & Lifecycle",
+        "groupDescription": "The time-series/log side of the platform.",
+        "title": "Index lifecycle management (ILM)",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "Hot/warm/cold/delete as declarative policy — retention and cost control for the logs cluster."
+      },
+      {
+        "id": "es-aliases",
+        "group": "Operating the Platform",
+        "groupDescription": "Pipelines, reindexing, sizing, durability, and pagination in production.",
+        "title": "Aliases",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/aliases.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The indirection that turns append-only mappings into routine zero-downtime change management."
+      },
+      {
+        "id": "es-reindex",
+        "group": "Operating the Platform",
+        "groupDescription": "Pipelines, reindexing, sizing, durability, and pagination in production.",
+        "title": "Reindex API",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-reindex.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The corpus-copy machinery behind mapping changes, shard resizing, and model upgrades."
+      },
+      {
+        "id": "es-shard-sizing",
+        "group": "Operating the Platform",
+        "groupDescription": "Pipelines, reindexing, sizing, durability, and pagination in production.",
+        "title": "Size your shards",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/size-your-shards.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "The official sizing guidance behind the ~15–50 GB target and the anti-oversharding argument."
+      },
+      {
+        "id": "es-snapshots",
+        "group": "Operating the Platform",
+        "groupDescription": "Pipelines, reindexing, sizing, durability, and pagination in production.",
+        "title": "Snapshot and restore",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/snapshot-restore.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "SLM scheduling and restore mechanics — the middle rung of the recovery ladder."
+      },
+      {
+        "id": "es-paginate",
+        "group": "Operating the Platform",
+        "groupDescription": "Pipelines, reindexing, sizing, durability, and pagination in production.",
+        "title": "Paginate search results",
+        "url": "https://www.elastic.co/guide/en/elasticsearch/reference/current/paginate-search-results.html",
+        "source": "Elastic",
+        "type": "Docs",
+        "why": "Why from+size caps at 10k and how search_after and PIT replace deep offsets."
+      },
+      {
+        "id": "debezium",
+        "group": "Feeding the Index",
+        "groupDescription": "Keeping a derived search index honest against a transactional source.",
+        "title": "Debezium",
+        "url": "https://debezium.io/",
+        "source": "Debezium",
+        "type": "Docs",
+        "why": "Log-based change data capture — the commit-ordered feed the recommended pipeline option builds on."
+      },
+      {
+        "id": "outbox-pattern",
+        "group": "Feeding the Index",
+        "groupDescription": "Keeping a derived search index honest against a transactional source.",
+        "title": "Pattern: Transactional outbox",
+        "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+        "source": "microservices.io",
+        "type": "Pattern",
+        "why": "The write-events-with-the-transaction pattern that gives the index a replayable, loss-free history."
+      },
+      {
+        "id": "amazingcto-es",
+        "group": "Feeding the Index",
+        "groupDescription": "Keeping a derived search index honest against a transactional source.",
+        "title": "Just Use Postgres for Everything",
+        "url": "https://www.amazingcto.com/postgres-for-everything/",
+        "source": "Stephan Schmidt",
+        "type": "Essay",
+        "year": "2022",
+        "why": "The counter-argument this chapter starts from: at smaller scale, the database's own search makes the cluster unnecessary — know which side of that line you're on."
+      },
+      {
+        "id": "instagram-sharding-es",
+        "group": "Feeding the Index",
+        "groupDescription": "Keeping a derived search index honest against a transactional source.",
+        "title": "Sharding & IDs at Instagram",
+        "url": "https://instagram-engineering.com/sharding-ids-at-instagram-1cf5a71e5a5c",
+        "source": "Instagram Engineering",
+        "type": "Case study",
+        "year": "2012",
+        "why": "A reminder that the source of truth scales on its own path — the search tier must follow it, never lead it."
+      }
+    ]
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
+}
