@@ -9,12 +9,12 @@ The sharp edge is correctness. Redis can make the hot path fast, but committed o
 The case also connects the fundamentals to modern choices: Redis/Valkey/Dragonfly or managed Redis for hot state, SQS/Pub/Sub/Kafka/Redis Streams for delivery semantics, a managed relational database for RPO 0 order records, and observability around p99, hit rate, evictions, queue age, retries, AOF fsync latency, replica lag, and failover.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#just-use-redis
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#just-use-redis
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #Redis #Scalability

@@ -48,9 +48,9 @@ python3 .codex/skills/write-linkedin-interview-post/scripts/interview_brief.py -
 
 Use the user's links when provided. Otherwise derive links from this base:
 
-- Published interview: `https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/<group>/interview.html#<dataset>/<entry>`
-- More examples: `https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/<group>/index.html`
-- Source code: `https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews`
+- Published interview: `https://zeljkoobrenovic.github.io/system-design-interviews/<group>/interview.html#<dataset>/<entry>`
+- More examples: `https://zeljkoobrenovic.github.io/system-design-interviews/<group>/index.html`
+- Source code: `https://github.com/zeljkoobrenovic/system-design-interviews`
 
 When the interview lives in `book`, describe the index link as the project/book catalog. When it lives in `examples`, describe it as worked examples.
 

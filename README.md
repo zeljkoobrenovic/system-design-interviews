@@ -9,7 +9,7 @@ There is no bundler and one runtime dependency (Mermaid, from a CDN). The only
 "build" is a copy step (`build.py`) that assembles deployable static sites from
 the sources into `docs/`.
 
-See generated documentation at **[zeljkoobrenovic.github.io/spec-driven-system-design-interviews/](https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/)**
+See generated documentation at **[zeljkoobrenovic.github.io/system-design-interviews/](https://zeljkoobrenovic.github.io/system-design-interviews/)**
 
 ## Two pages
 

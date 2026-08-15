@@ -11,12 +11,12 @@ Technology choices stay concrete: FHIR/EHR integration with HAPI FHIR, HealthLak
 The lesson is not to make the model more confident. It is to design a system where the safe default is to abstain, hard clinical rules cannot be overridden by generated text, and a licensed clinician remains the accountable decision-maker.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-healthcare-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-healthcare-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #HealthTech #AIEngineering

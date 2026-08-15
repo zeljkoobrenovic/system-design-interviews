@@ -9,12 +9,12 @@ The optimization loop is where the design becomes interesting. A bandit can real
 The technology choices are practical: managed model APIs or self-hosted inference; object/vector stores for the brand kit; rules engines or managed guardrails for checks; workflow engines and queues for provider throttling; streaming analytics and warehouses for attribution; identity, secrets, and audit storage around the whole thing. The interview keeps those as trade-offs, not magic boxes.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-marketing-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-marketing-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AgenticAI

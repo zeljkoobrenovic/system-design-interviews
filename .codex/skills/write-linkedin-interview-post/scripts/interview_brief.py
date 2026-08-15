@@ -9,8 +9,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-DEFAULT_PUBLIC_BASE = "https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews"
-DEFAULT_GITHUB_URL = "https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews"
+DEFAULT_PUBLIC_BASE = "https://zeljkoobrenovic.github.io/system-design-interviews"
+DEFAULT_GITHUB_URL = "https://github.com/zeljkoobrenovic/system-design-interviews"
 
 
 def one_line(value: object) -> str:

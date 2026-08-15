@@ -21,6 +21,6 @@ Explore the project/book catalog:
 https://system-design-interviews.com/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #DistributedSystems
