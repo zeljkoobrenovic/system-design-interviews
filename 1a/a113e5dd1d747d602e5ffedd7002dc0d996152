@@ -1,0 +1,20 @@
+data/book/ai-coding-harness/LINKEDIN.md
+  s_3ff46813469bb3::t_59e67deecc16ad 1-23,25-31
+  s_3ff46813469bb3::t_bbd457dbba44da 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "1aa113e5dd1d747d602e5ffedd7002dc0d996152",
+  "prompts": {},
+  "sessions": {
+    "s_3ff46813469bb3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32db3deb-22dd-4312-a8f3-82e7ecb10973",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Zeljko Obrenovic <zeljkoobrenovic@yahoo.com>"
+    }
+  }
+}
