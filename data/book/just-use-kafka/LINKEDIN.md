@@ -15,12 +15,12 @@ Modern choices make those trade-offs concrete: Apache Kafka, Redpanda, Pulsar, o
 Managed services can remove broker ops. They do not remove partition discipline, schema compatibility, lag SLOs, idempotent side effects, replay policy, or the question that matters: where does the authoritative commit happen?
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#just-use-kafka
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#just-use-kafka
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #DistributedSystems #Kafka

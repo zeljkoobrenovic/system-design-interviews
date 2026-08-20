@@ -1,0 +1,2897 @@
+{
+  "title": "Coding Agent Harness — System Design",
+  "description": "Design the outer harness an engineering organization wraps around its coding agents: the system of feedforward guides and feedback sensors that lets agents work with less supervision while review toil goes down and code quality goes up. Based on the harness-engineering mental model (Birgitta Böckeler, martinfowler.com): the agent is bought, the trust is built. The themes are feedforward vs. feedback, computational vs. inferential controls, keeping quality left in the lifecycle, and the human steering loop.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Dev",
+        "label": "Developer (Steerer)",
+        "type": "actor",
+        "category": "boundary",
+        "traits": [],
+        "description": "Writes task prompts and specs, reviews what escapes the sensors, and steers the harness itself: every repeated agent mistake becomes a new guide or sensor."
+      },
+      {
+        "id": "Agent",
+        "label": "Coding Agent (Claude Code / Codex)",
+        "type": "external",
+        "category": "compute",
+        "traits": [
+          "nondeterministic"
+        ],
+        "description": "The bought agent — model plus inner harness. We do not build it; we wrap it. It consumes feedforward guides, edits the repo, and self-corrects on sensor feedback."
+      },
+      {
+        "id": "Repo",
+        "label": "Repo & Working Tree",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The codebase being regulated — source, tests, and the checked-in parts of the harness itself."
+      },
+      {
+        "id": "Guides",
+        "label": "Guides: Rules, How-tos, Skills",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "checked-in"
+        ],
+        "description": "Feedforward content: rules files (AGENTS.md / CLAUDE.md), reference docs, how-to guides, skills, codemods and scaffolds. Steers the agent before it acts."
+      },
+      {
+        "id": "CodeIntel",
+        "label": "Code Intelligence (LSP, Deps Graph)",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless",
+          "deterministic"
+        ],
+        "description": "Computational feedforward: language servers, symbol and dependency graphs. Gives the agent precise types and structure instead of guessed ones."
+      },
+      {
+        "id": "Spec",
+        "label": "Functional Spec (per Task)",
+        "type": "object-storage",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The behaviour-harness feedforward: what the change should do, at whatever fidelity the task deserves — a paragraph to a multi-file spec."
+      },
+      {
+        "id": "Hooks",
+        "label": "Hook Runner (Sensor Wiring)",
+        "type": "orchestrator",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Fires sensors at the right moments (post-edit, pre-commit), enforces their time budget, and formats results for LLM consumption so the agent can self-correct."
+      },
+      {
+        "id": "CompSensors",
+        "label": "Computational Sensors (Linters, Types, Tests)",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless",
+          "deterministic"
+        ],
+        "description": "Deterministic, CPU-fast feedback: linters, type checkers, unit and structural tests, architecture rules (ArchUnit / dependency-cruiser). Cheap enough to run on every change."
+      },
+      {
+        "id": "ReviewAgents",
+        "label": "Review Agents (LLM-as-Judge)",
+        "type": "model",
+        "category": "compute",
+        "traits": [
+          "gpu",
+          "nondeterministic"
+        ],
+        "description": "Inferential feedback: semantic code review, redundancy and overengineering checks, spec-vs-diff judgment. Slower, costlier, probabilistic — spent where CPUs can't judge."
+      },
+      {
+        "id": "GitHost",
+        "label": "Git Host (PRs, Integration)",
+        "type": "external",
+        "category": "boundary",
+        "traits": [],
+        "description": "Where agent branches become pull requests, pipeline results land, and the human merge gate lives."
+      },
+      {
+        "id": "CI",
+        "label": "CI Pipeline (Post-Integration Sensors)",
+        "type": "orchestrator",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Re-runs the fast sensors as the authoritative check and adds the expensive ones: mutation testing, whole-PR architecture review, deep inferential review."
+      },
+      {
+        "id": "DriftAgents",
+        "label": "Drift Sensors (Janitor Agents)",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "scheduled"
+        ],
+        "description": "Continuous sensors outside the change lifecycle: dead-code detection, test-coverage-quality analysis, dependency scans — janitor agents that turn findings into cleanup PRs."
+      },
+      {
+        "id": "Telemetry",
+        "label": "Runtime Telemetry (SLOs, Logs)",
+        "type": "observability",
+        "category": "ops",
+        "traits": [],
+        "description": "Runtime feedback into the harness: degrading SLOs, log anomalies, sampled response quality — signals agents can watch and turn into improvement proposals."
+      },
+      {
+        "id": "TemplateReg",
+        "label": "Harness Template Registry",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "versioned"
+        ],
+        "description": "Per-topology bundles of guides + sensors (CRUD service, event processor, dashboard) that new repos instantiate instead of hand-assembling a harness."
+      },
+      {
+        "id": "HarnessHealth",
+        "label": "Harness Health (Fire Rates, Escapes)",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "derived"
+        ],
+        "description": "Observes the harness itself: which sensors fire and get resolved, which never fire, and which defect classes escape to human review or production."
+      }
+    ],
+    "links": [
+      {
+        "id": "dev-agent",
+        "from": "Dev",
+        "to": "Agent",
+        "label": "task prompt / steering"
+      },
+      {
+        "id": "agent-repo",
+        "from": "Agent",
+        "to": "Repo",
+        "label": "read and edit code"
+      },
+      {
+        "id": "agent-githost",
+        "from": "Agent",
+        "to": "GitHost",
+        "label": "push branch, open PR"
+      },
+      {
+        "id": "dev-githost",
+        "from": "Dev",
+        "to": "GitHost",
+        "label": "human review and merge"
+      },
+      {
+        "id": "guides-agent",
+        "from": "Guides",
+        "to": "Agent",
+        "label": "feedforward: rules, docs, skills"
+      },
+      {
+        "id": "dev-guides",
+        "from": "Dev",
+        "to": "Guides",
+        "label": "encode lessons (steering loop)"
+      },
+      {
+        "id": "agent-codeintel",
+        "from": "Agent",
+        "to": "CodeIntel",
+        "label": "resolve symbols, types, deps"
+      },
+      {
+        "id": "codeintel-repo",
+        "from": "CodeIntel",
+        "to": "Repo",
+        "label": "analyze source"
+      },
+      {
+        "id": "dev-spec",
+        "from": "Dev",
+        "to": "Spec",
+        "label": "write / refine spec"
+      },
+      {
+        "id": "spec-agent",
+        "from": "Spec",
+        "to": "Agent",
+        "label": "feedforward: functional intent"
+      },
+      {
+        "id": "repo-hooks",
+        "from": "Repo",
+        "to": "Hooks",
+        "label": "edit and commit events"
+      },
+      {
+        "id": "hooks-comp",
+        "from": "Hooks",
+        "to": "CompSensors",
+        "label": "run fast checks"
+      },
+      {
+        "id": "hooks-review",
+        "from": "Hooks",
+        "to": "ReviewAgents",
+        "label": "request semantic review"
+      },
+      {
+        "id": "comp-agent",
+        "from": "CompSensors",
+        "to": "Agent",
+        "label": "feedback: failures + fix instructions"
+      },
+      {
+        "id": "review-agent",
+        "from": "ReviewAgents",
+        "to": "Agent",
+        "label": "feedback: findings"
+      },
+      {
+        "id": "githost-ci",
+        "from": "GitHost",
+        "to": "CI",
+        "label": "integration triggers pipeline"
+      },
+      {
+        "id": "ci-comp",
+        "from": "CI",
+        "to": "CompSensors",
+        "label": "re-run fast sensors, mutation tests"
+      },
+      {
+        "id": "ci-review",
+        "from": "CI",
+        "to": "ReviewAgents",
+        "label": "deep review, big picture"
+      },
+      {
+        "id": "ci-githost",
+        "from": "CI",
+        "to": "GitHost",
+        "label": "pass/fail + findings on PR"
+      },
+      {
+        "id": "drift-repo",
+        "from": "DriftAgents",
+        "to": "Repo",
+        "label": "scheduled scans"
+      },
+      {
+        "id": "drift-githost",
+        "from": "DriftAgents",
+        "to": "GitHost",
+        "label": "cleanup PRs"
+      },
+      {
+        "id": "telemetry-drift",
+        "from": "Telemetry",
+        "to": "DriftAgents",
+        "label": "SLO drift, log anomalies"
+      },
+      {
+        "id": "template-repo",
+        "from": "TemplateReg",
+        "to": "Repo",
+        "label": "instantiate harness bundle"
+      },
+      {
+        "id": "hooks-health",
+        "from": "Hooks",
+        "to": "HarnessHealth",
+        "label": "sensor runs and outcomes"
+      },
+      {
+        "id": "githost-health",
+        "from": "GitHost",
+        "to": "HarnessHealth",
+        "label": "escapes caught by humans"
+      },
+      {
+        "id": "health-dev",
+        "from": "HarnessHealth",
+        "to": "Dev",
+        "label": "where to steer next"
+      }
+    ],
+    "types": [
+      {
+        "id": "feedforward",
+        "label": "Feedforward (Guides)",
+        "nodes": [
+          "Guides",
+          "CodeIntel",
+          "Spec",
+          "TemplateReg"
+        ]
+      },
+      {
+        "id": "feedback",
+        "label": "Feedback (Sensors)",
+        "nodes": [
+          "Hooks",
+          "CompSensors",
+          "ReviewAgents",
+          "CI",
+          "DriftAgents",
+          "Telemetry"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  Dev[Developer]",
+    "  Guide[Steer agent before it acts]",
+    "  Sense[Detect and self-correct defects]",
+    "  Left[Gate integration and deploys]",
+    "  Drift[Watch for drift and runtime decay]",
+    "  Steer[Improve the harness itself]",
+    "  Dev --> Guide",
+    "  Dev --> Sense",
+    "  Dev --> Left",
+    "  Dev --> Drift",
+    "  Dev --> Steer"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  Sessions[~10k agent sessions/day]",
+    "  Edits[~500k edit events/day]",
+    "  Fast[Fast sensors: seconds, every change]",
+    "  Deep[Deep sensors: minutes, per PR]",
+    "  Sessions --> Edits",
+    "  Edits --> Fast",
+    "  Fast --> Deep"
+  ],
+  "requirements": {
+    "functional": [
+      "Feed the agent organizational and repo context before it acts: rules, reference docs, how-tos, skills, code intelligence (feedforward guides).",
+      "Detect defects after the agent acts and feed them back in a form the agent can self-correct from, before a human ever looks (feedback sensors).",
+      "Distribute checks across the change lifecycle by cost and criticality: fast checks in the agent loop, expensive ones post-integration, a human merge gate at the end.",
+      "Continuously watch the codebase and the runtime for gradual drift — dead code, decaying test quality, degrading SLOs — and turn findings into cleanup PRs.",
+      "Support a behaviour harness per task: a functional spec feeding forward, and test evidence a human can actually trust feeding back.",
+      "Let humans steer: every repeated agent mistake becomes a harness improvement, and proven harnesses roll out to new repos as templates."
+    ],
+    "nonFunctional": [
+      "Inner-loop sensors must run in seconds — a slow sensor stalls every agent turn and gets bypassed.",
+      "Deterministic where possible: computational sensors on every change; non-deterministic (inferential) sensors budgeted and placed deliberately.",
+      "Reduce human review toil without removing human accountability — the merge gate stays human until trust is earned per defect class.",
+      "Bounded inference cost: LLM-as-judge review is metered per change and per repo, not run reflexively.",
+      "The harness itself must be observable and maintainable: sensor fire rates, escape analysis, and guide/sensor coherence are first-class signals."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Developers using agents",
+      "value": "~2,000",
+      "note": "A large engineering org; each runs several agent sessions per day."
+    },
+    {
+      "label": "Agent sessions",
+      "value": "~10,000/day",
+      "note": "Interactive plus delegated background runs; each session is dozens of loop turns."
+    },
+    {
+      "label": "Edit / commit events",
+      "value": "~500,000/day (~15/s sustained)",
+      "note": "Every one can trigger inner-loop sensors — this rate sets the fast-sensor time budget."
+    },
+    {
+      "label": "Fast sensor budget",
+      "value": "< 30 s per run",
+      "note": "Linters and focused tests in the self-correction loop; anything slower moves right in the lifecycle."
+    },
+    {
+      "label": "Pull requests",
+      "value": "~3,000/day",
+      "note": "Each triggers the pipeline: fast sensors re-run authoritatively plus mutation testing and deep review."
+    },
+    {
+      "label": "Inferential review spend",
+      "value": "~50K tokens/PR, ~$0.20–0.50",
+      "note": "LLM-as-judge on every PR is ~$1K/day at this scale — affordable at PR granularity, ruinous on every edit event."
+    },
+    {
+      "label": "Drift scans",
+      "value": "nightly, ~1,500 repos",
+      "note": "Dead code, coverage-quality, dependency scans; a janitor fleet turns findings into a bounded stream of cleanup PRs."
+    },
+    {
+      "label": "Human review",
+      "value": "the scarcest resource",
+      "note": "The harness exists to direct human attention to where it matters most, not to maximize agent throughput."
+    }
+  ],
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/sensors/run",
+      "description": "Run a sensor tier against a change set; used by the hook runner (inner loop) and the pipeline (authoritative re-run).",
+      "request": "{ \"repo\": \"checkout-svc\", \"changeSet\": \"sha|worktree\", \"stage\": \"loop|pre-commit|pipeline\" }",
+      "response": "{ \"findings\": [ { \"sensor\": \"eslint\", \"severity\": \"error\", \"messageLlm\": \"...fix instructions...\" } ], \"durationMs\": 8200 }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/guides/bundle",
+      "description": "Resolve the guide bundle for a repo: rules files, always-loaded snippets, and the index of on-demand how-tos and skills.",
+      "request": "?repo=checkout-svc",
+      "response": "{ \"rules\": [\"AGENTS.md\"], \"howTos\": [\"how-to-test.md\", \"how-to-add-endpoint.md\"], \"skills\": [\"/code-review\"] }"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/reviews",
+      "description": "Request an inferential review of a diff (semantic duplication, overengineering, spec adherence). Budgeted per repo per day.",
+      "request": "{ \"repo\": \"checkout-svc\", \"diff\": \"...\", \"lenses\": [\"redundancy\", \"architecture\", \"spec\"] }",
+      "response": "{ \"findings\": [ { \"lens\": \"redundancy\", \"claim\": \"duplicates retry logic in lib/retry.ts\", \"confidence\": 0.8 } ] }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/drift/reports/{repo}",
+      "description": "Latest continuous-sensor findings for a repo, with links to the janitor PRs they produced.",
+      "request": "(repo in path)",
+      "response": "{ \"scanners\": { \"dead-code\": 14, \"dep-audit\": 3, \"coverage-quality\": 2 }, \"prs\": [\"#4211\", \"#4215\"] }"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/templates/{topology}/instantiate",
+      "description": "Stamp a harness bundle (guides + sensor wiring + pipeline config) into a repo for a known topology.",
+      "request": "{ \"repo\": \"new-dashboard\", \"topology\": \"data-dashboard-node\" }",
+      "response": "{ \"applied\": [\"AGENTS.md\", \".harness/sensors.yaml\", \"ci: harness-pipeline@v3\" ] }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/harness/health/{repo}",
+      "description": "How the harness itself is doing: sensor fire/resolve rates and what escaped to humans or production.",
+      "request": "(repo in path)",
+      "response": "{ \"sensors\": [ { \"id\": \"arch-rules\", \"fireRate\": 0.04, \"agentResolved\": 0.92 } ], \"escapes\": [ { \"class\": \"overengineering\", \"caughtBy\": \"human-review\" } ] }"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "guides",
+      "note": "Feedforward content, versioned with the repo.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "repo",
+          "type": "varchar"
+        },
+        {
+          "name": "kind",
+          "type": "enum(rules,how_to,skill,codemod,scaffold)"
+        },
+        {
+          "name": "path",
+          "type": "varchar"
+        },
+        {
+          "name": "always_loaded",
+          "type": "boolean"
+        },
+        {
+          "name": "execution",
+          "type": "enum(inferential,computational)"
+        }
+      ]
+    },
+    {
+      "name": "sensor_defs",
+      "note": "One row per sensor; stage placement is the quality-left decision made explicit.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "repo",
+          "type": "varchar"
+        },
+        {
+          "name": "execution",
+          "type": "enum(computational,inferential)"
+        },
+        {
+          "name": "stage",
+          "type": "enum(loop,pre_commit,pipeline,continuous)"
+        },
+        {
+          "name": "command_or_prompt",
+          "type": "text"
+        },
+        {
+          "name": "timeout_ms",
+          "type": "int"
+        },
+        {
+          "name": "blocking",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "name": "sensor_runs",
+      "note": "Every firing; feeds harness health.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "sensor_id",
+          "type": "uuid FK"
+        },
+        {
+          "name": "change_ref",
+          "type": "varchar"
+        },
+        {
+          "name": "stage",
+          "type": "enum"
+        },
+        {
+          "name": "outcome",
+          "type": "enum(pass,findings,timeout,error)"
+        },
+        {
+          "name": "duration_ms",
+          "type": "int"
+        }
+      ]
+    },
+    {
+      "name": "findings",
+      "note": "Dual-rendered: a human message and an LLM message with self-correction instructions.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "run_id",
+          "type": "uuid FK"
+        },
+        {
+          "name": "category",
+          "type": "varchar"
+        },
+        {
+          "name": "message_human",
+          "type": "text"
+        },
+        {
+          "name": "message_llm",
+          "type": "text"
+        },
+        {
+          "name": "resolved_by",
+          "type": "enum(agent,human,waived,open)"
+        }
+      ]
+    },
+    {
+      "name": "drift_reports",
+      "note": "Continuous-sensor output, linked to janitor PRs.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "repo",
+          "type": "varchar"
+        },
+        {
+          "name": "scanner",
+          "type": "enum(dead_code,coverage_quality,dep_audit,slo_watch,log_anomaly)"
+        },
+        {
+          "name": "items",
+          "type": "jsonb"
+        },
+        {
+          "name": "pr_url",
+          "type": "varchar null"
+        }
+      ]
+    },
+    {
+      "name": "harness_templates",
+      "note": "Per-topology bundles; versioned so instantiated repos can track upstream.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "topology",
+          "type": "varchar"
+        },
+        {
+          "name": "version",
+          "type": "varchar"
+        },
+        {
+          "name": "guide_refs",
+          "type": "jsonb"
+        },
+        {
+          "name": "sensor_refs",
+          "type": "jsonb"
+        }
+      ]
+    },
+    {
+      "name": "escapes",
+      "note": "Defects the harness missed — the steering loop's backlog.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "uuid PK"
+        },
+        {
+          "name": "repo",
+          "type": "varchar"
+        },
+        {
+          "name": "defect_class",
+          "type": "varchar"
+        },
+        {
+          "name": "caught_by",
+          "type": "enum(human_review,pipeline,production)"
+        },
+        {
+          "name": "harness_action",
+          "type": "text"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: Raw Agent, Human Review as the Only Sensor (the baseline)",
+      "description": [
+        "Start with what most teams actually do on day one: a developer prompts the coding agent, the agent edits the repo and opens a PR, and a human reviews every line. The agent ships with its own inner harness — system prompt, code search, an agentic loop — so this genuinely works for small tasks.",
+        "But there is a natural trust barrier with AI-generated code: LLMs are non-deterministic, they don't know your context, and they don't really understand the code — they think in tokens. The agent has no social accountability, no aesthetic disgust at a 300-line function, no intuition that 'we don't do it that way here', and no organizational memory.",
+        "So every quality signal funnels through one channel: the human review at the end. Review toil scales linearly with agent throughput — the more the agent produces, the more a human must read. And because feedback arrives only as PR comments, the agent repeats the same mistakes every session: nothing it learns survives the context window.",
+        "This baseline defines the goal of everything that follows: increase the probability the agent gets it right the first time, and self-correct as many issues as possible before they reach human eyes."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Agent",
+          "Repo",
+          "GitHost"
+        ],
+        "links": [
+          "dev-agent",
+          "agent-repo",
+          "agent-githost",
+          "dev-githost"
+        ],
+        "highlight": [
+          "Agent",
+          "GitHost"
+        ],
+        "caption": "The unharnessed baseline: prompt in, PR out, and a human reads everything."
+      },
+      "decisionPrompt": "Your org doubles agent usage next quarter. Review load doubles with it. What do you build so that trust comes from the system, not from re-reading every line?",
+      "whyNow": [
+        "Every harness mechanism that follows is justified by a failure of this baseline — name the failures before naming the fixes."
+      ],
+      "concepts": [
+        {
+          "term": "Harness (outer vs. inner)",
+          "definition": "Everything in an AI agent except the model. The agent vendor builds the inner harness (system prompt, retrieval, orchestration); users build an outer harness for their specific system.",
+          "whyItMatters": "Scopes the design: we are not building an agent, we are building the controls around a bought one.",
+          "example": "Claude Code's built-in code search is inner harness; your AGENTS.md, custom linters, and review agents are outer harness."
+        },
+        {
+          "term": "Trust barrier",
+          "definition": "The structural reasons engineers can't blindly trust agent output: non-determinism, missing context, token-level rather than semantic understanding.",
+          "whyItMatters": "The harness exists to convert that distrust into cheap, repeatable verification instead of expensive human re-reading.",
+          "example": "The same prompt on the same repo can produce a clean patch on Monday and a subtle regression on Tuesday."
+        }
+      ],
+      "probeLinks": [
+        "harness-engineering",
+        "claude-code-works"
+      ],
+      "traps": [
+        {
+          "trap": "Scaling agent usage before building any harness.",
+          "why": "Human review is the only sensor, so review toil grows linearly with throughput until reviewers rubber-stamp.",
+          "instead": "Treat review toil as the metric to attack: add guides and sensors before adding more agent runs."
+        },
+        {
+          "trap": "Blaming the model for repeated convention violations.",
+          "why": "The agent has no organizational memory; anything not fed forward is rediscovered or violated every session.",
+          "instead": "Encode each repeated mistake into a guide or sensor — steering, not scolding."
+        }
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "Agent produces PRs; humans catch everything by reading.",
+        "newRisk": "Review toil scales with agent output, and the agent repeats the same mistakes every session — nothing steers it before it acts."
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+    },
+    {
+      "id": "guides",
+      "title": "2. Feedforward: Guides That Steer Before the Agent Acts",
+      "description": [
+        "The first harness layer anticipates unwanted behaviour and steers the agent before it acts. Guides are feedforward controls: they raise the probability of a good first attempt. The cheapest are prose — a rules file (AGENTS.md / CLAUDE.md) loaded every session with conventions, build commands, and pitfalls; reference docs and how-to guides ('how to add an endpoint', 'how to test') pulled in on demand; skills that package a workflow.",
+        "Prose guides are inferential — the model interprets them, and sometimes ignores them. The stronger complement is computational feedforward: language servers that hand the agent real types and symbols instead of guessed ones, codemods and scaffolds that generate boilerplate deterministically, CLIs that wrap fiddly procedures. A scaffold cannot be misread.",
+        "The design tension is the context budget. Everything always-loaded competes with the task itself for the window, and a bloated rules file degrades the very behaviour it tries to improve. So the bundle is layered: a lean always-on core, and an indexed library of on-demand guides the agent opens when relevant.",
+        "Guides alone are an open loop: you encode rules but never learn whether they worked. That's the motivation for sensors in the next step — feedforward-only harnesses drift into folklore."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Agent",
+          "Repo",
+          "Guides",
+          "CodeIntel",
+          "GitHost"
+        ],
+        "links": [
+          "dev-agent",
+          "agent-repo",
+          "guides-agent",
+          "dev-guides",
+          "agent-codeintel",
+          "codeintel-repo",
+          "agent-githost"
+        ],
+        "highlight": [
+          "Guides",
+          "CodeIntel"
+        ],
+        "caption": "Guides and code intelligence feed forward into the agent's context before generation."
+      },
+      "decisionPrompt": "You have 40 conventions worth encoding. Which belong in the always-loaded rules file, which become on-demand how-tos, and which should stop being prose entirely and become a scaffold or codemod?",
+      "options": [
+        {
+          "name": "Prose guides (rules, docs, how-tos)",
+          "pros": [
+            "Cheap to write and change — a markdown file in the repo, versioned with the code.",
+            "Covers judgment calls tooling can't express: 'prefer boring solutions', 'this debt is deliberate'.",
+            "Agents can help draft them from codebase archaeology."
+          ],
+          "cons": [
+            "Interpretation is probabilistic — the model can ignore or misweigh a rule.",
+            "Always-loaded prose eats the context budget; bloat degrades compliance.",
+            "Silently rots: nothing fails when a rule falls out of date."
+          ],
+          "view": {
+            "nodes": [
+              "Dev",
+              "Agent",
+              "Repo",
+              "Guides",
+              "GitHost"
+            ],
+            "links": [
+              "dev-agent",
+              "agent-repo",
+              "guides-agent",
+              "dev-guides",
+              "agent-githost"
+            ],
+            "highlight": [
+              "Guides"
+            ],
+            "caption": "Rules files, reference docs, and how-tos — inferential feedforward the model interprets."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/02-guides-opt1.jpg"
+        },
+        {
+          "name": "Computational guides (LSP, scaffolds, codemods)",
+          "pros": [
+            "Deterministic — a scaffold or codemod can't be misread, and LSP types are ground truth.",
+            "Zero context cost: structure arrives as tool results, not as standing prompt text.",
+            "Encodes the topology physically (directory layout, module boundaries), which also helps humans."
+          ],
+          "cons": [
+            "Expensive to build and maintain relative to a paragraph of prose.",
+            "Only covers what can be mechanized; judgment and intent still need words.",
+            "Per-language and per-stack — a polyglot org multiplies the work."
+          ],
+          "view": {
+            "nodes": [
+              "Dev",
+              "Agent",
+              "Repo",
+              "Guides",
+              "CodeIntel",
+              "GitHost"
+            ],
+            "links": [
+              "dev-agent",
+              "agent-repo",
+              "guides-agent",
+              "dev-guides",
+              "agent-codeintel",
+              "codeintel-repo",
+              "agent-githost"
+            ],
+            "highlight": [
+              "CodeIntel"
+            ],
+            "caption": "Adds code intelligence and deterministic generators — feedforward the model cannot ignore."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/02-guides-opt2.jpg"
+        }
+      ],
+      "whyNow": [
+        "Feedforward is the cheapest trust win: it attacks the 'agent doesn't know our context' half of the trust barrier directly.",
+        "Sensors (next step) are much more effective when guides define what 'good' means — a sensor without a convention to enforce is noise."
+      ],
+      "concepts": [
+        {
+          "term": "Feedforward control (guide)",
+          "definition": "A control that anticipates behaviour and steers the agent before it acts, raising the probability of a good first attempt.",
+          "whyItMatters": "First-attempt quality is the cheapest quality: no tokens burned on correction loops, no human attention consumed.",
+          "example": "AGENTS.md says 'never edit generated files under gen/' — the agent routes around them instead of a sensor catching it after."
+        },
+        {
+          "term": "Context budget",
+          "definition": "The finite window shared by system prompt, guides, task, and tool results; every always-loaded guide token competes with the task.",
+          "whyItMatters": "Over-stuffed rules files measurably degrade compliance — the harness can sabotage itself.",
+          "example": "A lean 2K-token core plus an index of how-tos beats a 30K-token rules dump."
+        },
+        {
+          "term": "Ambient affordances",
+          "definition": "Structural properties of the environment that make it legible and tractable to agents: typed languages, clear module boundaries, consistent layout.",
+          "whyItMatters": "They are implicit guides — the codebase itself steers the agent — and they determine how much explicit harness you need.",
+          "example": "A Spring service's layered layout tells the agent where a controller goes without any rule saying so."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Always-loaded vs. on-demand guides",
+          "description": "Always-loaded rules are reliably seen but tax every turn's context; on-demand how-tos are free until needed but the agent must know to open them.",
+          "chosen": "Lean always-on core (conventions, commands, hard prohibitions) plus an indexed on-demand library — and promote a guide to always-on only when sensors show it being missed."
+        },
+        {
+          "name": "Prose vs. mechanization",
+          "description": "Prose is cheap and expressive but probabilistic; codemods and scaffolds are deterministic but costly and narrow.",
+          "chosen": "Prose first; mechanize the repeat offenders — any rule the agent keeps violating is a candidate to become a scaffold, codemod, or linter rule instead of louder prose."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Dumping every lesson into the always-loaded rules file.",
+          "why": "Context bloat degrades compliance across the board — the file becomes both expensive and ignored.",
+          "instead": "Layer the bundle: lean core, on-demand library, and mechanize what can be mechanized."
+        },
+        {
+          "trap": "Feedforward-only harnessing.",
+          "why": "You encode rules but never find out whether they worked; guides silently rot into folklore.",
+          "instead": "Pair every important guide with a sensor that detects its violation (next step)."
+        }
+      ],
+      "talkingPoints": [
+        "Practitioner guidance on rules files converges on: start with build/test commands, architectural boundaries, and naming/error-handling conventions; keep it lean; and review it periodically against recent PRs, because static context files silently drift from reality.",
+        "Stripe applies global rules 'very judiciously' to save context, scoping most rules to subdirectories — the context budget is a real constraint at their scale, not a style preference."
+      ],
+      "probeLinks": [
+        "agents-md",
+        "harness-engineering",
+        "stripe-minions"
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Dev",
+                "label": "Developer"
+              },
+              {
+                "id": "Agent",
+                "label": "Coding Agent"
+              },
+              {
+                "id": "Guides",
+                "label": "Guides"
+              },
+              {
+                "id": "CodeIntel",
+                "label": "Code Intelligence"
+              },
+              {
+                "id": "Repo",
+                "label": "Repo"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Dev",
+                "to": "Agent",
+                "arrow": "->>",
+                "label": "task: add rate limit to checkout API"
+              },
+              {
+                "from": "Agent",
+                "to": "Guides",
+                "arrow": "->>",
+                "label": "load rules core + how-to-add-endpoint"
+              },
+              {
+                "from": "Guides",
+                "to": "Agent",
+                "arrow": "-->>",
+                "label": "conventions, commands, pitfalls"
+              },
+              {
+                "from": "Agent",
+                "to": "CodeIntel",
+                "arrow": "->>",
+                "label": "resolve RateLimiter symbol, callers"
+              },
+              {
+                "from": "CodeIntel",
+                "to": "Agent",
+                "arrow": "-->>",
+                "label": "types, definition sites, dep edges"
+              },
+              {
+                "from": "Agent",
+                "to": "Repo",
+                "arrow": "->>",
+                "label": "first-attempt edit, following conventions"
+              }
+            ]
+          },
+          "name": "Session start — assembling the feedforward context",
+          "note": "The goal is first-attempt quality: conventions and ground-truth structure arrive before generation, not as review comments after.",
+          "highlight": [
+            "Guides",
+            "CodeIntel"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "The agent rediscovered or violated conventions every session.",
+        "after": "Guides and code intelligence steer generation; first-attempt quality rises.",
+        "newRisk": "Open loop: nothing verifies the output, so violations and regressions still ride to human review undetected."
+      }
+    },
+    {
+      "id": "sensors",
+      "title": "3. Feedback: Computational Sensors and the Self-Correction Loop",
+      "description": [
+        "Now close the loop. Sensors are feedback controls: they observe after the agent acts and feed findings back so it can self-correct before a human ever looks. The workhorses are computational — linters, type checkers, unit and structural tests, architecture rules (ArchUnit, dependency-cruiser) — deterministic, CPU-fast, cheap enough to run on every change.",
+        "A hook runner wires them to the agent's actions: after edits or before a commit, it fires the relevant sensors under a strict time budget and returns results into the agent's context. The agent fixes and re-runs — that's the self-correction loop, and it's where most defects should die.",
+        "The detail that makes this work: sensor output must be optimized for LLM consumption, not for humans. A custom lint message that says what to do — 'domain layer must not import adapters; move this behind the port interface in domain/ports' — is a positive kind of prompt injection. A 400-line stack trace is context poison.",
+        "Sensors also close the guides' open loop: every important rule from step 2 gets a sensor that detects its violation. Feedforward-only gets rules that silently rot; feedback-only gets an agent that keeps repeating the same mistakes. You need both directions."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Agent",
+          "Repo",
+          "Guides",
+          "Hooks",
+          "CompSensors",
+          "GitHost"
+        ],
+        "links": [
+          "dev-agent",
+          "agent-repo",
+          "guides-agent",
+          "repo-hooks",
+          "hooks-comp",
+          "comp-agent",
+          "agent-githost"
+        ],
+        "highlight": [
+          "Hooks",
+          "CompSensors"
+        ],
+        "caption": "Edits trigger the hook runner; fast deterministic sensors feed failures back for self-correction."
+      },
+      "decisionPrompt": "Which sensors run on every edit, which only pre-commit — and what is your hard time budget before the loop becomes unusable?",
+      "whyNow": [
+        "Self-correction is the review-toil killer: every defect the loop catches is one a human never sees.",
+        "Computational sensors are the cheap, proven layer — establish them before spending GPUs on inferential review (next step)."
+      ],
+      "concepts": [
+        {
+          "term": "Feedback control (sensor)",
+          "definition": "A control that observes the agent's output after it acts and produces signals that drive self-correction.",
+          "whyItMatters": "Turns quality from a human-review activity into a property of the loop itself.",
+          "example": "Post-edit hook runs the type checker; the agent fixes the two errors before presenting anything."
+        },
+        {
+          "term": "Self-correction loop",
+          "definition": "Agent acts → sensors fire → findings return to context → agent fixes → sensors re-run, until green or budget exhausted.",
+          "whyItMatters": "It is the mechanism that converts sensor findings into fixed code without human involvement.",
+          "example": "Three iterations: lint fail, arch-rule fail, green — all before the PR exists."
+        },
+        {
+          "term": "LLM-optimized sensor output",
+          "definition": "Failure messages written as instructions the model can act on — a positive kind of prompt injection.",
+          "whyItMatters": "The same finding either triggers a correct one-shot fix or burns thousands of tokens of flailing, depending on phrasing.",
+          "example": "'Cyclic import a→b→a: extract the shared type into common/types.py' beats a bare traceback."
+        },
+        {
+          "term": "Structural / architecture tests",
+          "definition": "Deterministic rules about code structure — layering, dependency direction, naming — enforced like unit tests (ArchUnit, dependency-cruiser).",
+          "whyItMatters": "They catch architectural drift on every change, which prose review only catches when a human happens to notice.",
+          "example": "dependency-cruiser fails any import from domain/ into adapters/."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Blocking vs. advisory sensors",
+          "description": "Blocking sensors guarantee compliance but a flaky or slow blocker stalls every agent turn; advisory sensors keep flow but findings can be ignored.",
+          "chosen": "Block on fast, deterministic, high-precision sensors (types, lint, arch rules); everything else advisory in the loop and blocking later in the pipeline."
+        },
+        {
+          "name": "Loop speed vs. sensor depth",
+          "description": "The more sensors in the inner loop, the more defects die early — but every second of sensor time is paid on every edit of every session.",
+          "chosen": "A hard seconds-level budget in the loop (changed-files lint, types, focused tests); depth moves right in the lifecycle (step 5)."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Feeding raw human-oriented tool output to the agent.",
+          "why": "Verbose stack traces and wall-of-text reports poison the context and trigger flailing rather than fixes.",
+          "instead": "Curate sensor messages: what failed, why, and what to do — short enough to act on."
+        },
+        {
+          "trap": "Putting a slow test suite in the post-edit hook.",
+          "why": "A 5-minute sensor on a 500K-events/day loop is death by latency; agents and humans both start bypassing it.",
+          "instead": "Changed-file scoping and focused tests in the loop; the full suite runs pre-merge in the pipeline."
+        },
+        {
+          "trap": "Sensors with no matching guide.",
+          "why": "The agent gets punished for rules it was never told; every session rediscovers them by failing.",
+          "instead": "Pair each sensor with feedforward: the rule in the guide, the enforcement in the sensor."
+        }
+      ],
+      "talkingPoints": [
+        "Stripe's 'minion' agents shift feedback left: an agent may not push until local linters and pre-push hooks pass in its devbox, and a background daemon precomputes which lint rules apply so the pre-push check completes in seconds.",
+        "OpenAI's harness write-up makes linter messages double as remediation instructions — every failure teaches the agent the fix, 'training the agent while it works'."
+      ],
+      "probeLinks": [
+        "stripe-minions",
+        "archunit",
+        "dependency-cruiser"
+      ],
+      "failureDrills": [
+        {
+          "scenario": "A linter with a broken config starts failing every run.",
+          "expectedBehavior": "The hook runner detects a sensor that fails 100% of runs and demotes it to advisory, flagging harness health.",
+          "mitigation": "Sensor-outcome monitoring with auto-quarantine — a broken sensor is a harness defect, not an agent defect."
+        },
+        {
+          "scenario": "The agent 'fixes' a failing test by weakening the assertion.",
+          "expectedBehavior": "Diff-aware sensor flags assertion changes in the same PR as the code change for human attention.",
+          "mitigation": "Guides prohibit weakening tests to pass; pipeline mutation testing (step 5) catches surviving weak tests."
+        }
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Agent",
+                "label": "Coding Agent"
+              },
+              {
+                "id": "Repo",
+                "label": "Repo"
+              },
+              {
+                "id": "Hooks",
+                "label": "Hook Runner"
+              },
+              {
+                "id": "CompSensors",
+                "label": "Computational Sensors"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Agent",
+                "to": "Repo",
+                "arrow": "->>",
+                "label": "edit checkout/service.py"
+              },
+              {
+                "from": "Repo",
+                "to": "Hooks",
+                "arrow": "->>",
+                "label": "post-edit event"
+              },
+              {
+                "from": "Hooks",
+                "to": "CompSensors",
+                "arrow": "->>",
+                "label": "lint + types + arch rules (changed files)"
+              },
+              {
+                "type": "alt",
+                "label": "findings",
+                "messages": [
+                  {
+                    "from": "CompSensors",
+                    "to": "Agent",
+                    "arrow": "-->>",
+                    "label": "domain imports adapter — move behind port interface"
+                  },
+                  {
+                    "from": "Agent",
+                    "to": "Repo",
+                    "arrow": "->>",
+                    "label": "self-correct: extract port, re-run"
+                  },
+                  {
+                    "from": "Hooks",
+                    "to": "CompSensors",
+                    "arrow": "->>",
+                    "label": "re-run sensors"
+                  },
+                  {
+                    "from": "CompSensors",
+                    "to": "Agent",
+                    "arrow": "-->>",
+                    "label": "green"
+                  }
+                ],
+                "else": {
+                  "label": "clean",
+                  "messages": [
+                    {
+                      "from": "CompSensors",
+                      "to": "Agent",
+                      "arrow": "-->>",
+                      "label": "green on first attempt"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "name": "The self-correction loop",
+          "note": "Findings return as actionable instructions; the defect dies in the loop, seconds after it was created, before any human involvement.",
+          "highlight": [
+            "Hooks",
+            "CompSensors"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "Guides steered generation but nothing verified the output.",
+        "after": "Deterministic sensors catch structural defects on every change and the agent fixes them itself.",
+        "newRisk": "Structurally clean junk sails through: semantic duplication, redundant tests, overengineering — things no CPU check can judge."
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/03-sensors.jpg"
+    },
+    {
+      "id": "review-agents",
+      "parent": "sensors",
+      "title": "3a. Inferential Sensors: Review Agents and LLM-as-Judge",
+      "description": [
+        "Computational sensors catch the structural stuff reliably: duplicate code, complexity, missing coverage, architectural drift, style. But a whole defect class needs semantic judgment: code that duplicates existing logic in meaning but not in text, tests that assert nothing, brute-force fixes, overengineered abstractions. That's the inferential sensor tier — review agents, LLM-as-judge — run by GPUs, slower, costlier, probabilistic.",
+        "Design them like a panel, not an oracle: separate review lenses (redundancy, architecture fitness, spec adherence, test honesty) with narrow prompts, each returning findings with confidence and evidence. Narrow lenses are more reliable than one 'review this' prompt, and their findings can be adversarially verified before they consume anyone's attention.",
+        "Be honest about limits: neither tier reliably catches misdiagnosis of the task, unnecessary features, or misunderstood instructions — and correctness is outside any sensor's remit if the human never specified what they wanted. Those failure classes stay with the human gate and the behaviour harness (step 6).",
+        "Because inferential runs cost real money and add latency, placement is a budget decision: a fast advisory pass in the loop at most, and the thorough panel at PR time — which is exactly the lifecycle question the next step systematizes."
+      ],
+      "view": {
+        "nodes": [
+          "Agent",
+          "Repo",
+          "Hooks",
+          "CompSensors",
+          "ReviewAgents"
+        ],
+        "links": [
+          "agent-repo",
+          "repo-hooks",
+          "hooks-comp",
+          "comp-agent",
+          "hooks-review",
+          "review-agent"
+        ],
+        "highlight": [
+          "ReviewAgents"
+        ],
+        "caption": "A second sensor tier: LLM review lenses for defects that need semantic judgment."
+      },
+      "decisionPrompt": "Which defect classes in your codebase actually justify GPU spend per change — and which are you better off catching with a cheaper computational proxy?",
+      "options": [
+        {
+          "name": "Computational-only sensor bank",
+          "pros": [
+            "Deterministic and fast; results are reliable and repeatable.",
+            "Runs on every change at negligible cost.",
+            "No new failure mode: sensors never hallucinate a finding."
+          ],
+          "cons": [
+            "Blind to semantic duplication, redundant tests, overengineering, brute-force fixes.",
+            "Pushes every judgment call back onto human reviewers — the toil returns.",
+            "Tempts teams into proxy metrics (coverage %) that agents learn to satisfy hollowly."
+          ],
+          "view": {
+            "nodes": [
+              "Agent",
+              "Repo",
+              "Hooks",
+              "CompSensors"
+            ],
+            "links": [
+              "agent-repo",
+              "repo-hooks",
+              "hooks-comp",
+              "comp-agent"
+            ],
+            "highlight": [
+              "CompSensors"
+            ],
+            "caption": "CPU-only sensing: reliable, cheap, and structurally blind to semantics."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-review-agents-opt1.jpg"
+        },
+        {
+          "name": "Add inferential review agents",
+          "pros": [
+            "Catches the semantic defect class: duplication in meaning, hollow tests, overengineering.",
+            "Findings arrive as prose the coding agent can act on directly in the self-correction loop.",
+            "Lenses are cheap to author and evolve — the steering loop can add one per observed failure mode."
+          ],
+          "cons": [
+            "Non-deterministic: false positives erode trust, false negatives erode safety.",
+            "Real cost and latency per run; unbudgeted use gets expensive fast.",
+            "A judge model can share blind spots with the coding model — same family, same miss."
+          ],
+          "view": {
+            "nodes": [
+              "Agent",
+              "Repo",
+              "Hooks",
+              "CompSensors",
+              "ReviewAgents"
+            ],
+            "links": [
+              "agent-repo",
+              "repo-hooks",
+              "hooks-comp",
+              "comp-agent",
+              "hooks-review",
+              "review-agent"
+            ],
+            "highlight": [
+              "ReviewAgents"
+            ],
+            "caption": "The two-tier sensor bank: CPU checks on every change, GPU judgment where structure can't decide."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-review-agents-opt2.jpg"
+        }
+      ],
+      "whyNow": [
+        "Step 3's sensors made structural defects cheap to catch — what's left escaping to humans is precisely the semantic class only inference can judge."
+      ],
+      "concepts": [
+        {
+          "term": "Computational vs. inferential execution",
+          "definition": "Computational controls run deterministically on CPUs in seconds; inferential controls run on models — slower, costlier, probabilistic, but capable of semantic judgment.",
+          "whyItMatters": "It is the harness's central budgeting axis: every control gets classified, and placement follows from the classification.",
+          "example": "dependency-cruiser is computational; 'does this test actually verify the behaviour it names?' is inferential."
+        },
+        {
+          "term": "LLM-as-judge",
+          "definition": "Using a model to evaluate another model's output against criteria — here, review agents judging diffs through narrow lenses.",
+          "whyItMatters": "It is the only scalable sensor for semantic quality, but its own non-determinism must be managed (narrow prompts, evidence, verification).",
+          "example": "A redundancy lens flags that new retry logic duplicates lib/retry.ts, with both snippets as evidence."
+        },
+        {
+          "term": "Review lens",
+          "definition": "A narrowly-scoped review prompt targeting one defect class, instead of one broad 'review everything' agent.",
+          "whyItMatters": "Narrow prompts are more reliable, independently budgetable, and their hit rates can be tracked per lens.",
+          "example": "Lenses: semantic-duplication, overengineering, test-honesty, spec-adherence — each a separate run with its own precision stats."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Sensor coverage vs. determinism",
+          "description": "Adding inferential sensors widens what the harness can see but imports non-determinism into the harness itself — the thing built to compensate for model non-determinism.",
+          "chosen": "Two-tier bank: computational sensors as the trusted floor, inferential findings labeled with confidence and verified or triaged before they block anything."
+        },
+        {
+          "name": "Judge quality vs. cost",
+          "description": "A frontier model judges better but costs more per run; a small model is cheap but misses what you built the tier for.",
+          "chosen": "Strong model at low frequency (per PR) beats weak model at high frequency — the lens exists for judgment, so don't cheap out on the judgment."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "One mega-prompt review agent ('review this PR').",
+          "why": "Broad prompts produce shallow, inconsistent reviews and unactionable findings.",
+          "instead": "Separate narrow lenses with evidence requirements and per-lens precision tracking."
+        },
+        {
+          "trap": "Letting inferential findings block merges from day one.",
+          "why": "False positives at blocking severity teach everyone to override the harness, which kills it politically.",
+          "instead": "Advisory first; promote a lens to blocking only after its precision is proven on real traffic."
+        }
+      ],
+      "talkingPoints": [
+        "Judge cost spans orders of magnitude: a mini-model lens over a typical PR diff costs cents, a frontier-model security or architecture lens can cost dollars per run — which is why lenses are budgeted per PR, not per edit event.",
+        "A useful pairing rule: cheap-model lenses run broadly and often; the strongest model is reserved for the lenses where judgment is the whole point."
+      ],
+      "probeLinks": [
+        "harness-engineering",
+        "openai-harness"
+      ],
+      "recap": {
+        "before": "Structural defects died in the loop; semantic junk still reached humans.",
+        "after": "A two-tier sensor bank: deterministic floor plus budgeted semantic judgment.",
+        "newRisk": "Sensors now range from milliseconds to minutes and pennies to dollars — where each runs in the lifecycle becomes the design question."
+      }
+    },
+    {
+      "id": "lifecycle",
+      "title": "4. Keep Quality Left: Distributing Sensors Across the Lifecycle",
+      "description": [
+        "The sensor bank now spans milliseconds-cheap to minutes-expensive. The next design decision is placement: spreading checks across the development timeline according to their cost, speed, and criticality — the classic continuous-integration discipline, extended to agent controls. The earlier an issue is found, the cheaper it is to fix, so quality stays as far left as possible.",
+        "Four stations emerge. In the loop: fast lint, types, focused tests, arch rules — seconds, on every change (step 3). Pre-commit / pre-PR: the same plus a basic review-agent pass — the last cheap moment before other people's time is involved. Human review: now aimed at what sensors can't judge — intent, scope, misdiagnosis. Post-integration pipeline: the authoritative re-run of the fast controls plus what's too slow or holistic for the loop — mutation testing, whole-PR deep review, full suites.",
+        "The pipeline repeats the fast controls deliberately: the loop's runs are advisory accelerants on an unmerged working tree; the pipeline's runs are the authoritative gate on the integrated state. Self-correction extends here too — pipeline failures loop back to an agent that reads the findings and pushes a fix commit, keeping every commit state releasable without human babysitting.",
+        "The org-level payoff: review toil drops not because humans review less carefully, but because they review different things — the sensor-catchable classes never reach them."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Agent",
+          "Repo",
+          "Hooks",
+          "CompSensors",
+          "ReviewAgents",
+          "GitHost",
+          "CI"
+        ],
+        "links": [
+          "dev-agent",
+          "agent-repo",
+          "repo-hooks",
+          "hooks-comp",
+          "comp-agent",
+          "hooks-review",
+          "review-agent",
+          "agent-githost",
+          "dev-githost",
+          "githost-ci",
+          "ci-comp",
+          "ci-review",
+          "ci-githost"
+        ],
+        "highlight": [
+          "CI",
+          "GitHost"
+        ],
+        "caption": "Four stations: loop, pre-commit, human review, pipeline — each check placed by cost, speed, and criticality."
+      },
+      "decisionPrompt": "Mutation testing takes 20 minutes and deep review costs $0.40 per run. Where in the lifecycle do they go, and what do you accept never running in the inner loop?",
+      "whyNow": [
+        "Placement only becomes a real question once both cheap and expensive sensors exist — now every control needs a station.",
+        "This is where the harness meets the org's delivery process: PRs, pipelines, and merge policy are shared infrastructure, not per-developer choices."
+      ],
+      "concepts": [
+        {
+          "term": "Keep quality left",
+          "definition": "Distributing checks so issues surface at the earliest, cheapest point in the path to production.",
+          "whyItMatters": "A defect caught in the loop costs seconds of agent time; the same defect in production costs an incident.",
+          "example": "Arch-rule violation: loop catch = instant self-fix; pipeline catch = failed build + context reload; human catch = review round-trip."
+        },
+        {
+          "term": "Mutation testing",
+          "definition": "Seeding artificial bugs (mutants) into code and checking whether the test suite kills them — measuring test effectiveness, not just coverage.",
+          "whyItMatters": "Coverage is easy for an agent to satisfy hollowly; mutation score is the computational sensor for test honesty — an underused technique having a resurgence in the agent era.",
+          "example": "Coverage 95% but half the mutants survive: the agent's tests execute code without asserting on it."
+        },
+        {
+          "term": "Authoritative vs. advisory runs",
+          "definition": "The same sensor can run twice: advisory in the loop for speed of correction, authoritative in the pipeline as the gate of record.",
+          "whyItMatters": "Resolves the speed-vs-trust tension without choosing: the loop optimizes iteration, the pipeline guarantees the invariant.",
+          "example": "Lint runs post-edit on changed files (advisory) and again in CI on the full tree (blocking)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Pipeline depth vs. integration frequency",
+          "description": "The more sensors gate the merge, the higher the confidence per merge — and the slower and rarer merges become, which fights continuous integration.",
+          "chosen": "Keep the blocking pipeline under ~15 minutes; heavier analyses (full mutation runs, fleet-wide review) run post-merge or nightly with agent-driven follow-up PRs."
+        },
+        {
+          "name": "Duplicate sensor cost vs. single placement",
+          "description": "Running fast sensors both in-loop and in-pipeline doubles compute; running them once forces choosing speed or authority.",
+          "chosen": "Duplicate the cheap ones — CPU time is the cheapest resource in the whole system, far cheaper than tokens or human attention."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Treating green in-loop sensors as merge-worthy.",
+          "why": "Loop runs check the unmerged working tree with scoped inputs; integration can still break the whole.",
+          "instead": "The pipeline re-runs authoritatively on the integrated state; only its verdict gates the merge."
+        },
+        {
+          "trap": "Putting every new sensor into the blocking merge gate.",
+          "why": "Pipeline latency creeps up until developers and agents batch changes, which un-does continuous integration.",
+          "instead": "Budget the gate; everything else runs post-merge with janitor follow-ups (next step)."
+        },
+        {
+          "trap": "Keeping human review focused on style and structure.",
+          "why": "Sensors already cover those classes; humans re-checking them is pure duplicated toil.",
+          "instead": "Redirect human review to intent, scope, and misdiagnosis — the classes no sensor reliably catches."
+        }
+      ],
+      "talkingPoints": [
+        "Stripe reports ~1,300 agent-written PRs merged per week, using selective CI over a multimillion-test suite and a hard cap of two CI fix rounds before a human takes over — bounded self-correction, not infinite retries.",
+        "Their stance on the human gate is instructive: 'a partially correct PR that an engineer can polish in twenty minutes is still a significant win' — the harness optimizes the handoff, not full autonomy."
+      ],
+      "probeLinks": [
+        "stripe-minions",
+        "copilot-coding-agent",
+        "stryker"
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Agent",
+                "label": "Coding Agent"
+              },
+              {
+                "id": "GitHost",
+                "label": "Git Host"
+              },
+              {
+                "id": "CI",
+                "label": "CI Pipeline"
+              },
+              {
+                "id": "CompSensors",
+                "label": "Computational Sensors"
+              },
+              {
+                "id": "ReviewAgents",
+                "label": "Review Agents"
+              },
+              {
+                "id": "Dev",
+                "label": "Developer"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Agent",
+                "to": "GitHost",
+                "arrow": "->>",
+                "label": "push branch, open PR (loop sensors green)"
+              },
+              {
+                "from": "GitHost",
+                "to": "CI",
+                "arrow": "->>",
+                "label": "trigger pipeline"
+              },
+              {
+                "from": "CI",
+                "to": "CompSensors",
+                "arrow": "->>",
+                "label": "authoritative: full lint, suite, arch rules, mutation tests"
+              },
+              {
+                "from": "CI",
+                "to": "ReviewAgents",
+                "arrow": "->>",
+                "label": "deep review: redundancy, architecture, big picture"
+              },
+              {
+                "type": "alt",
+                "label": "pipeline findings",
+                "messages": [
+                  {
+                    "from": "CI",
+                    "to": "GitHost",
+                    "arrow": "-->>",
+                    "label": "fail + LLM-readable findings"
+                  },
+                  {
+                    "from": "GitHost",
+                    "to": "Agent",
+                    "arrow": "->>",
+                    "label": "findings re-enter agent context"
+                  },
+                  {
+                    "from": "Agent",
+                    "to": "GitHost",
+                    "arrow": "->>",
+                    "label": "fix commit, pipeline re-runs"
+                  }
+                ],
+                "else": {
+                  "label": "green",
+                  "messages": [
+                    {
+                      "from": "CI",
+                      "to": "GitHost",
+                      "arrow": "-->>",
+                      "label": "pass"
+                    },
+                    {
+                      "from": "Dev",
+                      "to": "GitHost",
+                      "arrow": "->>",
+                      "label": "human review: intent and scope only — merge"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "name": "Change lifecycle — from PR to merged",
+          "note": "The pipeline is the authoritative gate; its failures feed the same self-correction loop, so commits converge to releasable without human babysitting.",
+          "highlight": [
+            "CI"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "Sensors existed but placement was ad hoc — per developer, per session.",
+        "after": "Every control has a station: loop, pre-commit, human gate, pipeline; expensive checks run once, authoritatively.",
+        "newRisk": "Lifecycle sensors only fire on changes — decay that accumulates between changes (dead code, rotting tests, drifting deps) is invisible to all of them."
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/05-lifecycle.jpg"
+    },
+    {
+      "id": "drift",
+      "title": "5. Continuous Sensors: Drift Detection and Runtime Feedback",
+      "description": [
+        "Everything so far fires on a change. But some decay accumulates gradually, between changes, and no per-change sensor will ever see it: dead code piling up, test suites whose coverage quality erodes, dependencies aging into vulnerabilities, architecture drifting one small exception at a time. This needs sensors that run continuously against the codebase, outside the change lifecycle.",
+        "The drift tier is a scheduled fleet of scanners — computational (dead-code detection, dependency audits, complexity trends) and inferential (coverage-quality analysis, semantic-duplication sweeps) — that publish drift reports. Janitor agents then turn findings into small, reviewable cleanup PRs that flow through the exact pipeline from step 4. Detection is continuous; remediation still rides the gated lifecycle.",
+        "The same pattern extends past the codebase into the runtime: agents watching for degrading SLOs and proposing improvements, AI judges sampling response quality, log-anomaly flagging. The runtime becomes a sensor feeding the harness, closing the loop from production behaviour back to code changes.",
+        "The failure mode to design against is flooding: a janitor fleet that opens 400 PRs on Monday morning gets its output ignored wholesale. Throttle to a reviewable stream, batch mechanical changes, and prioritize by blast radius."
+      ],
+      "view": {
+        "nodes": [
+          "Agent",
+          "Repo",
+          "GitHost",
+          "CI",
+          "DriftAgents",
+          "Telemetry",
+          "Dev"
+        ],
+        "links": [
+          "drift-repo",
+          "telemetry-drift",
+          "drift-githost",
+          "githost-ci",
+          "agent-githost",
+          "dev-githost"
+        ],
+        "highlight": [
+          "DriftAgents",
+          "Telemetry"
+        ],
+        "caption": "Scheduled scanners and runtime signals feed janitor agents; cleanup PRs ride the normal gated pipeline."
+      },
+      "decisionPrompt": "Your nightly scan finds 4,000 dead functions and 60 stale dependencies. What reaches humans, in what order, and what merges with no human at all?",
+      "whyNow": [
+        "The per-change harness is complete; what it structurally cannot see — decay between changes — is now the biggest unsensed surface.",
+        "Agents make remediation cheap for the first time: findings that used to rot in backlog tickets can become same-day PRs."
+      ],
+      "concepts": [
+        {
+          "term": "Drift sensor",
+          "definition": "A sensor that runs on a schedule against the whole codebase rather than on a change event, detecting gradual accumulation no diff-scoped check can see.",
+          "whyItMatters": "Without it the harness regulates every change while the system decays anyway — regulated steps, unregulated trajectory.",
+          "example": "Nightly dead-code scan finds handlers orphaned by three months of feature flags."
+        },
+        {
+          "term": "Janitor agents",
+          "definition": "Background agents that convert drift findings into small cleanup PRs — a 'janitor army' working the maintenance backlog continuously.",
+          "whyItMatters": "Detection without cheap remediation just produces guilt; agents close the loop from finding to fix.",
+          "example": "Dep scanner flags a CVE → janitor bumps the version, runs the suite, opens a PR with the changelog summarized."
+        },
+        {
+          "term": "Runtime feedback loop",
+          "definition": "Production signals — SLO trends, log anomalies, sampled output quality — treated as harness sensors that trigger improvement proposals.",
+          "whyItMatters": "Extends regulation past 'is the code clean' to 'is the system healthy', the outermost feedback ring.",
+          "example": "p99 latency drifts up 15% over two weeks → agent bisects the window, proposes an index, opens a PR with the analysis attached."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Cleanup throughput vs. review capacity",
+          "description": "Janitors can generate fixes far faster than humans can review them; unthrottled, the fleet floods the queue and gets rubber-stamped or ignored.",
+          "chosen": "Throttled stream sized to review capacity, mechanical changes batched, auto-merge only for proven no-risk classes (formatting, doc links) with pipeline green."
+        },
+        {
+          "name": "Continuous depth vs. compute cost",
+          "description": "Inferential fleet-wide sweeps (semantic duplication across 1,500 repos) are powerful but expensive to run often.",
+          "chosen": "Computational scanners nightly; inferential sweeps weekly or sampled — drift moves slowly, so detection can too."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Letting janitor PRs bypass the pipeline because they're 'just cleanup'.",
+          "why": "Dead-code removal and dep bumps break things in exactly the ways the pipeline exists to catch.",
+          "instead": "Every janitor PR rides the same authoritative gate as a feature PR — that's what makes auto-merge defensible for the safest classes."
+        },
+        {
+          "trap": "Reporting drift without owning remediation.",
+          "why": "Dashboards of decay that no one acts on are the pre-agent status quo; the finding stream becomes noise.",
+          "instead": "Every scanner is paired with a janitor policy: fix automatically, fix-and-PR, or escalate with a proposed patch."
+        }
+      ],
+      "talkingPoints": [
+        "OpenAI's harness write-up calls this 'garbage collection': a quality document grades each domain and layer, and scheduled background agent tasks scan for drift from encoded principles and submit refactoring PRs — debt paid continuously in small increments, bad patterns caught daily instead of spreading for weeks."
+      ],
+      "probeLinks": [
+        "openai-harness",
+        "infoq-openai-harness"
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "DriftAgents",
+                "label": "Drift Sensors"
+              },
+              {
+                "id": "Repo",
+                "label": "Repo"
+              },
+              {
+                "id": "GitHost",
+                "label": "Git Host"
+              },
+              {
+                "id": "CI",
+                "label": "CI Pipeline"
+              },
+              {
+                "id": "Dev",
+                "label": "Developer"
+              }
+            ],
+            "messages": [
+              {
+                "from": "DriftAgents",
+                "to": "Repo",
+                "arrow": "->>",
+                "label": "nightly: dead code, deps, coverage quality"
+              },
+              {
+                "from": "DriftAgents",
+                "to": "DriftAgents",
+                "arrow": "->>",
+                "label": "prioritize by blast radius, throttle"
+              },
+              {
+                "from": "DriftAgents",
+                "to": "GitHost",
+                "arrow": "->>",
+                "label": "janitor PR: remove 12 dead handlers"
+              },
+              {
+                "from": "GitHost",
+                "to": "CI",
+                "arrow": "->>",
+                "label": "same authoritative pipeline"
+              },
+              {
+                "type": "alt",
+                "label": "risk class: needs human",
+                "messages": [
+                  {
+                    "from": "Dev",
+                    "to": "GitHost",
+                    "arrow": "->>",
+                    "label": "review and merge"
+                  }
+                ],
+                "else": {
+                  "label": "proven no-risk class, pipeline green",
+                  "messages": [
+                    {
+                      "from": "CI",
+                      "to": "GitHost",
+                      "arrow": "-->>",
+                      "label": "auto-merge"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "name": "Nightly drift scan to cleanup PR",
+          "note": "Continuous detection, gated remediation: the janitor fleet is throttled to the org's review capacity, not its generation capacity.",
+          "highlight": [
+            "DriftAgents"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "The harness saw every change but none of the decay between changes.",
+        "after": "Scheduled scanners and runtime signals feed a throttled janitor fleet; maintenance became a continuous background process.",
+        "newRisk": "Everything so far regulates code quality and architecture — whether the software functionally does what was intended still rests on tests the same agent wrote."
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/06-drift.jpg"
+    },
+    {
+      "id": "behaviour",
+      "title": "6. The Behaviour Harness: Specs and Tests You Can Trust",
+      "description": [
+        "The elephant in the room: how do we guide and sense whether the application functionally behaves as intended? The maintainability and architecture harnesses are the easy tiers — mature tooling exists. Behaviour is where current practice is weakest, and it's the tier that actually decides whether a human can skip manual verification.",
+        "The standard approach: feed forward a functional specification (anything from a prompt paragraph to a multi-file spec), and feed back the AI-generated test suite — green, with decent coverage. The circularity is the problem: the same agent writes the code and the tests, so the tests encode the agent's understanding, including its misunderstandings. A misread spec produces code and tests that agree with each other and are both wrong. Green is evidence of consistency, not correctness.",
+        "Two reinforcements help. Mutation testing (already in the pipeline) verifies tests can fail at all — killing hollow suites. The approved-fixtures pattern goes further: agent-generated tests capture behaviour as human-readable fixtures (rendered outputs, API responses, state transitions), and a human approves the fixtures rather than reading test code. The human verifies what the system does, not how it's asserted. It fits best where behaviour has reviewable artifacts — it's a selective tool, not a wholesale answer.",
+        "Where neither fits, honest manual testing remains — and saying so is part of the design. The behaviour harness is the least solved tier: the right posture is explicit about which requirements are sensor-verified, which are fixture-approved, and which are human-tested."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Spec",
+          "Agent",
+          "Repo",
+          "Hooks",
+          "CompSensors",
+          "GitHost"
+        ],
+        "links": [
+          "dev-spec",
+          "spec-agent",
+          "agent-repo",
+          "repo-hooks",
+          "hooks-comp",
+          "comp-agent",
+          "agent-githost",
+          "dev-githost"
+        ],
+        "highlight": [
+          "Spec"
+        ],
+        "caption": "The behaviour loop: spec feeds forward, test evidence feeds back — with a human approving behaviour, not test code."
+      },
+      "decisionPrompt": "The agent's tests are green with 92% coverage. What additional evidence would let you skip manual testing — and for which kinds of change does that evidence not exist yet?",
+      "options": [
+        {
+          "name": "Trust the AI test suite (green + coverage + mutation score)",
+          "pros": [
+            "Fully automated — no added human step per change.",
+            "Mutation testing filters out hollow suites, hardening the signal beyond raw coverage.",
+            "Scales to every change, including janitor and background work."
+          ],
+          "cons": [
+            "Circular: code and tests share one (mis)understanding of the spec — consistent can still be wrong.",
+            "Coverage and mutation score are proxies an agent can satisfy while missing the actual intent.",
+            "Human accountability quietly erodes as green checkmarks accumulate."
+          ],
+          "view": {
+            "nodes": [
+              "Dev",
+              "Spec",
+              "Agent",
+              "Repo",
+              "Hooks",
+              "CompSensors",
+              "GitHost"
+            ],
+            "links": [
+              "dev-spec",
+              "spec-agent",
+              "agent-repo",
+              "repo-hooks",
+              "hooks-comp",
+              "comp-agent",
+              "agent-githost"
+            ],
+            "highlight": [
+              "CompSensors"
+            ],
+            "caption": "Automated-only behaviour evidence: green suite, coverage, mutation score — consistency, not verified intent."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-behaviour-opt1.jpg"
+        },
+        {
+          "name": "Approved fixtures (human approves behaviour artifacts)",
+          "pros": [
+            "Breaks the circularity: a human verifies observable behaviour, not agent-written assertions.",
+            "Reviewing a rendered output or API response is far cheaper than reviewing test code.",
+            "Approved fixtures become regression sensors — any behaviour change diffs visibly."
+          ],
+          "cons": [
+            "A human approval step per behaviour change — the toil returns in reduced form.",
+            "Only fits where behaviour serializes into reviewable artifacts; awkward for side effects and timing.",
+            "Fixture churn on legitimate changes can train reviewers to approve reflexively."
+          ],
+          "view": {
+            "nodes": [
+              "Dev",
+              "Spec",
+              "Agent",
+              "Repo",
+              "Hooks",
+              "CompSensors",
+              "GitHost"
+            ],
+            "links": [
+              "dev-spec",
+              "spec-agent",
+              "agent-repo",
+              "repo-hooks",
+              "hooks-comp",
+              "comp-agent",
+              "agent-githost",
+              "dev-githost"
+            ],
+            "highlight": [
+              "Spec",
+              "Dev"
+            ],
+            "caption": "Selective human approval of behaviour fixtures where artifacts are reviewable — the human checks what, not how."
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-behaviour-opt2.jpg"
+        }
+      ],
+      "whyNow": [
+        "Only after maintainability and architecture are sensor-regulated does behaviour become the binding constraint on autonomy — and the honest gap in the harness."
+      ],
+      "concepts": [
+        {
+          "term": "Behaviour harness",
+          "definition": "The guides and sensors regulating functional behaviour: spec feedforward, test-evidence feedback, and the human's approval point.",
+          "whyItMatters": "It is the tier that decides whether reduced supervision is actually safe — and today it is the least solved.",
+          "example": "Spec → implementation → fixtures → human approves the fixtures → suite becomes the regression sensor."
+        },
+        {
+          "term": "Test circularity",
+          "definition": "When the same agent writes code and tests, both encode the same understanding — including shared misunderstandings of the spec.",
+          "whyItMatters": "It caps how much trust a green AI-written suite can carry, no matter the coverage number.",
+          "example": "Agent misreads 'business days' as calendar days; code and tests agree; everything is green and wrong."
+        },
+        {
+          "term": "Approved fixtures (approval testing)",
+          "definition": "Tests that capture behaviour as human-readable artifacts which a person approves; subsequent runs diff against the approved version.",
+          "whyItMatters": "Moves the human's scarce attention from reading test code to judging observable behaviour — the thing they're actually accountable for.",
+          "example": "The checkout flow's API responses land as fixtures; the reviewer approves the JSON, not the assertions."
+        },
+        {
+          "term": "Spec fidelity",
+          "definition": "How precisely the feedforward spec pins down intended behaviour — the upstream bound on everything downstream.",
+          "whyItMatters": "Correctness is outside any sensor's remit if the human never specified what they wanted; vague specs make every sensor's job undefined.",
+          "example": "'Handle errors gracefully' vs. a table of error classes with expected user-visible outcomes."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Autonomy vs. verified intent",
+          "description": "Full automation trusts circular evidence; fixture approval restores verification but re-inserts a human step per behaviour change.",
+          "chosen": "Tiered by risk: fixtures where artifacts exist and stakes are high, automated evidence plus mutation score for low-stakes internals, explicit manual testing where neither fits."
+        },
+        {
+          "name": "Spec effort vs. iteration speed",
+          "description": "Detailed specs improve first-attempt correctness and give review agents a reference — but cost upfront effort that exploratory work resents.",
+          "chosen": "Scale fidelity to blast radius: payment flows get real specs; an internal dashboard gets a paragraph and fixture review."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Reading coverage as correctness.",
+          "why": "Coverage says code executed under tests, not that intent was verified; agents produce high-coverage hollow suites effortlessly.",
+          "instead": "Layer evidence: mutation score for suite strength, fixtures for verified behaviour, coverage only as a floor."
+        },
+        {
+          "trap": "Applying approved fixtures everywhere.",
+          "why": "Forcing side-effect-heavy or timing-dependent behaviour into fixtures produces brittle noise and reflexive approvals.",
+          "instead": "Use it selectively where behaviour serializes cleanly; be explicit that other areas remain manually tested."
+        }
+      ],
+      "probeLinks": [
+        "approvaltests",
+        "stryker",
+        "harness-engineering"
+      ],
+      "flows": [
+        {
+          "sequence": {
+            "participants": [
+              {
+                "id": "Dev",
+                "label": "Developer"
+              },
+              {
+                "id": "Spec",
+                "label": "Functional Spec"
+              },
+              {
+                "id": "Agent",
+                "label": "Coding Agent"
+              },
+              {
+                "id": "Repo",
+                "label": "Repo"
+              },
+              {
+                "id": "GitHost",
+                "label": "Git Host"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Dev",
+                "to": "Spec",
+                "arrow": "->>",
+                "label": "write spec: error classes, expected outcomes"
+              },
+              {
+                "from": "Spec",
+                "to": "Agent",
+                "arrow": "->>",
+                "label": "feedforward: functional intent"
+              },
+              {
+                "from": "Agent",
+                "to": "Repo",
+                "arrow": "->>",
+                "label": "implement + capture behaviour fixtures"
+              },
+              {
+                "from": "Agent",
+                "to": "GitHost",
+                "arrow": "->>",
+                "label": "PR: code, tests, fixture diffs"
+              },
+              {
+                "from": "Dev",
+                "to": "GitHost",
+                "arrow": "->>",
+                "label": "approve fixtures — behaviour, not test code"
+              },
+              {
+                "from": "GitHost",
+                "to": "Repo",
+                "arrow": "-->>",
+                "label": "approved fixtures become regression sensors"
+              }
+            ]
+          },
+          "name": "Spec to approved behaviour",
+          "note": "The human's attention lands on observable behaviour; the approved fixtures then guard it on every future change.",
+          "highlight": [
+            "Spec"
+          ]
+        }
+      ],
+      "recap": {
+        "before": "Functional trust rested on tests the same agent wrote — green meant consistent, not correct.",
+        "after": "Spec feeds forward; behaviour evidence is tiered — fixtures approved by humans where it matters, mutation-hardened automation elsewhere, manual testing named honestly.",
+        "newRisk": "All of this is one team's harness on one repo — scaling it across hundreds of repos and teams is its own system problem."
+      }
+    },
+    {
+      "id": "scale",
+      "title": "7. Scale: Harness Templates, Harnessability, and the Steering Loop",
+      "description": [
+        "One team can hand-craft a harness. An organization cannot hand-craft 1,500 of them. The scaling move mirrors service templates: most enterprises run a few common topologies — CRUD business service, event processor, data dashboard — and each topology can carry a harness template: a versioned bundle of guides, sensor wiring, and pipeline config that new repos instantiate on day one. Ashby's law gives the theory: a regulator must match the variety of what it governs, and an LLM can produce almost anything — committing to a topology is a variety-reduction move that makes a comprehensive harness achievable.",
+        "Harnessability now feeds back into technology choice: a strongly typed language is a free sensor, clear module boundaries afford architecture rules, opinionated frameworks shrink the space of possible mistakes. Greenfield teams can bake this in; legacy teams face the harder truth that the harness is most needed exactly where it is hardest to build — there, harness construction is the modernization work, applied incrementally to the hot paths agents actually touch.",
+        "The harness must also be observed like any production system: which sensors fire and get self-corrected, which never fire (high quality, or a dead sensor?), which defect classes escape to humans or production, whether guides and sensors contradict each other. Escapes are the steering loop's backlog — each one becomes a new guide, a new sensor, or a promoted severity, and agents themselves help build these controls cheaply.",
+        "The end state is a practice, not a artifact: templates version and evolve like the service templates before them, and the human role shifts from reviewing agent output to engineering the system that reviews agent output. A good harness doesn't aim to eliminate human input — it directs it to where it matters most."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Agent",
+          "Repo",
+          "Guides",
+          "Hooks",
+          "CompSensors",
+          "ReviewAgents",
+          "GitHost",
+          "CI",
+          "TemplateReg",
+          "HarnessHealth"
+        ],
+        "links": [
+          "dev-agent",
+          "agent-repo",
+          "guides-agent",
+          "dev-guides",
+          "repo-hooks",
+          "hooks-comp",
+          "comp-agent",
+          "hooks-review",
+          "review-agent",
+          "agent-githost",
+          "dev-githost",
+          "githost-ci",
+          "ci-comp",
+          "ci-review",
+          "ci-githost",
+          "template-repo",
+          "hooks-health",
+          "githost-health",
+          "health-dev"
+        ],
+        "highlight": [
+          "TemplateReg",
+          "HarnessHealth"
+        ],
+        "caption": "Templates stamp proven harnesses onto new repos; harness health closes the steering loop back to the humans."
+      },
+      "decisionPrompt": "A template update improves the arch-rules sensor. 300 repos instantiated v2 last year and have local modifications. How do they get the improvement — and how would you even know if a sensor silently died in half of them?",
+      "whyNow": [
+        "Per-repo harnesses have proven their value; the remaining problem is distribution, drift of the harness itself, and knowing whether it still works."
+      ],
+      "concepts": [
+        {
+          "term": "Harness template",
+          "definition": "A versioned, per-topology bundle of guides + sensors + pipeline config that repos instantiate instead of assembling controls by hand.",
+          "whyItMatters": "It is the only way harness quality compounds across an org instead of being rebuilt team by team.",
+          "example": "'event-processor-golang@v3': AGENTS.md core, arch rules, focused-test wiring, mutation config, review lenses."
+        },
+        {
+          "term": "Ashby's Law (requisite variety)",
+          "definition": "A regulator must have at least as much variety as the system it regulates, and can only regulate what it has a model of.",
+          "whyItMatters": "Explains why topology commitment works: narrowing what the agent may build is what makes a comprehensive harness possible at all.",
+          "example": "An 'anything goes' repo defeats any finite sensor set; a committed CRUD topology can be near-fully sensed."
+        },
+        {
+          "term": "Harnessability",
+          "definition": "How amenable a codebase is to harnessing: typed languages, definable module boundaries, frameworks that abstract away failure modes.",
+          "whyItMatters": "It turns harness engineering into an input for tech choices — teams may pick stacks partly for the harnesses available to them.",
+          "example": "TypeScript over untyped JS buys a free always-on sensor; hexagonal layout buys enforceable dependency rules."
+        },
+        {
+          "term": "Steering loop",
+          "definition": "The human practice of iterating on the harness: every repeated issue becomes an improved guide or sensor, with agents helping build the controls.",
+          "whyItMatters": "The harness is never done — it is an ongoing engineering practice, and escapes are its backlog.",
+          "example": "Overengineering escapes to human review twice in a month → new review lens + a 'prefer boring solutions' rule, tracked for effect."
+        },
+        {
+          "term": "Harness health",
+          "definition": "Observability over the harness itself: fire rates, self-correction rates, escape analysis, guide/sensor coherence.",
+          "whyItMatters": "A sensor that never fires is either quality or a dead check — without measurement you cannot tell, and trust silently decays.",
+          "example": "Arch-rule sensor: 0 findings in 90 days across 40 repos → canary mutation reveals the config broke in v2.1."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Template standardization vs. team autonomy",
+          "description": "Centralized templates compound improvements but instantiated copies drift with local modifications — the classic service-template versioning problem, worse with non-deterministic sensors that are harder to test.",
+          "chosen": "Templates as versioned dependencies with a thin local-override layer; template CI runs each release against a corpus of real repos before rollout."
+        },
+        {
+          "name": "Harness investment vs. delivery pressure",
+          "description": "Every hour on sensors is an hour not on features; but skipping the harness re-inflates review toil as agent usage grows.",
+          "chosen": "Prioritize by escape analysis — build the control for the defect class that most recently cost human time, not the one that is most interesting."
+        }
+      ],
+      "traps": [
+        {
+          "trap": "Interpreting silent sensors as high quality.",
+          "why": "A sensor that never fires may be dead, misconfigured, or scoped past the code that matters.",
+          "instead": "Canary the sensors: periodically inject known violations and verify they fire — mutation testing for the harness itself."
+        },
+        {
+          "trap": "Building the harness to eliminate human input.",
+          "why": "Correctness of intent is outside every sensor's remit; a human-free harness just hides where judgment was silently dropped.",
+          "instead": "Design the harness to direct human input to where it matters most — specs, fixtures, escapes — and make that destination explicit."
+        },
+        {
+          "trap": "One universal harness for all repos.",
+          "why": "Ashby's law: the variety of 'any codebase' exceeds any finite control set; the universal harness is shallow everywhere.",
+          "instead": "Per-topology templates, each deep on the narrow space its topology allows."
+        }
+      ],
+      "talkingPoints": [
+        "OpenAI's agent-first experiment — roughly a million lines of code in about five months with essentially no hand-written source — leaned on a fixed layer flow (Types → Config → Repo → Service → Runtime → UI) enforced by custom linters the agents themselves generated: topology commitment is what made the harness enforceable.",
+        "Their reported conclusion is this step's thesis: 'Our most difficult challenges now center on designing environments, feedback loops, and control systems.'"
+      ],
+      "probeLinks": [
+        "openai-harness",
+        "harness-engineering",
+        "tw-harness-podcast"
+      ],
+      "failureDrills": [
+        {
+          "scenario": "Guides and sensors contradict each other after a partial template upgrade (rule says X, linter enforces not-X).",
+          "expectedBehavior": "The agent flags the contradiction rather than looping; harness health surfaces guide/sensor incoherence as a defect.",
+          "mitigation": "Coherence checks in template CI: every guide rule maps to its sensors, and upgrades ship both sides atomically."
+        },
+        {
+          "scenario": "A popular review lens degrades after a model upgrade — precision drops from 0.9 to 0.5 silently.",
+          "expectedBehavior": "Per-lens precision tracking against human triage decisions catches the drop within days; lens auto-demotes to advisory.",
+          "mitigation": "Pin judge model versions per lens; re-benchmark lenses on a fixture corpus before adopting a new model."
+        }
+      ],
+      "recap": {
+        "before": "Each team hand-built its harness; quality didn't compound and nobody knew if controls still worked.",
+        "after": "Versioned per-topology templates, harnessability shaping tech choices, and a measured steering loop with escapes as its backlog.",
+        "newRisk": "The harness is now infrastructure with its own failure modes — coherence, template drift, and dead sensors need the same engineering seriousness as production systems."
+      },
+      "aiVisual": "assets/generated/ai-visuals/steps/08-scale.jpg"
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design — Coding Agent Harness",
+    "description": "The full outer harness as a cybernetic governor around a bought coding agent. Feedforward guides — rules, how-tos, skills, code intelligence, per-task specs — steer generation before it happens. A two-tier sensor bank — deterministic computational checks on every change, budgeted inferential review agents where semantics matter — feeds a self-correction loop, with each control placed in the lifecycle by cost and criticality: loop, pre-commit, human gate, authoritative pipeline. Continuous drift scanners and runtime telemetry cover the decay between changes via a throttled janitor fleet. Harness templates stamp proven bundles onto new repos per topology, and harness health closes the steering loop: escapes become the backlog, and human attention goes where no sensor can — intent, specs, and approved behaviour.",
+    "view": {
+      "nodes": [
+        "Dev",
+        "Agent",
+        "Repo",
+        "Guides",
+        "CodeIntel",
+        "Spec",
+        "Hooks",
+        "CompSensors",
+        "ReviewAgents",
+        "GitHost",
+        "CI",
+        "DriftAgents",
+        "Telemetry",
+        "TemplateReg",
+        "HarnessHealth"
+      ],
+      "links": [
+        "dev-agent",
+        "agent-repo",
+        "agent-githost",
+        "dev-githost",
+        "guides-agent",
+        "dev-guides",
+        "agent-codeintel",
+        "codeintel-repo",
+        "dev-spec",
+        "spec-agent",
+        "repo-hooks",
+        "hooks-comp",
+        "hooks-review",
+        "comp-agent",
+        "review-agent",
+        "githost-ci",
+        "ci-comp",
+        "ci-review",
+        "ci-githost",
+        "drift-repo",
+        "drift-githost",
+        "telemetry-drift",
+        "template-repo",
+        "hooks-health",
+        "githost-health",
+        "health-dev"
+      ],
+      "groups": [
+        "feedforward",
+        "feedback"
+      ]
+    },
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Steer the agent before it acts with org and repo context",
+        "how": "Layered guide bundle (lean always-on rules, on-demand how-tos and skills) plus computational feedforward: code intelligence, scaffolds, codemods.",
+        "steps": [
+          "guides"
+        ]
+      },
+      {
+        "requirement": "Detect defects and self-correct before human review",
+        "how": "Hook runner fires deterministic sensors on every change with LLM-optimized findings; review agents add semantic lenses; the agent fixes and re-runs until green.",
+        "steps": [
+          "sensors",
+          "review-agents"
+        ]
+      },
+      {
+        "requirement": "Distribute checks across the lifecycle and gate integration",
+        "how": "Four stations by cost and criticality — loop, pre-commit, human gate, authoritative pipeline with mutation testing and deep review; pipeline failures re-enter the self-correction loop.",
+        "steps": [
+          "lifecycle"
+        ]
+      },
+      {
+        "requirement": "Continuously detect drift and runtime decay, and remediate",
+        "how": "Scheduled computational and inferential scanners plus runtime telemetry feed a throttled janitor fleet whose cleanup PRs ride the normal gated pipeline.",
+        "steps": [
+          "drift"
+        ]
+      },
+      {
+        "requirement": "Regulate functional behaviour per task",
+        "how": "Spec fidelity scaled to blast radius feeding forward; evidence tiered feeding back — approved fixtures where artifacts exist, mutation-hardened suites elsewhere, manual testing named explicitly.",
+        "steps": [
+          "behaviour"
+        ]
+      },
+      {
+        "requirement": "Let humans steer and scale the harness across the org",
+        "how": "Escape analysis drives new guides and sensors; per-topology templates version and distribute proven harnesses; harness health verifies the controls still work.",
+        "steps": [
+          "scale"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Seconds-fast inner loop",
+        "how": "Hard time budget enforced by the hook runner; changed-file scoping and focused tests in the loop, with depth deferred to the pipeline's authoritative re-run.",
+        "steps": [
+          "sensors",
+          "lifecycle"
+        ]
+      },
+      {
+        "requirement": "Determinism where possible, budgeted non-determinism where not",
+        "how": "Computational sensors as the trusted floor on every change; inferential lenses labeled with confidence, tracked for precision, and promoted to blocking only when proven.",
+        "steps": [
+          "sensors",
+          "review-agents"
+        ]
+      },
+      {
+        "requirement": "Reduced review toil with retained human accountability",
+        "how": "Sensor-catchable classes die in the loop and pipeline; human review is redirected to intent, scope, and behaviour approval — and the merge gate stays human per risk class.",
+        "steps": [
+          "lifecycle",
+          "behaviour"
+        ]
+      },
+      {
+        "requirement": "Bounded inference cost",
+        "how": "Inferential review at PR granularity (not per edit), per-repo budgets, strong-model-low-frequency lenses, and weekly rather than nightly fleet-wide sweeps.",
+        "steps": [
+          "review-agents",
+          "drift"
+        ]
+      },
+      {
+        "requirement": "Observable, maintainable harness",
+        "how": "Sensor runs, fire rates, and escapes are first-class data; canary violations detect dead sensors; template CI checks guide/sensor coherence before rollout.",
+        "steps": [
+          "scale"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Confirm what we're designing: not a coding agent — the control system around a bought one, for a large org. Agent = Model + Harness; the vendor built the inner harness, we build the outer.",
+        "Name the two goals early: raise the probability the agent is right the first time, and self-correct as much as possible before human eyes. Review toil is the metric.",
+        "Agree out of scope: model training and fine-tuning, the agent product itself, and general platform IDP concerns beyond harness distribution."
+      ]
+    },
+    {
+      "phase": "Frame",
+      "time": "next 5 min",
+      "say": [
+        "Lay out the two axes everything hangs on: feedforward (guides) vs. feedback (sensors), and computational vs. inferential execution. Every control in the design gets classified on both.",
+        "State the baseline failure: with no harness, human review is the only sensor and it scales linearly with agent throughput."
+      ]
+    },
+    {
+      "phase": "Build",
+      "time": "core 20 min",
+      "say": [
+        "Build in trust order: guides first (cheapest win), then the computational self-correction loop, then budgeted inferential review, then lifecycle placement — keep quality left.",
+        "At each layer, say what it catches and what still escapes — the escapes motivate the next layer.",
+        "Don't skip sensor-output design: LLM-optimized failure messages are the difference between self-correction and token-burning flail."
+      ]
+    },
+    {
+      "phase": "Widen",
+      "time": "next 10 min",
+      "say": [
+        "Add the two rings change-triggered sensors can't cover: continuous drift scanning with a throttled janitor fleet, and runtime feedback (SLOs, log anomalies) flowing back to proposals.",
+        "Then the honest part: the behaviour harness. Name the test-circularity problem out loud and tier the evidence — fixtures, mutation-hardened suites, manual testing where neither fits."
+      ]
+    },
+    {
+      "phase": "Scale & close",
+      "time": "final 5 min",
+      "say": [
+        "Scale via per-topology harness templates (Ashby's law: variety reduction is what makes full regulation feasible) and harnessability as a tech-choice input.",
+        "Close on the steering loop: the harness is a practice, not a config — escapes are the backlog, harness health is the dashboard, and the human's job is directing their input to where it matters most."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Explains why raw agent + human review doesn't scale and the trust barrier behind it.",
+        "Proposes a rules file and wires linters/tests to run after agent edits.",
+        "Understands that failure output must be readable by the agent to enable self-correction."
+      ]
+    },
+    {
+      "level": "Mid-level",
+      "expectations": [
+        "Distinguishes feedforward from feedback and computational from inferential, and classifies each proposed control.",
+        "Designs the self-correction loop with a time budget and places sensors across loop vs. pipeline deliberately.",
+        "Knows why coverage is a weak signal and reaches for mutation testing."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Designs the full lifecycle with authoritative-vs-advisory runs, budgeted review lenses with precision tracking, and a throttled janitor fleet for drift.",
+        "Articulates the behaviour-harness gap honestly: test circularity, approved fixtures as a selective answer, explicit manual-testing residue.",
+        "Treats sensor-output design and context budget as first-class engineering concerns."
+      ]
+    },
+    {
+      "level": "Staff+",
+      "expectations": [
+        "Frames the whole system as a cybernetic governor and uses Ashby's law to justify topology commitment and per-topology templates.",
+        "Designs the harness as observable infrastructure: escape analysis as the steering backlog, canary violations for dead sensors, coherence checks in template CI.",
+        "Connects harnessability to technology strategy, and defines where human input should concentrate rather than aiming to eliminate it."
+      ]
+    }
+  ],
+  "followUps": [
+    "How would you A/B test whether a new guide actually changes agent behaviour, given non-determinism?",
+    "A review lens flags 30% false positives. Walk through the decision: tune, demote, or delete — and on what data?",
+    "What changes when the 'developer' steering the agent is itself an orchestrating agent — who steers the steerer?",
+    "How do you keep guides and sensors from contradicting each other as both evolve — what does 'harness coherence' mean concretely?",
+    "If sensors never fire for a month, how do you distinguish excellent code from a dead harness?",
+    "How would you design harness coverage metrics — the analogue of code coverage and mutation score, but for the harness itself?",
+    "Legacy monolith, no types, no module boundaries, heavy agent usage planned. Sequence the first 90 days of harness construction.",
+    "Where does responsibility land when an auto-merged janitor PR causes an incident — and what does that imply for auto-merge classes?"
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "harness-engineering",
+        "group": "The Mental Model",
+        "groupDescription": "The harness-engineering framing this interview is built on.",
+        "title": "Harness engineering for coding agent users",
+        "url": "https://martinfowler.com/articles/harness-engineering.html",
+        "source": "Birgitta Böckeler, martinfowler.com",
+        "type": "Article",
+        "why": "The source mental model: feedforward guides vs. feedback sensors, computational vs. inferential controls, regulation categories, harnessability, harness templates, and the steering loop."
+      },
+      {
+        "id": "tw-harness-podcast",
+        "group": "The Mental Model",
+        "groupDescription": "The harness-engineering framing this interview is built on.",
+        "title": "What is harness engineering?",
+        "url": "https://www.thoughtworks.com/insights/podcasts/technology-podcasts/what-harness-engineering",
+        "source": "Thoughtworks Technology Podcast",
+        "type": "Podcast",
+        "why": "Conversational tour of the same model — useful for hearing how practitioners argue about where the harness ends and the agent begins."
+      },
+      {
+        "id": "openai-harness",
+        "group": "Harnesses in the Wild",
+        "groupDescription": "Published accounts of real outer harnesses at scale.",
+        "title": "Harness engineering: leveraging Codex in an agent-first world",
+        "url": "https://openai.com/index/harness-engineering/",
+        "source": "OpenAI",
+        "type": "Article",
+        "why": "An agent-first codebase (~1M LOC) governed by a fixed layer topology, custom linters whose messages double as fix instructions, and scheduled 'garbage collection' drift scans."
+      },
+      {
+        "id": "infoq-openai-harness",
+        "group": "Harnesses in the Wild",
+        "groupDescription": "Published accounts of real outer harnesses at scale.",
+        "title": "OpenAI's harness engineering experiment (coverage)",
+        "url": "https://www.infoq.com/news/2026/02/openai-harness-engineering-codex/",
+        "source": "InfoQ",
+        "type": "News",
+        "why": "Independent summary of the OpenAI write-up — the layered dependency rules, structural tests, and continuous refactoring PRs."
+      },
+      {
+        "id": "stripe-minions",
+        "group": "Harnesses in the Wild",
+        "groupDescription": "Published accounts of real outer harnesses at scale.",
+        "title": "How Stripe's Minions ship 1,300 PRs a week",
+        "url": "https://blog.bytebytego.com/p/how-stripes-minions-ship-1300-prs",
+        "source": "ByteByteGo",
+        "type": "Analysis",
+        "why": "Blueprints alternating deterministic and agentic steps, pre-push hooks with precomputed lint scopes, selective CI over millions of tests, and a two-round fix cap."
+      },
+      {
+        "id": "copilot-coding-agent",
+        "group": "Agent Mechanisms",
+        "groupDescription": "The agent-side features an outer harness attaches to.",
+        "title": "About GitHub Copilot coding agent",
+        "url": "https://docs.github.com/copilot/concepts/agents/coding-agent/about-coding-agent",
+        "source": "GitHub Docs",
+        "type": "Docs",
+        "why": "A hosted agent whose whole execution environment is CI: ephemeral Actions runners, draft PRs, and a customizable setup step — lifecycle placement made literal."
+      },
+      {
+        "id": "claude-code-works",
+        "group": "Agent Mechanisms",
+        "groupDescription": "The agent-side features an outer harness attaches to.",
+        "title": "How Claude Code works",
+        "url": "https://code.claude.com/docs/en/how-claude-code-works",
+        "source": "Claude Code Docs",
+        "type": "Docs",
+        "why": "The inner harness being wrapped: the gather-context, take-action, verify loop plus the hook, skill, subagent, and permission surfaces an outer harness builds on."
+      },
+      {
+        "id": "agents-md",
+        "group": "Agent Mechanisms",
+        "groupDescription": "The agent-side features an outer harness attaches to.",
+        "title": "AGENTS.md",
+        "url": "https://agents.md/",
+        "source": "agents.md",
+        "type": "Spec",
+        "why": "The cross-vendor convention for repo rules files — the lowest-common-denominator feedforward guide."
+      },
+      {
+        "id": "archunit",
+        "group": "Sensor Tooling",
+        "groupDescription": "Off-the-shelf computational sensors worth knowing by name.",
+        "title": "ArchUnit",
+        "url": "https://github.com/TNG/ArchUnit",
+        "source": "TNG",
+        "type": "Repository",
+        "why": "Architecture rules as unit tests for the JVM — the canonical structural-test sensor for layering and dependency direction."
+      },
+      {
+        "id": "dependency-cruiser",
+        "group": "Sensor Tooling",
+        "groupDescription": "Off-the-shelf computational sensors worth knowing by name.",
+        "title": "dependency-cruiser",
+        "url": "https://github.com/sverweij/dependency-cruiser",
+        "source": "sverweij",
+        "type": "Repository",
+        "why": "The JS/TS equivalent: validate and visualize dependency rules — a cheap, deterministic architecture-drift sensor."
+      },
+      {
+        "id": "stryker",
+        "group": "Sensor Tooling",
+        "groupDescription": "Off-the-shelf computational sensors worth knowing by name.",
+        "title": "Stryker Mutator",
+        "url": "https://stryker-mutator.io/",
+        "source": "Stryker",
+        "type": "Docs",
+        "why": "Mutation testing for JS/TS, .NET, and Scala — the computational sensor for whether AI-written tests can fail at all."
+      },
+      {
+        "id": "approvaltests",
+        "group": "Sensor Tooling",
+        "groupDescription": "Off-the-shelf computational sensors worth knowing by name.",
+        "title": "ApprovalTests",
+        "url": "https://approvaltests.com/",
+        "source": "ApprovalTests",
+        "type": "Docs",
+        "why": "The approved-fixtures pattern in library form: capture behaviour as human-reviewable artifacts and diff against the approved version."
+      }
+    ]
+  },
+  "technologyChoices": [
+    {
+      "concern": "Rules files and guide distribution",
+      "steps": [
+        "guides"
+      ],
+      "selfHosted": [
+        {
+          "name": "AGENTS.md",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "CLAUDE.md",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Git",
+          "icon": "assets/tech-icons/github.png"
+        },
+        {
+          "name": "Backstage",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CodeCatalyst",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Source Repositories",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Repos",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Checked-in guides version with the code and travel with every clone; a central guide service adds consistency but decouples guides from the commit that needed them.",
+        "Convention: guides live in the repo; the registry (templates) distributes them, it doesn't serve them at runtime."
+      ],
+      "makesIrrelevant": [
+        "A repo-native guide bundle removes the need for a separate runtime 'context service' for agent instructions."
+      ]
+    },
+    {
+      "concern": "Static analysis, lint, and architecture rules (computational sensors)",
+      "steps": [
+        "sensors"
+      ],
+      "selfHosted": [
+        {
+          "name": "ESLint",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Ruff",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "mypy",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "TypeScript",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "ArchUnit",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "dependency-cruiser",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Semgrep",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "SonarQube",
+          "icon": "assets/tech-icons/sonarqube.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CodeGuru Reviewer",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Gemini Code Assist",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "GitHub Advanced Security",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Custom rules (Semgrep, ArchUnit) encode your conventions exactly and emit LLM-optimized messages; managed scanners are broad but generic and their output is written for humans.",
+        "Every rule you can express computationally is one you stop paying inference or human attention for."
+      ],
+      "makesIrrelevant": [
+        "Strong typing plus arch rules make a whole class of inferential 'does this belong here' review unnecessary."
+      ]
+    },
+    {
+      "concern": "Review agents and LLM-as-judge inference",
+      "steps": [
+        "review-agents"
+      ],
+      "selfHosted": [
+        {
+          "name": "Claude Code",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "OpenAI Codex",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "vLLM",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Ollama",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Bedrock",
+            "icon": "assets/tech-icons/Arch_Amazon-Bedrock_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Vertex AI",
+            "icon": "assets/tech-icons/AIMachineLearning-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure OpenAI",
+            "icon": "assets/tech-icons/03438-icon-service-Azure-OpenAI.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Vendor agent CLIs in review mode are the fastest path to review lenses; API-direct judges give tighter prompt and version control for precision tracking.",
+        "Self-hosted models keep diffs in-house but judge quality is the point — a weak local judge defeats the tier's purpose."
+      ],
+      "makesIrrelevant": [
+        "A good per-lens judge with precision tracking removes the need for humans to re-review the sensor-covered defect classes."
+      ]
+    },
+    {
+      "concern": "CI pipeline and post-integration sensors",
+      "steps": [
+        "lifecycle"
+      ],
+      "selfHosted": [
+        {
+          "name": "Jenkins",
+          "icon": "assets/tech-icons/jenkins.png"
+        },
+        {
+          "name": "GitLab CI",
+          "icon": "assets/tech-icons/gitlab.png"
+        },
+        {
+          "name": "GitHub Actions",
+          "icon": "assets/tech-icons/github-actions.png"
+        },
+        {
+          "name": "Buildkite",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CodeBuild",
+            "icon": "assets/tech-icons/Arch_AWS-CodeBuild_64.png"
+          },
+          {
+            "name": "CodePipeline",
+            "icon": "assets/tech-icons/Arch_AWS-CodePipeline_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Build",
+            "icon": "assets/tech-icons/DevOps-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Pipelines",
+            "icon": "assets/tech-icons/03393-icon-service-Managed-DevOps-Pools.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "The pipeline is the authoritative gate, so its sensors must exactly mirror the loop's (same versions, same configs) — pipeline-as-code with shared sensor definitions, not parallel implementations.",
+        "Managed CI removes runner operations; self-hosted runners keep source and tokens inside the boundary."
+      ],
+      "makesIrrelevant": [
+        "An agent that fixes pipeline failures autonomously removes most 'babysit the red build' toil."
+      ]
+    },
+    {
+      "concern": "Mutation and approval testing",
+      "steps": [
+        "lifecycle",
+        "behaviour"
+      ],
+      "selfHosted": [
+        {
+          "name": "Stryker",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "PIT",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "mutmut",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "ApprovalTests",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Verify",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CodeBuild",
+            "icon": "assets/tech-icons/Arch_AWS-CodeBuild_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Build",
+            "icon": "assets/tech-icons/DevOps-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Pipelines",
+            "icon": "assets/tech-icons/03393-icon-service-Managed-DevOps-Pools.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Mutation testing is compute-hungry — run it post-integration or nightly with changed-file scoping, never in the inner loop.",
+        "Approval-testing frameworks need fixture-diff review UX in the PR flow to avoid reflexive approvals."
+      ],
+      "makesIrrelevant": [
+        "A tracked mutation score makes raw coverage thresholds mostly ceremonial."
+      ]
+    },
+    {
+      "concern": "Drift scanning, janitor scheduling, and dependency hygiene",
+      "steps": [
+        "drift"
+      ],
+      "selfHosted": [
+        {
+          "name": "Renovate",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Dependabot",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Knip",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Vulture",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Airflow",
+          "icon": "assets/tech-icons/airflow.png"
+        },
+        {
+          "name": "cron",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "EventBridge Scheduler",
+            "icon": "assets/tech-icons/Arch_Amazon-EventBridge_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Scheduler",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Logic Apps",
+            "icon": "assets/tech-icons/10363-icon-service-Logic-Apps-Custom-Connector.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Dependency bots are mature; the newer piece is agentic remediation of the other scanners' findings — dead code and coverage quality — throttled to review capacity.",
+        "Scheduling is trivial; prioritization and throttling policy are the real design surface."
+      ],
+      "makesIrrelevant": [
+        "A working janitor fleet retires the quarterly 'tech-debt sprint' as the primary maintenance mechanism."
+      ]
+    },
+    {
+      "concern": "Telemetry and harness health",
+      "steps": [
+        "drift",
+        "scale"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "OpenTelemetry",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Harness health is ordinary telemetry over sensor_runs and escapes — reuse the org's observability stack rather than building a bespoke one.",
+        "The novel signals are per-lens precision against human triage and canary-violation results; both need a small amount of custom instrumentation."
+      ],
+      "makesIrrelevant": [
+        "Escape analysis with real data replaces opinion-driven debates about which harness investment comes next."
+      ]
+    }
+  ],
+  "assets": {
+    "icon": "icon.png"
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
+}

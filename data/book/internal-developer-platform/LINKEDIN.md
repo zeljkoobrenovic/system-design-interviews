@@ -15,12 +15,12 @@ Concrete trade-offs follow: portal vs. platform, GitOps vs. progressive delivery
 The final design is a five-plane platform: developer control plane, integration and delivery, resource plane, observability, and security. Useful practice for discussing developer experience without hiding the distributed systems underneath.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#internal-developer-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#internal-developer-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #PlatformEngineering

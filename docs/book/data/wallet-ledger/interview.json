@@ -603,7 +603,7 @@
     },
     {
       "name": "account_balances",
-      "note": "Derived, materialized balance per (account, currency) for fast reads. Durable table, rebuildable from the journal. available = posted - held; withdrawals/transfers check available, not posted.",
+      "note": "Derived, materialized balance per (account, currency) for fast reads. Durable table, rebuildable from the journal. available = posted - held; withdrawals/transfers check available, not posted. PRIMARY KEY (account_id, currency).",
       "fields": [
         {
           "name": "account_id",
@@ -632,10 +632,6 @@
         {
           "name": "last_entry_id",
           "type": "bigint (watermark)"
-        },
-        {
-          "name": "_pk",
-          "type": "PRIMARY KEY (account_id, currency)"
         }
       ]
     },
@@ -683,7 +679,7 @@
     },
     {
       "name": "idempotency_keys",
-      "note": "Dedup table: a scoped request key + request hash -> its committed result. Key scope is (tenant_id, client_id, account_id, operation, idempotency_key) — a global key would collide across tenants. Reusing a key with a different request_hash returns 409 idempotency_key_reused_with_different_request. Retained at least as long as the client retry + dispute/settlement window; older rows TTL-pruned.",
+      "note": "Dedup table: a scoped request key + request hash -> its committed result. Key scope is (tenant_id, client_id, account_id, operation, idempotency_key) — a global key would collide across tenants. Reusing a key with a different request_hash returns 409 idempotency_key_reused_with_different_request. Retained at least as long as the client retry + dispute/settlement window; older rows TTL-pruned. PRIMARY KEY (scope, idempotency_key).",
       "fields": [
         {
           "name": "scope",
@@ -712,10 +708,6 @@
         {
           "name": "expires_at",
           "type": "timestamp (TTL >= retry/dispute window)"
-        },
-        {
-          "name": "_pk",
-          "type": "PRIMARY KEY (scope, idempotency_key)"
         }
       ]
     },

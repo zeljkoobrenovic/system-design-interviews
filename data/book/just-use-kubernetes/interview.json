@@ -1,0 +1,2689 @@
+{
+  "title": "Just Use Kubernetes — Orchestration-Centric Systems Design",
+  "description": "Design the runtime platform for a B2B SaaS company — 20 microservices across 4 teams, async workers, nightly batch, GPU jobs, and 30 deploys a day — on one Kubernetes platform. The organizing idea: every operational need maps to the same mechanism, a declarative desired state converged by a reconciliation loop — Deployments and Services for stateless serving, probes and resource requests for production shape, HPA/KEDA plus the cluster autoscaler for elasticity, StatefulSets and operators for in-cluster state, Jobs and CronJobs for batch, namespaces/RBAC/quotas for tenancy, and GitOps as the same loop one level up — while staying honest about the YAML tax and the workloads that belong outside the cluster.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Dev",
+        "label": "Engineer (ships via Git)",
+        "type": "actor",
+        "category": "boundary",
+        "traits": [],
+        "description": "Application engineers: merge a PR, watch the rollout — never SSH, never kubectl edit."
+      },
+      {
+        "id": "Client",
+        "label": "End Users",
+        "type": "client",
+        "category": "boundary",
+        "traits": [],
+        "description": "Customers of the SaaS product hitting the web app and APIs."
+      },
+      {
+        "id": "LB",
+        "label": "Cloud Load Balancer",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Provisioned by the platform (Service type LoadBalancer / Gateway); the stable entry point in front of ingress."
+      },
+      {
+        "id": "Ingress",
+        "label": "Ingress / Gateway",
+        "type": "gateway",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Host/path routing, TLS termination, per-route policies — the cluster's HTTP front door, itself just pods."
+      },
+      {
+        "id": "Web",
+        "label": "Web / API Services (Deployments)",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Stateless serving workloads: Deployment-managed replica sets behind Services, rolled out with surge/readiness gating."
+      },
+      {
+        "id": "Workers",
+        "label": "Async Workers (KEDA-scaled)",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Queue consumers scaled on backlog depth — including to zero — with idempotent, at-least-once processing."
+      },
+      {
+        "id": "Batch",
+        "label": "Jobs & CronJobs",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Run-to-completion work: nightly reports, backfills, GPU training runs — parallelism, retries, and schedules as fields."
+      },
+      {
+        "id": "CP",
+        "label": "Control Plane (API server, etcd, controllers, scheduler)",
+        "type": "orchestrator",
+        "category": "compute",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The cluster's brain: desired state in etcd behind the API server; controllers and the scheduler run the observe-diff-act loop forever."
+      },
+      {
+        "id": "Nodes",
+        "label": "Node Pools + Cluster Autoscaler",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Interchangeable machines (kubelet) in role-shaped pools — general, spot/batch, tainted GPU — grown and shrunk by the autoscaler on pending pods."
+      },
+      {
+        "id": "Registry",
+        "label": "Image Registry (OCI)",
+        "type": "external",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Immutable, digest-addressed container images — the artifact store nodes pull from; tags are for humans, digests are for deploys."
+      },
+      {
+        "id": "Git",
+        "label": "Git (desired state)",
+        "type": "external",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The repository holding every manifest: the single source of desired state, changed only by reviewed PRs."
+      },
+      {
+        "id": "CD",
+        "label": "GitOps Controller (Argo-style)",
+        "type": "service",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Watches Git, applies manifests, and reverts drift — the reconciliation pattern applied to the cluster itself."
+      },
+      {
+        "id": "Queue",
+        "label": "Work Queue (managed broker)",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The job backlog living outside the cluster; its depth is the scaling signal for the worker fleet."
+      },
+      {
+        "id": "Stateful",
+        "label": "In-Cluster Stateful (operator-run)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Redis/Kafka-class systems run by operators: CRDs plus controllers encoding provisioning, failover, and backup as code."
+      },
+      {
+        "id": "DB",
+        "label": "Managed Database (outside the cluster)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "The money database, deliberately not in the cluster: durability, failover, and PITR bought as a service."
+      },
+      {
+        "id": "Obs",
+        "label": "Observability (metrics, logs, traces)",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Prometheus-style metrics (pods, nodes, control plane, kube-state), logs, traces — also the source of autoscaler signals."
+      }
+    ],
+    "links": [
+      {
+        "id": "client-lb",
+        "from": "Client",
+        "to": "LB",
+        "label": "HTTPS"
+      },
+      {
+        "id": "lb-ingress",
+        "from": "LB",
+        "to": "Ingress",
+        "label": "forward to ingress pods"
+      },
+      {
+        "id": "ingress-web",
+        "from": "Ingress",
+        "to": "Web",
+        "label": "host/path route (Service)"
+      },
+      {
+        "id": "web-db",
+        "from": "Web",
+        "to": "DB",
+        "label": "SQL (outside the cluster)"
+      },
+      {
+        "id": "web-queue",
+        "from": "Web",
+        "to": "Queue",
+        "label": "enqueue background work"
+      },
+      {
+        "id": "workers-queue",
+        "from": "Workers",
+        "to": "Queue",
+        "label": "consume + ack (depth drives KEDA)"
+      },
+      {
+        "id": "workers-db",
+        "from": "Workers",
+        "to": "DB",
+        "label": "job side effects"
+      },
+      {
+        "id": "workers-stateful",
+        "from": "Workers",
+        "to": "Stateful",
+        "label": "cache / stream ops"
+      },
+      {
+        "id": "batch-db",
+        "from": "Batch",
+        "to": "DB",
+        "label": "reports read/write"
+      },
+      {
+        "id": "dev-git",
+        "from": "Dev",
+        "to": "Git",
+        "label": "PR merge = deploy"
+      },
+      {
+        "id": "cd-git",
+        "from": "CD",
+        "to": "Git",
+        "label": "watch desired state"
+      },
+      {
+        "id": "cd-cp",
+        "from": "CD",
+        "to": "CP",
+        "label": "apply manifests (and revert drift)"
+      },
+      {
+        "id": "cp-web",
+        "from": "CP",
+        "to": "Web",
+        "label": "reconcile Deployment -> ReplicaSet -> Pods"
+      },
+      {
+        "id": "cp-workers",
+        "from": "CP",
+        "to": "Workers",
+        "label": "reconcile ScaledObject / replicas"
+      },
+      {
+        "id": "cp-batch",
+        "from": "CP",
+        "to": "Batch",
+        "label": "schedule Jobs to completion"
+      },
+      {
+        "id": "cp-nodes",
+        "from": "CP",
+        "to": "Nodes",
+        "label": "bind pods; grow/shrink pools on pending"
+      },
+      {
+        "id": "nodes-registry",
+        "from": "Nodes",
+        "to": "Registry",
+        "label": "pull images by digest"
+      },
+      {
+        "id": "web-obs",
+        "from": "Web",
+        "to": "Obs",
+        "label": "metrics, logs, traces"
+      },
+      {
+        "id": "cp-obs",
+        "from": "CP",
+        "to": "Obs",
+        "label": "control-plane + kube-state metrics"
+      },
+      {
+        "id": "obs-cp",
+        "from": "Obs",
+        "to": "CP",
+        "label": "metrics feed HPA / KEDA decisions"
+      }
+    ],
+    "types": [
+      {
+        "id": "workloads",
+        "label": "Workloads",
+        "nodes": [
+          "Web",
+          "Workers",
+          "Batch",
+          "Stateful"
+        ]
+      },
+      {
+        "id": "platform",
+        "label": "Cluster Platform",
+        "nodes": [
+          "CP",
+          "Nodes",
+          "Ingress",
+          "CD"
+        ]
+      },
+      {
+        "id": "outside",
+        "label": "Outside the Cluster",
+        "nodes": [
+          "Git",
+          "Registry",
+          "DB",
+          "Queue"
+        ]
+      },
+      {
+        "id": "ops",
+        "label": "Observability",
+        "nodes": [
+          "Obs"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  Team[4 teams, 20 services]",
+    "  Ship[Ship 30x/day safely]",
+    "  Serve[Serve APIs + web]",
+    "  Async[Workers + queues]",
+    "  BatchR[Nightly batch + GPU]",
+    "  Tenant[Team isolation]",
+    "  Team --> Ship",
+    "  Ship --> Serve",
+    "  Serve --> Async",
+    "  Async --> BatchR",
+    "  Team --> Tenant"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  P[Pods 400 -> 1200 peak]",
+    "  N[Nodes 30 -> 80 autoscaled]",
+    "  Dep[Deploys ~30/day]",
+    "  Q[Queue peak 5k msg/s]",
+    "  K8s[One platform, many pools]",
+    "  P --> K8s",
+    "  N --> K8s",
+    "  Dep --> K8s",
+    "  Q --> K8s"
+  ],
+  "requirements": {
+    "functional": [
+      "Run 20 stateless web/API services with zero-downtime deploys, ~30 times a day, by PR merge.",
+      "Scale request-driven services on load and queue-driven workers on backlog — including to zero overnight.",
+      "Run scheduled and on-demand batch: nightly reports, backfills, GPU training — with retries and no overlapping runs.",
+      "Give 4 teams isolated, quota'd, least-privilege slices of one platform.",
+      "Self-heal: a crashed process, a dead node, or a bad deploy recovers without a human.",
+      "Roll back any change — application or platform config — as fast as reverting a commit."
+    ],
+    "nonFunctional": [
+      "Declarative everything: the cluster's entire desired state lives in Git; drift is detected and reverted.",
+      "Voluntary disruptions (deploys, node upgrades, autoscaler scale-down) never breach availability budgets (PDBs).",
+      "Efficient by design: requests-based bin-packing, spot capacity for batch, scale-to-zero where idle.",
+      "Upgradable: the cluster tracks supported Kubernetes versions with rehearsed, surge-based node rollouts.",
+      "Secure by default: RBAC least privilege, default-deny network policies, admission-enforced standards, digest-pinned images.",
+      "Honest boundaries: the money database and the queue live outside; the platform is judged against a PaaS, not assumed."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Services / teams",
+      "value": "20 services, 4 teams",
+      "note": "Each service: a Deployment, a Service, an HPA, and namespace-scoped RBAC — the paved road is identical for all 20."
+    },
+    {
+      "label": "Pods",
+      "value": "~400 steady, ~1,200 peak",
+      "note": "Web replicas scale on load, workers on queue depth (2 -> 40), batch bursts nightly. The scheduler bin-packs by requests."
+    },
+    {
+      "label": "Nodes",
+      "value": "~30 steady -> ~80 peak",
+      "note": "16 vCPU / 64 GB general pool + spot pool for batch + 4 tainted GPU nodes; the cluster autoscaler adds nodes on pending pods, drains on idle."
+    },
+    {
+      "label": "Deploys",
+      "value": "~30/day",
+      "note": "Every deploy is a Git commit: new image digest -> rolling update with surge 25% / readiness gating; rollback is git revert."
+    },
+    {
+      "label": "Requests-based utilization",
+      "value": "target ~60%",
+      "note": "Requests drive scheduling; the gap between requests and real usage is the platform's efficiency budget — measured, not guessed."
+    },
+    {
+      "label": "Queue peak",
+      "value": "~5,000 msg/s",
+      "note": "KEDA scales workers on backlog and to zero at night; the broker itself stays a managed service outside the cluster."
+    },
+    {
+      "label": "Batch envelope",
+      "value": "~500 vCPU-hours/night",
+      "note": "Jobs with parallelism 10–50 on the spot pool; preemption and priorities keep serving workloads untouched."
+    },
+    {
+      "label": "Control plane objects",
+      "value": "~5k live objects",
+      "note": "Well inside managed-control-plane comfort; etcd object count and watch volume are the platform-scale metrics to watch at 10x."
+    },
+    {
+      "label": "Disruption budget",
+      "value": "min 80% ready per service",
+      "note": "PDBs make node drains and upgrades throttle themselves; a 30-node upgrade proceeds pool-by-pool without a user-visible dip."
+    },
+    {
+      "label": "Version cadence",
+      "value": "quarterly minor upgrades",
+      "note": "Three supported minors upstream — a cluster that skips a year is an incident scheduled for later; rehearse on staging, surge on prod."
+    }
+  ],
+  "api": [
+    {
+      "method": "MERGE",
+      "path": "PR into main (deploy)",
+      "description": "The platform's real deploy API is Git: a PR bumps the image digest; the GitOps controller applies it; the Deployment controller rolls it out gated by readiness.",
+      "request": "deployment.yaml: image: registry/app@sha256:9f2c... (was @sha256:1a07...)",
+      "response": "Rollout: 12/12 updated, 0 unavailable — or automatic stall with old pods still serving",
+      "sequence": {
+        "participants": [
+          {
+            "id": "Dev"
+          },
+          {
+            "id": "Git"
+          },
+          {
+            "id": "CD",
+            "label": "GitOps"
+          },
+          {
+            "id": "CP",
+            "label": "control plane"
+          },
+          {
+            "id": "Web",
+            "label": "pods"
+          }
+        ],
+        "messages": [
+          {
+            "from": "Dev",
+            "to": "Git",
+            "arrow": "->>",
+            "label": "merge PR (new image digest)"
+          },
+          {
+            "from": "CD",
+            "to": "Git",
+            "arrow": "->>",
+            "label": "detect change"
+          },
+          {
+            "from": "CD",
+            "to": "CP",
+            "arrow": "->>",
+            "label": "apply Deployment v2"
+          },
+          {
+            "from": "CP",
+            "to": "Web",
+            "arrow": "->>",
+            "label": "surge new pods; readiness gates traffic"
+          },
+          {
+            "from": "CP",
+            "to": "Web",
+            "arrow": "->>",
+            "label": "scale down old ReplicaSet"
+          },
+          {
+            "from": "CP",
+            "to": "CD",
+            "arrow": "-->>",
+            "label": "status: Healthy / Progressing / Degraded"
+          }
+        ]
+      }
+    },
+    {
+      "method": "REVERT",
+      "path": "git revert (rollback)",
+      "description": "Rollback is the same mechanism in reverse: revert the commit, the controller applies the old digest, the rollout machinery does the rest.",
+      "request": "git revert abc123 && git push",
+      "response": "Previous ReplicaSet scaled back up; bad version drained"
+    },
+    {
+      "method": "APPLY",
+      "path": "ScaledObject / HPA (scaling policy)",
+      "description": "Scaling is configuration, not runbooks: request-driven services declare HPA targets; queue-driven workers declare KEDA triggers with scale-to-zero.",
+      "request": "keda: queueLength target 100, minReplicas 0, maxReplicas 40",
+      "response": "Workers 0 -> 40 with backlog; back to 0 when drained"
+    },
+    {
+      "method": "APPLY",
+      "path": "Job / CronJob (batch)",
+      "description": "Run-to-completion work as objects: parallelism, retries (backoffLimit), schedules, and concurrency policy are fields — not a cron tab on a forgotten VM.",
+      "request": "cronjob: schedule '0 2 * * *', concurrencyPolicy: Forbid, parallelism: 10",
+      "response": "Job completions 10/10; failed pods retried with backoff; TTL cleans up"
+    },
+    {
+      "method": "GET",
+      "path": "kubectl get / describe / logs (read-only humans)",
+      "description": "Humans observe; controllers act. Read access is broad, write access belongs to the GitOps pipeline — kubectl edit in prod is the anti-API.",
+      "request": "kubectl -n team-a get pods; kubectl describe pod api-7f9c...",
+      "response": "State, events, and logs — the debugging surface"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "Deployment (per service)",
+      "note": "The workhorse manifest: desired replicas, the pod template, and the rollout strategy. The controller chain is Deployment -> ReplicaSet -> Pods, each level reconciled independently.",
+      "fields": [
+        {
+          "name": "replicas",
+          "type": "int (HPA-managed at runtime)"
+        },
+        {
+          "name": "strategy",
+          "type": "RollingUpdate (maxSurge 25%, maxUnavailable 0)"
+        },
+        {
+          "name": "image",
+          "type": "registry/app@sha256:... (digest-pinned)"
+        },
+        {
+          "name": "probes",
+          "type": "readiness (gate traffic) + liveness (deadlock only) + startup"
+        },
+        {
+          "name": "resources",
+          "type": "requests (scheduling) + limits (caps) -> QoS class"
+        },
+        {
+          "name": "labels",
+          "type": "app, team, version — the selector glue"
+        }
+      ]
+    },
+    {
+      "name": "Service + Ingress route",
+      "note": "A Service gives a stable virtual IP and endpoint set over ever-changing pods (selected by labels); Ingress maps external hosts/paths onto Services.",
+      "fields": [
+        {
+          "name": "selector",
+          "type": "label query (app=api)"
+        },
+        {
+          "name": "endpoints",
+          "type": "ready pod IPs (readiness-gated)"
+        },
+        {
+          "name": "ingress rule",
+          "type": "host api.example.com -> service api:8080, TLS"
+        }
+      ]
+    },
+    {
+      "name": "ScaledObject / HPA (scaling policy)",
+      "note": "Autoscaling as declared policy: what signal, what target, what bounds, how fast — including scale-to-zero for queue workers via KEDA.",
+      "fields": [
+        {
+          "name": "signal",
+          "type": "cpu 70% | p95 latency | queue depth"
+        },
+        {
+          "name": "bounds",
+          "type": "min/max replicas (0..40 for workers)"
+        },
+        {
+          "name": "behavior",
+          "type": "stabilization windows (no flapping)"
+        }
+      ]
+    },
+    {
+      "name": "Job / CronJob",
+      "note": "Batch semantics as fields. Jobs are at-least-once (retries) — handlers stay idempotent, the same contract as every queue in this catalog.",
+      "fields": [
+        {
+          "name": "parallelism / completions",
+          "type": "int / int"
+        },
+        {
+          "name": "backoffLimit",
+          "type": "retries before Failed"
+        },
+        {
+          "name": "schedule",
+          "type": "cron expr (CronJob)"
+        },
+        {
+          "name": "concurrencyPolicy",
+          "type": "Forbid | Replace (never default Allow for stateful work)"
+        },
+        {
+          "name": "tolerations / nodeSelector",
+          "type": "GPU taints, spot pool targeting"
+        }
+      ]
+    },
+    {
+      "name": "Namespace + guardrails (per team)",
+      "note": "The tenancy unit: RBAC scoped to the namespace, ResourceQuota capping the team's slice, LimitRange defaulting sane requests, NetworkPolicy default-deny.",
+      "fields": [
+        {
+          "name": "rbac",
+          "type": "team group -> namespace-scoped roles (no cluster-admin)"
+        },
+        {
+          "name": "quota",
+          "type": "cpu/mem requests+limits, PVC count, LB count"
+        },
+        {
+          "name": "netpol",
+          "type": "default-deny ingress; allow from ingress + own namespace"
+        },
+        {
+          "name": "admission",
+          "type": "required probes/requests, no :latest, digest pinning"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: Pet VMs and deploy.sh (the baseline)",
+      "description": [
+        "Start where every company starts: a VM per service, provisioned by hand and named after Greek gods. Deploys are a bash script that SSHes in, copies a build, restarts the process, and hopes. Nginx configs are edited in place. Cron jobs live on 'the utilities box'. Scaling is a capacity ticket and a weekend.",
+        "The failure modes compound. Snowflake drift: after a year of hand-edits no two servers match, and nobody can rebuild one from scratch. Deploys are scary: partial failures leave mixed versions, rollback is archaeology, so releases get rarer and bigger and scarier. Nothing self-heals: a crashed process or a dead disk is a 2 a.m. page, not a non-event. Utilization is terrible — every service gets a whole VM 'to be safe' — and the ops knowledge lives in three heads.",
+        "The fix is not better scripts. It's changing the interface: package every service as an immutable container image, then stop telling machines what to do and start declaring what should be true — 'twelve replicas of api@sha256:..., behind this address, with these resources' — and let a control loop make it true and keep it true. That loop, and the platform built from it, is the rest of this interview."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Client",
+          "LB",
+          "Web",
+          "DB"
+        ],
+        "links": [
+          "client-lb",
+          "web-db"
+        ],
+        "caption": "Hand-built VMs behind a hand-edited load balancer; deploys by SSH; recovery by pager.",
+        "highlight": [
+          "Web"
+        ]
+      },
+      "decisionPrompt": "Count what's implicit in this setup: which server runs what, which version is where, what restarts on failure, what capacity exists. Who or what holds each of those facts — and what happens when they leave?",
+      "whyNow": [
+        "Every Kubernetes mechanism in the later steps replaces a specific named pathology here — drift, deploy fear, no self-healing, waste — so the pathologies are worth stating precisely."
+      ],
+      "probeLinks": [
+        "borg-paper",
+        "k8s-hard-way"
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "Everything runs — on snowflake VMs, deployed by SSH, healed by humans.",
+        "newRisk": "Drift makes servers unrebuildable, deploys get scarier as they get bigger, and every failure is a page because nothing converges on its own."
+      },
+      "traps": [
+        {
+          "trap": "Stopping at docker-compose on a big VM.",
+          "why": "Containers fix packaging but not orchestration: one host is one blast radius, there's no self-healing or rolling deploys, and 'add a machine' reintroduces every manual problem.",
+          "instead": "Containers plus a declarative orchestrator — the packaging and the control loop are two halves of one fix."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Familiar imperative ops vs. declarative platform",
+          "description": "SSH-and-script is zero learning curve and total freedom; a declarative platform demands upfront investment (containers, manifests, a new mental model) before it pays out in self-healing, repeatability, and deploy safety.",
+          "chosen": "The design pays the learning cost once, platform-wide — 20 services and 30 deploys a day make the imperative model's marginal cost unbounded."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+    },
+    {
+      "id": "contract",
+      "title": "2. The Core Contract — Desired State and Reconciliation",
+      "description": [
+        "Kubernetes is one idea applied everywhere: you write desired state to an API (stored in etcd), and controllers run an endless observe-diff-act loop until reality matches — then keep watching. Everything else is this pattern wearing different clothes.",
+        "The workload chain: a Deployment declares 'twelve replicas of this pod template'; its controller manages ReplicaSets (one per template version); the ReplicaSet controller keeps twelve Pods alive; the scheduler binds pods to nodes; kubelets make containers real. Kill a pod — the ReplicaSet replaces it. Kill a node — its pods reschedule elsewhere. Nobody is paged; convergence is the job description.",
+        "Labels and selectors are the glue: a Service selects app=api and maintains a stable virtual IP over whichever ready pods currently match — pod churn becomes invisible to callers. This indirection (never address pods, always Services) is what makes cattle out of pets.",
+        "Rolling updates fall out of the same machinery: apply a new template, and the Deployment surges a new ReplicaSet up while draining the old one down, gated by readiness — maxSurge and maxUnavailable set the pace. A version that never becomes ready never receives traffic and never finishes rolling out: the failure mode of a bad deploy is a stalled rollout with the old version still serving, which is the safest failure mode a deploy can have. And the kicker for the rest of the interview: operators, autoscalers, and GitOps are all just more controllers running the same loop over different objects."
+      ],
+      "view": {
+        "nodes": [
+          "CP",
+          "Web",
+          "Nodes",
+          "Registry",
+          "Obs"
+        ],
+        "links": [
+          "cp-web",
+          "cp-nodes",
+          "nodes-registry",
+          "cp-obs"
+        ],
+        "caption": "Desired state in via the API server; controllers and the scheduler converge pods onto interchangeable nodes — and keep converging forever.",
+        "highlight": [
+          "CP"
+        ]
+      },
+      "decisionPrompt": "A node with 30 pods dies at 3 a.m. Walk the loop: who notices, what state diverges, which controllers act, and why no human is in that path — then contrast with the deploy.sh world.",
+      "concepts": [
+        {
+          "term": "Reconciliation loop",
+          "definition": "Controllers continuously compare desired state (API/etcd) with observed state and act to close the gap.",
+          "whyItMatters": "It converts operations from imperative actions into declared outcomes — self-healing is the loop's steady state, not a feature.",
+          "example": "ReplicaSet sees 11/12 pods -> creates 1; sees 13/12 -> deletes 1."
+        },
+        {
+          "term": "Labels + selectors",
+          "definition": "Arbitrary key/value tags on objects, queried by selectors to form dynamic sets.",
+          "whyItMatters": "Services, Deployments, and policies all bind to label queries, not names — membership is fluid, which is what makes pod churn free.",
+          "example": "Service selector app=api matches whatever ready pods exist right now."
+        },
+        {
+          "term": "Service (stable virtual IP)",
+          "definition": "A durable address and endpoint set over the ready pods matching a selector.",
+          "whyItMatters": "Callers never learn pod IPs, so rescheduling, scaling, and rollouts are invisible to clients.",
+          "example": "api.team-a.svc routes to 12 pods today, 40 during a spike, 12 again tonight."
+        },
+        {
+          "term": "Rolling update",
+          "definition": "Deploys as controlled ReplicaSet replacement: surge new, drain old, gated by readiness.",
+          "whyItMatters": "Zero-downtime deploys and safe-by-default failures (stalled rollout, old version serving) come from the mechanism, not from care.",
+          "example": "maxSurge 25%, maxUnavailable 0: capacity never dips during the roll."
+        }
+      ],
+      "whyNow": [
+        "Every later step (autoscaling, operators, GitOps) is this loop applied to a new object type — internalize it once here and the rest of the platform is corollaries."
+      ],
+      "probeLinks": [
+        "k8s-controllers",
+        "k8s-deployments",
+        "k8s-services"
+      ],
+      "recap": {
+        "before": "Imperative scripts told named machines what to do; failures waited for humans.",
+        "after": "Declared desired state converged by controllers: self-healing pods, stable Services, zero-downtime rolling updates.",
+        "newRisk": "Pods run, but they aren't production-shaped: no health gating, no resource contracts, config baked into images."
+      },
+      "traps": [
+        {
+          "trap": "Imperative drift: kubectl edit / scale / patch in production.",
+          "why": "Live changes diverge the cluster from its manifests; the next apply silently reverts a 'fix' nobody recorded — the snowflake problem reborn inside Kubernetes.",
+          "instead": "All changes through the manifest source of truth (formalized as GitOps in step 7); kubectl is for reading."
+        },
+        {
+          "trap": "Treating pods as durable, addressable things.",
+          "why": "Pod names and IPs die with every reschedule and rollout; anything that remembers them breaks on the platform's normal behavior.",
+          "instead": "Address Services; assume any pod can vanish at any moment — the platform's guarantee is the set, not the member."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Rolling update — surge, gate, drain",
+          "note": "The readiness gate is the safety mechanism: a bad version stalls with old pods still serving rather than taking traffic down.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "CD",
+                "label": "apply"
+              },
+              {
+                "id": "CP",
+                "label": "control plane"
+              },
+              {
+                "id": "Web",
+                "label": "pods v1/v2"
+              },
+              {
+                "id": "Ingress",
+                "label": "traffic"
+              }
+            ],
+            "messages": [
+              {
+                "from": "CD",
+                "to": "CP",
+                "arrow": "->>",
+                "label": "apply Deployment (template v2)"
+              },
+              {
+                "from": "CP",
+                "to": "Web",
+                "arrow": "->>",
+                "label": "new ReplicaSet: surge 3 v2 pods"
+              },
+              {
+                "type": "alt",
+                "label": "v2 readiness passes",
+                "messages": [
+                  {
+                    "from": "Ingress",
+                    "to": "Web",
+                    "arrow": "->>",
+                    "label": "endpoints add v2, traffic shifts"
+                  },
+                  {
+                    "from": "CP",
+                    "to": "Web",
+                    "arrow": "->>",
+                    "label": "scale v1 down to 0 — rollout complete"
+                  }
+                ],
+                "else": {
+                  "label": "v2 never ready",
+                  "messages": [
+                    {
+                      "from": "CP",
+                      "to": "Web",
+                      "arrow": "->>",
+                      "label": "rollout stalls; v1 keeps serving; alert fires — users never saw v2"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "CP"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Convergence autonomy vs. operator control",
+          "description": "Controllers acting on their own is what makes 3 a.m. failures non-events, but it also means the platform will 'fix' things you did on purpose — an emergency manual scale-up is reverted by the next reconcile unless the desired state changes too.",
+          "chosen": "The design leans fully into convergence and routes even emergencies through desired state — the speed cost of a Git commit buys never having two sources of truth."
+        },
+        {
+          "name": "Indirection everywhere vs. debuggability",
+          "description": "Deployment -> ReplicaSet -> Pod -> Service -> Endpoints is a lot of layers when something is broken at 2 a.m.; each layer exists to make a specific change (rollout, scale, reschedule) safe and invisible.",
+          "chosen": "The design accepts the layers and invests in the observability to see through them (step 7's paved road includes 'kubectl describe' literacy)."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/02-contract.jpg"
+    },
+    {
+      "id": "run-right",
+      "title": "3. Production-Shaped Pods — Probes, Resources, Config",
+      "description": [
+        "A pod that runs is not a pod that's production-shaped. Three contracts turn 'it starts' into 'it serves safely'.",
+        "Health: readiness says 'send me traffic' — it gates Service endpoints and rollout progress, and it should check the pod's own ability to serve. Liveness says 'restart me' — it's for deadlocks only, and it must never check dependencies: a liveness probe that pings the database turns a database blip into a fleet-wide restart storm, converting a partial outage into a total one. Startup probes give slow-booting apps time before liveness applies.",
+        "Resources: requests are the scheduling contract — the scheduler bin-packs nodes by requests, so unset requests mean the scheduler is flying blind and the node is overcommitted by hope. Limits cap usage: exceed a memory limit and the container is OOMKilled; exceed CPU and it's throttled (invisible latency — watch throttle metrics). Requests versus limits define the QoS class, which decides who dies first under node pressure. Right-sizing is a practice: measure, set requests near p95 usage, review quarterly.",
+        "Config: images are immutable and environment-agnostic; ConfigMaps and Secrets inject the per-environment difference — env vars for simple values, mounted files for anything reloadable. Secrets are base64, not encryption: real secrets come from a KMS-backed external store synced into the cluster, with rotation that doesn't require redeploys. Ingress completes the shape: TLS termination and host/path routing declared per service, not hand-edited into a shared nginx.conf — the front door is just more desired state."
+      ],
+      "view": {
+        "nodes": [
+          "Ingress",
+          "Web",
+          "CP",
+          "Obs"
+        ],
+        "links": [
+          "ingress-web",
+          "cp-web",
+          "web-obs"
+        ],
+        "caption": "Probes gate traffic and restarts, requests/limits make scheduling honest, config and TLS are injected declaratively.",
+        "highlight": [
+          "Web"
+        ]
+      },
+      "decisionPrompt": "The database has a 90-second blip. Fleet A's liveness probe checks /healthz (self only); Fleet B's checks DB connectivity. Narrate the next five minutes for each fleet — and which one turned a blip into an outage.",
+      "concepts": [
+        {
+          "term": "Readiness vs. liveness",
+          "definition": "Readiness gates traffic (endpoint membership); liveness triggers restarts.",
+          "whyItMatters": "Confusing them weaponizes health checks: dependency checks belong in readiness (shed traffic), never liveness (mass restarts).",
+          "example": "DB down: readiness fails -> pods drop from endpoints, recover instantly when DB returns; liveness untouched."
+        },
+        {
+          "term": "Requests vs. limits (QoS)",
+          "definition": "Requests reserve capacity for scheduling; limits cap runtime usage; their relationship sets the eviction order.",
+          "whyItMatters": "Requests are the only honesty the bin-packing scheduler has; limits decide OOMKill vs. throttle behavior under pressure.",
+          "example": "requests 500m/512Mi, limits 1000m/1Gi -> Burstable; a no-requests pod is first against the wall."
+        },
+        {
+          "term": "Immutable image + injected config",
+          "definition": "One artifact for every environment; ConfigMaps/Secrets supply the difference at run time.",
+          "whyItMatters": "The digest that passed staging is byte-identical in prod — configuration drift can't hide inside images.",
+          "example": "registry/app@sha256:9f2c... + configmap prod-settings + external-secrets synced from KMS."
+        }
+      ],
+      "whyNow": [
+        "The rollout machinery from step 2 is only as safe as its gates — readiness, resources, and clean config are what make 'converged' mean 'actually serving'."
+      ],
+      "probeLinks": [
+        "k8s-probes",
+        "k8s-resources"
+      ],
+      "recap": {
+        "before": "Pods ran with no health gating, no resource contracts, and config baked into images.",
+        "after": "Probes gate traffic and restarts, requests make scheduling honest, limits bound blast radius, config and secrets inject cleanly.",
+        "newRisk": "Capacity is still static: replica counts and node counts are numbers someone guessed, wrong in both directions daily."
+      },
+      "traps": [
+        {
+          "trap": "Liveness probes that check dependencies.",
+          "why": "A dependency blip fails liveness fleet-wide; kubelet restarts every pod simultaneously; the restart storm outlasts the blip and takes the service fully down.",
+          "instead": "Liveness checks the process only (deadlock detection); dependency health belongs in readiness, which sheds traffic reversibly."
+        },
+        {
+          "trap": "Skipping resource requests 'to keep things flexible'.",
+          "why": "The scheduler packs by requests; unset requests mean overcommitted nodes, noisy-neighbor latency, and BestEffort pods dying first in every pressure event.",
+          "instead": "Admission-enforced requests on every workload, sized from measured usage, reviewed on a cadence."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Tight limits vs. burst headroom",
+          "description": "Tight limits contain a misbehaving pod's blast radius and keep bin-packing dense, but they throttle legitimate bursts (CPU) or kill legitimate spikes (memory); generous limits waste the efficiency the platform promised.",
+          "chosen": "Requests near p95 with moderate limit headroom, plus throttle/OOM metrics on the paved-road dashboard — sizing is a feedback loop, not a one-time guess."
+        },
+        {
+          "name": "Fail-fast health vs. flap tolerance",
+          "description": "Aggressive probe thresholds detect real failures in seconds but turn GC pauses and cold starts into false-positive restarts and endpoint churn; lenient thresholds add seconds of serving-while-broken.",
+          "chosen": "Readiness reacts fast (traffic is cheap to shift); liveness reacts slow with generous thresholds (restarts are expensive and cascade)."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/03-run-right.jpg"
+    },
+    {
+      "id": "autoscale",
+      "title": "4. Autoscaling — Pods, Events, and Nodes",
+      "description": [
+        "Elasticity is three loops stacked, each one more of the same reconciliation pattern.",
+        "Pod layer, request-driven: the HPA watches a signal (CPU relative to requests, or a custom metric like p95 latency or RPS per pod) and adjusts a Deployment's replica count within bounds. Stabilization windows stop flapping: scale up fast, scale down slow.",
+        "Pod layer, event-driven: workers shouldn't scale on CPU — a full queue with idle-waiting consumers looks calm to CPU metrics. KEDA scales on the backlog itself (queue depth, stream lag) and, crucially, scales to zero: the overnight worker fleet costs nothing until the first message lands.",
+        "Node layer: scaled-up pods with nowhere to fit go Pending, and Pending pods are the cluster autoscaler's signal to add nodes to the right pool (Karpenter-style provisioning picks instance shapes to fit the pending set). Scale-down drains underused nodes — respecting PodDisruptionBudgets, which cap concurrent voluntary disruption per service so a drain never takes too many replicas at once.",
+        "The loops compose without coordination: queue spikes -> KEDA scales workers 2 to 40 -> 25 go Pending -> autoscaler adds 6 spot nodes -> scheduler places -> backlog drains -> workers to zero -> nodes reaped. Each controller minds its own object; the composite behavior is emergent and correct — the platform's best party trick, and it only works because steps 2–3 made requests honest and disruptions budgeted."
+      ],
+      "view": {
+        "nodes": [
+          "Web",
+          "Workers",
+          "Queue",
+          "CP",
+          "Nodes",
+          "Obs"
+        ],
+        "links": [
+          "workers-queue",
+          "obs-cp",
+          "cp-workers",
+          "cp-nodes",
+          "web-obs"
+        ],
+        "caption": "Three stacked loops: HPA on service signals, KEDA on queue backlog (to zero), cluster autoscaler on pending pods.",
+        "highlight": [
+          "Workers",
+          "Nodes"
+        ],
+        "groups": [
+          "workloads"
+        ]
+      },
+      "options": [
+        {
+          "name": "HPA on service metrics (request-driven fleets)",
+          "description": "Web/API services scale on CPU-vs-requests or latency/RPS custom metrics — load arrives as requests, so request signals govern.",
+          "pros": [
+            "Simple, battle-tested loop with signals every service already exports.",
+            "Custom metrics (p95, RPS/pod) track user experience directly when CPU correlates poorly.",
+            "Stabilization windows give predictable, non-flapping behavior."
+          ],
+          "cons": [
+            "Meaningless without honest resource requests (percent-of-what?).",
+            "Reactive: sudden spikes eat the scale-up lag; severe cases need headroom or predictive floors.",
+            "Can't scale to zero — request-driven services always keep a floor."
+          ],
+          "view": {
+            "nodes": [
+              "Web",
+              "CP",
+              "Obs"
+            ],
+            "links": [
+              "web-obs",
+              "obs-cp",
+              "cp-web"
+            ],
+            "caption": "Metrics flow to the HPA; the HPA adjusts replicas; the floor stays warm.",
+            "highlight": [
+              "Web"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-autoscale-opt1.jpg"
+        },
+        {
+          "name": "KEDA on event sources (queue-driven fleets)",
+          "description": "Workers scale on backlog depth and lag — the demand signal itself — including all the way to zero.",
+          "pros": [
+            "Scales on the true signal: a full queue with idle consumers is invisible to CPU but obvious to KEDA.",
+            "Scale-to-zero makes idle fleets free — the overnight cost of the worker tier is zero.",
+            "Dozens of built-in scalers (queues, streams, cron, custom) with per-trigger targets."
+          ],
+          "cons": [
+            "Cold starts on the first message after zero (image pull, boot) — keep a min-replica floor where latency matters.",
+            "Another controller to run and version.",
+            "Backlog targets need tuning against processing time or the fleet saw-tooths."
+          ],
+          "view": {
+            "nodes": [
+              "Workers",
+              "Queue",
+              "CP",
+              "Nodes"
+            ],
+            "links": [
+              "workers-queue",
+              "cp-workers",
+              "cp-nodes"
+            ],
+            "caption": "Backlog depth drives replicas 0 -> 40; pending pods pull new nodes; drain-down reverses both.",
+            "highlight": [
+              "Workers"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-autoscale-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "The queue spikes 50x at 09:00. Trace the composed loops — KEDA, pending pods, autoscaler, scheduler, PDB-guarded scale-down — and name the two prerequisites from earlier steps without which this story fails.",
+      "concepts": [
+        {
+          "term": "HPA (horizontal pod autoscaler)",
+          "definition": "A controller adjusting replica counts to hold a metric at target within min/max bounds.",
+          "whyItMatters": "Turns capacity from a guessed constant into a governed variable — but only as honest as the requests it divides by.",
+          "example": "target CPU 70%: observed 90% across 10 pods -> scale to 13."
+        },
+        {
+          "term": "Scale-to-zero (KEDA)",
+          "definition": "Event-driven scaling that removes all replicas when the source is idle.",
+          "whyItMatters": "Idle-but-deployed stops costing money; 'deployed' and 'running' become independent facts.",
+          "example": "Night: 0 workers. First message: 09:00:01 -> 1 pod; backlog -> 40."
+        },
+        {
+          "term": "Cluster autoscaler / Karpenter",
+          "definition": "Node-level reconciliation: pending pods add capacity, idle nodes drain away.",
+          "whyItMatters": "Completes the elasticity story — pod autoscaling without node autoscaling just converts spikes into Pending queues.",
+          "example": "25 pending worker pods -> 6 spot instances shaped to fit -> reaped an hour later."
+        },
+        {
+          "term": "PodDisruptionBudget",
+          "definition": "A cap on concurrent voluntary disruptions (drains, scale-downs) per workload.",
+          "whyItMatters": "Makes every 'polite' operation — upgrades, autoscaler reaping — self-throttling against availability.",
+          "example": "minAvailable 80%: a node drain waits rather than take the 3rd of 12 replicas."
+        }
+      ],
+      "whyNow": [
+        "Static replica counts were the last hand-tuned capacity knob; with requests honest (step 3) the three loops can own capacity end to end."
+      ],
+      "probeLinks": [
+        "k8s-hpa",
+        "keda",
+        "karpenter",
+        "k8s-disruptions"
+      ],
+      "recap": {
+        "before": "Replica and node counts were guessed constants — wrong in both directions daily.",
+        "after": "Composed reconciliation loops own capacity: services on load signals, workers on backlog (to zero), nodes on pending pods.",
+        "newRisk": "Everything elastic so far is stateless — and the platform is about to be asked to hold databases."
+      },
+      "traps": [
+        {
+          "trap": "Scaling queue workers on CPU.",
+          "why": "Blocked-on-IO consumers idle at 5% CPU while the backlog grows unbounded — the HPA sees a healthy fleet starving the SLA.",
+          "instead": "Scale on the demand signal itself: queue depth / stream lag via KEDA, target sized to per-message processing time."
+        },
+        {
+          "trap": "No PodDisruptionBudgets on scaled fleets.",
+          "why": "The autoscaler's scale-down and node upgrades are voluntary disruptions; without budgets a drain can evict most of a service simultaneously — self-inflicted outage during routine ops.",
+          "instead": "PDBs on every serving workload, sized against the availability budget, tested by draining a node on purpose."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Queue spike — three loops compose",
+          "note": "No controller knows the whole story; each reconciles its own object and the composite is correct.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Queue"
+              },
+              {
+                "id": "CP",
+                "label": "KEDA/HPA + scheduler"
+              },
+              {
+                "id": "Workers"
+              },
+              {
+                "id": "Nodes",
+                "label": "autoscaler"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Queue",
+                "to": "CP",
+                "arrow": "->>",
+                "label": "backlog 200 -> 10,000"
+              },
+              {
+                "from": "CP",
+                "to": "Workers",
+                "arrow": "->>",
+                "label": "KEDA: replicas 2 -> 40"
+              },
+              {
+                "from": "CP",
+                "to": "Nodes",
+                "arrow": "->>",
+                "label": "25 pods Pending -> add 6 spot nodes"
+              },
+              {
+                "from": "Workers",
+                "to": "Queue",
+                "arrow": "->>",
+                "label": "drain backlog (idempotent handlers)"
+              },
+              {
+                "type": "alt",
+                "label": "backlog empty",
+                "messages": [
+                  {
+                    "from": "CP",
+                    "to": "Workers",
+                    "arrow": "->>",
+                    "label": "scale to 0 (PDB-respecting)"
+                  },
+                  {
+                    "from": "CP",
+                    "to": "Nodes",
+                    "arrow": "->>",
+                    "label": "drain + reap idle nodes"
+                  }
+                ],
+                "else": {
+                  "label": "spike persists",
+                  "messages": [
+                    {
+                      "from": "CP",
+                      "to": "Workers",
+                      "arrow": "->>",
+                      "label": "hold at max 40; backlog age alert fires"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Workers",
+            "Nodes"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Elastic cost vs. cold latency",
+          "description": "Scale-to-zero and aggressive node reaping minimize spend but put image pulls and boot time in front of the first request after idle; warm floors reverse the trade.",
+          "chosen": "Per-fleet policy: user-facing services keep warm floors; queue workers go to zero and let the backlog absorb the cold start."
+        },
+        {
+          "name": "Reactive simplicity vs. predictive capacity",
+          "description": "Reactive loops are simple and honest but always lag a spike by their reaction time; predictive/scheduled scaling absorbs known patterns (9 a.m. surge) at the cost of another model to maintain and mistrust.",
+          "chosen": "Reactive everywhere, plus scheduled floors for the two known daily surges — predictions only where the calendar already made them."
+        }
+      ]
+    },
+    {
+      "id": "stateful",
+      "title": "5. State in the Cluster — StatefulSets, Operators, the Database Question",
+      "description": [
+        "Everything so far treated pods as interchangeable. State breaks that: a database replica is not interchangeable — it has an identity, a disk, and a role. Kubernetes' answer is the StatefulSet: stable names (redis-0, redis-1), a PersistentVolumeClaim per replica (storage that survives rescheduling, provisioned by CSI drivers), ordered rollout, and stable per-pod DNS. That's identity and storage — but not operations: a StatefulSet doesn't know what a primary is, how to fail over, or how to take a backup.",
+        "Operators close that gap with the platform's own trick: a CustomResourceDefinition ('PostgresCluster', 'KafkaCluster') plus a controller that reconciles it — encoding provisioning, replica wiring, failover, backups, and upgrades as software. An operator is a runbook that runs itself, written by whoever knows the system best. For cache and streaming infrastructure (Redis, Kafka-class), mature operators make in-cluster hosting genuinely good: fleet consistency, one deployment model, cheap many-small-instances.",
+        "Then the question every team asks: does the money database go in the cluster? Be honest about what you're signing: with an in-cluster database, the storage layer, drain interactions, PDB correctness, backup drills, and failover testing are all yours, forever, through every Kubernetes upgrade. A managed database buys exactly the hardest parts — durability, failover, PITR — as a service, and this catalog's other chapters (wallet-ledger, just-use-postgres) already put correctness-critical state there. The honest default at this scale: operators for rebuildable infrastructure state in-cluster; the source-of-truth database outside. The calculus flips with sovereignty requirements, on-prem targets, or a fleet of many small databases — which is why it's a decision, not a doctrine."
+      ],
+      "view": {
+        "nodes": [
+          "Workers",
+          "Stateful",
+          "DB",
+          "CP",
+          "Nodes"
+        ],
+        "links": [
+          "workers-stateful",
+          "workers-db",
+          "cp-nodes"
+        ],
+        "caption": "Operator-run infrastructure state inside; the source-of-truth database outside — a boundary drawn on purpose.",
+        "highlight": [
+          "Stateful",
+          "DB"
+        ]
+      },
+      "options": [
+        {
+          "name": "Managed database outside the cluster (recommended at this scale)",
+          "description": "The money database as a managed service; the cluster consumes it like any external dependency.",
+          "pros": [
+            "Durability, automated failover, and point-in-time recovery bought as a service — the hardest problems off the table.",
+            "The cluster stays (almost) stateless: upgrades, drains, and experiments carry no data risk.",
+            "Database lifecycle decouples from Kubernetes lifecycle — neither upgrade schedule hostages the other."
+          ],
+          "cons": [
+            "Per-instance pricing punishes many-small-databases patterns.",
+            "Less portability: environment parity (laptop, on-prem, cloud) needs a story.",
+            "Network egress and latency between cluster and database are now a design input."
+          ],
+          "view": {
+            "nodes": [
+              "Web",
+              "Workers",
+              "DB"
+            ],
+            "links": [
+              "web-db",
+              "workers-db"
+            ],
+            "caption": "The cluster consumes the database; it never operates it.",
+            "highlight": [
+              "DB"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-stateful-opt1.jpg"
+        },
+        {
+          "name": "Operator-run database in the cluster",
+          "description": "A CloudNativePG-class operator runs Postgres in-cluster: CRD-declared clusters with automated failover and backups — and your name on the pager.",
+          "pros": [
+            "Fleet consistency: databases deploy, monitor, and upgrade like everything else.",
+            "Sovereignty and on-prem: runs wherever the cluster runs.",
+            "Many small databases become cheap — per-tenant isolation without per-instance invoices."
+          ],
+          "cons": [
+            "You own the failure modes: storage performance, drain/PDB interactions, split-brain prevention, restore drills.",
+            "Operator maturity varies by ecosystem — evaluate like a database vendor, because that's what it is.",
+            "Every cluster upgrade now rehearses against stateful workloads first."
+          ],
+          "view": {
+            "nodes": [
+              "Workers",
+              "Stateful",
+              "CP",
+              "Nodes"
+            ],
+            "links": [
+              "workers-stateful",
+              "cp-nodes"
+            ],
+            "caption": "The operator reconciles a PostgresCluster CRD: provisioning, failover, and backups as controllers.",
+            "highlight": [
+              "Stateful"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-stateful-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "The platform team proposes moving the billing database in-cluster 'for consistency'. List the new failure modes they just adopted, who owns each today vs. after, and the two business conditions that would genuinely flip the answer.",
+      "concepts": [
+        {
+          "term": "StatefulSet",
+          "definition": "Workload controller giving stable identity, per-replica storage, ordered rollout, and stable DNS.",
+          "whyItMatters": "The mechanical prerequisites for clustered state — identity and disks that survive rescheduling — but none of the operational judgment.",
+          "example": "kafka-0/1/2 each keep their PVC and DNS name across node failures."
+        },
+        {
+          "term": "PersistentVolumeClaim (CSI)",
+          "definition": "A declarative claim on storage, provisioned by a driver and bound to a pod across reschedules.",
+          "whyItMatters": "Decouples data lifetime from pod lifetime — the disk followed the identity, not the node.",
+          "example": "kafka-1 reschedules; its 500 GB volume re-attaches on the new node."
+        },
+        {
+          "term": "Operator (CRD + controller)",
+          "definition": "A custom resource type plus a reconciler encoding a system's operations as software.",
+          "whyItMatters": "Extends the platform's one idea to expert domains — failover and backups become desired state, not runbooks.",
+          "example": "kind: PostgresCluster, replicas: 3, backup: s3://... — the controller does the rest."
+        }
+      ],
+      "whyNow": [
+        "Autoscaling made the stateless tier fully elastic; the pressure to consolidate state into the same platform follows immediately — and deserves an explicit, argued boundary."
+      ],
+      "probeLinks": [
+        "k8s-statefulsets",
+        "k8s-operator-pattern",
+        "cloudnativepg"
+      ],
+      "recap": {
+        "before": "The platform handled only interchangeable pods; state lived entirely elsewhere by default.",
+        "after": "StatefulSets + operators host rebuildable infrastructure state in-cluster; the source-of-truth database stays managed, outside, on purpose.",
+        "newRisk": "Serving and state are covered — but batch work still runs on nostalgia and one forgotten VM's crontab."
+      },
+      "traps": [
+        {
+          "trap": "Lifting a database into a plain Deployment with a PVC.",
+          "why": "Deployments assume interchangeable pods: no stable identity, no ordered operations, no failover semantics — a rolling update can run two writers against one disk.",
+          "instead": "StatefulSet semantics at minimum; a mature operator for anything with a primary; and the managed-vs-in-cluster question answered first."
+        },
+        {
+          "trap": "Running stateful in-cluster without disruption drills.",
+          "why": "The failure modes that matter (node drain during failover, zone loss, PDB misconfiguration) only appear under disruption — production is the wrong place to discover them.",
+          "instead": "Rehearse drains, zone outages, and restores against staging stateful workloads before every cluster upgrade — the operator's value is proven exactly there."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Platform consistency vs. blast-radius separation",
+          "description": "Everything-in-cluster gives one deployment model, one monitoring stack, one place to look; it also correlates failures — a cluster incident now includes your data layer, and every upgrade carries data risk.",
+          "chosen": "Consistency for rebuildable state, separation for irreplaceable state — the boundary follows rebuildability, not convenience."
+        },
+        {
+          "name": "Operator automation vs. operational ownership",
+          "description": "A good operator automates the 3 a.m. failover better than a sleepy human; but automation you didn't write is judgment you must audit — its edge cases become your incidents.",
+          "chosen": "Adopt operators with the scrutiny given to database vendors: maturity, escape hatches, restore paths — then trust them with infrastructure state, not the ledger."
+        }
+      ]
+    },
+    {
+      "id": "batch",
+      "title": "6. Batch & Special Hardware — Jobs, CronJobs, GPU Pools",
+      "description": [
+        "Run-to-completion work gets first-class objects, not a crontab on a box nobody dares reboot.",
+        "A Job runs pods until a target number of completions succeed: parallelism fans out (10 pods over the night's report shards), backoffLimit bounds retries, TTL cleans up finished pods. Failure handling is the queue contract again — a retried pod means at-least-once execution, so batch handlers are idempotent, same as every worker in this catalog.",
+        "CronJob adds the schedule — and the fields that fix cron's classic sins: concurrencyPolicy Forbid stops a slow run from overlapping its successor (the default, Allow, double-processes silently); startingDeadlineSeconds defines what happens to missed runs instead of leaving it to folklore. The queue-driven variant (KEDA firing Jobs off backlog) covers on-demand batch with the same machinery.",
+        "Special hardware and cheap capacity are scheduling vocabulary: GPU nodes carry taints so nothing lands there accidentally, and training Jobs carry tolerations plus resource requests for gpu-count; the autoscaler grows the GPU pool only when GPU pods are pending — a $30k/month pool that exists only while used. The spot pool runs batch at a steep discount because eviction is survivable: Jobs reschedule and retry by design. Priorities and preemption keep the hierarchy honest — serving outranks batch, batch preempts nothing, and a nightly backfill can never starve the API fleet."
+      ],
+      "view": {
+        "nodes": [
+          "Batch",
+          "CP",
+          "Nodes",
+          "DB",
+          "Registry"
+        ],
+        "links": [
+          "cp-batch",
+          "cp-nodes",
+          "batch-db",
+          "nodes-registry"
+        ],
+        "caption": "Jobs and CronJobs with parallelism, retries, and concurrency policy — scheduled onto tainted GPU and spot pools that exist only while needed.",
+        "highlight": [
+          "Batch"
+        ]
+      },
+      "decisionPrompt": "The nightly report Job usually takes 3 hours; tonight it takes 7 and the 02:00 run is still going at 02:00 next day. Walk what concurrencyPolicy Allow, Forbid, and Replace each do to your data — and which pairs safely with your handlers' idempotency.",
+      "concepts": [
+        {
+          "term": "Job (run-to-completion)",
+          "definition": "A controller that runs pods until N completions succeed, with bounded retries and parallelism.",
+          "whyItMatters": "Batch gets the same declarative, self-healing treatment as serving — a failed shard retries itself on another node.",
+          "example": "completions: 10, parallelism: 10, backoffLimit: 4 — the night's shards fan out and converge."
+        },
+        {
+          "term": "concurrencyPolicy",
+          "definition": "CronJob field governing overlap: Allow (default), Forbid (skip if running), Replace (kill and restart).",
+          "whyItMatters": "The default silently permits overlapping runs — the classic double-processing bug, now one field away from impossible.",
+          "example": "Forbid + idempotent handlers: a slow Monday run means Tuesday skips, cleanly."
+        },
+        {
+          "term": "Taints, tolerations, priorities",
+          "definition": "Scheduling vocabulary: taints repel by default, tolerations opt in, priorities order preemption.",
+          "whyItMatters": "Expensive hardware and cheap capacity both need fencing — GPUs from accidental tenants, serving from batch pressure.",
+          "example": "GPU pool tainted gpu=true:NoSchedule; training Jobs tolerate it and request nvidia.com/gpu: 4."
+        }
+      ],
+      "whyNow": [
+        "With serving and state placed, batch is the last workload class off the platform — and its scheduling needs (GPUs, spot, priorities) exercise vocabulary the final step's tenancy story reuses."
+      ],
+      "probeLinks": [
+        "k8s-jobs",
+        "k8s-cronjobs"
+      ],
+      "recap": {
+        "before": "Batch meant crontabs on pet VMs — unmonitored, overlapping, unretried.",
+        "after": "Jobs/CronJobs with declared parallelism, retries, and overlap policy, on tainted GPU and spot pools that scale from zero.",
+        "newRisk": "Four teams now share one powerful platform with no fences — one team's mistake is everyone's outage, and no one can say who may do what."
+      },
+      "traps": [
+        {
+          "trap": "CronJobs with default concurrencyPolicy: Allow.",
+          "why": "A run that outlives its schedule overlaps its successor; both process the same data; the corruption is silent until reconciliation month-end.",
+          "instead": "Forbid (or Replace) explicitly, plus idempotent handlers for the retry path — overlap becomes impossible, retries become safe."
+        },
+        {
+          "trap": "GPU nodes without taints.",
+          "why": "The scheduler happily bin-packs web pods onto $30k/month GPU nodes; the training Job then goes Pending behind them — maximum cost, minimum use.",
+          "instead": "Taint special pools at creation; only tolerating, GPU-requesting workloads land there; autoscale the pool from zero."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Nightly report — fan out, fail, retry, complete",
+          "note": "The Job controller owns completion accounting; a failed shard is rescheduled with backoff, and the whole run is idempotent per shard.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "CP",
+                "label": "CronJob -> Job"
+              },
+              {
+                "id": "Nodes",
+                "label": "spot pool"
+              },
+              {
+                "id": "Batch",
+                "label": "report pods"
+              },
+              {
+                "id": "DB"
+              }
+            ],
+            "messages": [
+              {
+                "from": "CP",
+                "to": "CP",
+                "arrow": "->>",
+                "label": "02:00: create Job (concurrencyPolicy Forbid)"
+              },
+              {
+                "from": "CP",
+                "to": "Nodes",
+                "arrow": "->>",
+                "label": "10 pods pending -> autoscaler adds spot nodes"
+              },
+              {
+                "from": "Batch",
+                "to": "DB",
+                "arrow": "->>",
+                "label": "shards 1..10 read/write (idempotent per shard)"
+              },
+              {
+                "type": "alt",
+                "label": "spot node reclaimed",
+                "messages": [
+                  {
+                    "from": "CP",
+                    "to": "Batch",
+                    "arrow": "->>",
+                    "label": "reschedule shard 7 elsewhere (backoff 1/4)"
+                  },
+                  {
+                    "from": "Batch",
+                    "to": "DB",
+                    "arrow": "->>",
+                    "label": "shard 7 reruns -> same result (idempotent)"
+                  }
+                ],
+                "else": {
+                  "label": "all complete",
+                  "messages": [
+                    {
+                      "from": "CP",
+                      "to": "Nodes",
+                      "arrow": "->>",
+                      "label": "10/10 completions; TTL cleanup; reap idle nodes"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Batch"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Spot economics vs. completion latency",
+          "description": "Spot capacity runs batch at a fraction of on-demand cost but can vanish mid-run; retries absorb the churn at the price of longer, less predictable completion times.",
+          "chosen": "Spot for everything idempotent and deadline-tolerant (the nightly window has hours of slack); on-demand only for batch with hard SLAs."
+        },
+        {
+          "name": "Shared cluster batch vs. separate batch cluster",
+          "description": "One cluster maximizes bin-packing and reuses the platform, but batch pressure tests every fence (priorities, quotas, PDBs); a separate cluster is a blunt, effective isolation at double the platform surface.",
+          "chosen": "Shared, with priorities and quotas doing the fencing — the isolation vocabulary already exists; a separate cluster is the named escape hatch if batch grows hostile."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/06-batch.jpg"
+    },
+    {
+      "id": "platform",
+      "title": "7. The Platform — Tenancy, GitOps, Upgrades",
+      "description": [
+        "Four teams on one cluster is a multi-tenancy design, and the fences are all declarative. Namespaces carve the cluster per team/environment; RBAC grants namespace-scoped roles (cluster-admin is for the platform team's break-glass, audited); ResourceQuotas cap each team's requests so one team's runaway HPA can't starve another; LimitRanges default sane resources for whoever forgets; NetworkPolicies default-deny so a compromised pod can't roam; admission policies enforce the paved road mechanically — no :latest, digest pins, probes and requests required, no privileged pods. The guardrails are objects, versioned like everything else.",
+        "GitOps closes the operational loop with the same reconciliation idea one level up: Git holds every manifest as the single desired state; an Argo-style controller continuously applies it and — the key move — reverts drift. kubectl edit in prod is undone by the machine within minutes, which converts 'policy' into physics. Deploys are merges, rollbacks are reverts, audit is git log, and disaster recovery for the cluster's configuration is 'point the controller at the repo'.",
+        "Platform lifecycle: Kubernetes ships three supported minors — standing still is a decision with a deadline. Upgrades are rehearsed on staging, then rolled pool-by-pool with surge nodes and PDB-respecting drains; the disruption machinery from steps 3–4 is exactly what makes them boring. Cost governance rides the same rails: requests-based showback per namespace, bin-packing dashboards, spot ratios — the quota objects double as the budget.",
+        "And the honest close the series demands. Kubernetes is a platform for building platforms: its unit of value is the paved road you build on it, and its cost is the YAML tax — a team of four running one web app and a database does not need this; a PaaS beats the hammer there soundly. The graduation test runs in reverse for once: you grow into this platform (fleet-shaped problems, multiple teams, heterogeneous workloads), not out of it. Twenty services, four teams, thirty deploys a day, GPUs at night — that's the nail this hammer fits."
+      ],
+      "view": {
+        "nodes": [
+          "Dev",
+          "Git",
+          "CD",
+          "CP",
+          "Web",
+          "Workers",
+          "Batch",
+          "Stateful",
+          "Nodes",
+          "Ingress",
+          "Obs"
+        ],
+        "links": [
+          "dev-git",
+          "cd-git",
+          "cd-cp",
+          "cp-web",
+          "cp-workers",
+          "cp-batch",
+          "cp-nodes",
+          "ingress-web",
+          "cp-obs",
+          "web-obs"
+        ],
+        "caption": "Namespaced, quota'd, default-deny tenancy; Git as the single desired state with drift reverted; upgrades as rehearsed, PDB-guarded rollouts.",
+        "highlight": [
+          "CD",
+          "Git"
+        ],
+        "groups": [
+          "workloads",
+          "platform",
+          "outside"
+        ]
+      },
+      "decisionPrompt": "An engineer hot-fixes prod with kubectl edit at 23:40; the GitOps controller reverts it at 23:43. Argue both sides — then design the break-glass path that preserves 'Git is truth' without making incidents slower.",
+      "concepts": [
+        {
+          "term": "Namespace tenancy (RBAC + quota + netpol)",
+          "definition": "Per-team slices with scoped permissions, capped resources, and default-deny networking.",
+          "whyItMatters": "Multi-team safety becomes declared configuration — the blast radius of a team's mistake is their namespace.",
+          "example": "team-a: 200 CPU quota, namespace-scoped roles, ingress-only network policy."
+        },
+        {
+          "term": "GitOps (drift reversion)",
+          "definition": "A controller reconciling the cluster to a Git repository — applying changes and undoing manual ones.",
+          "whyItMatters": "The reconciliation pattern applied to operations itself: one source of truth, mechanical audit, rollback as revert.",
+          "example": "kubectl edit at 23:40 -> reverted 23:43 -> the PR that should have happened, happens."
+        },
+        {
+          "term": "Admission policy",
+          "definition": "Rules evaluated at object-creation time, rejecting manifests that break the paved road.",
+          "whyItMatters": "Standards enforced by review decay; standards enforced by the API server don't.",
+          "example": "Deny: image without digest, pod without requests, container running privileged."
+        },
+        {
+          "term": "Surge upgrades + PDB drains",
+          "definition": "Node pools upgraded by adding new-version nodes and draining old ones within disruption budgets.",
+          "whyItMatters": "The platform's own lifecycle uses the platform's own safety rails — upgrades become routine instead of events.",
+          "example": "30-node pool: 5 surge nodes, drain 3 at a time, every service stays above minAvailable."
+        }
+      ],
+      "whyNow": [
+        "Every capability is now on the platform; what remains is making four teams, thirty daily changes, and quarterly upgrades safe — governance as the final reconciliation loop."
+      ],
+      "probeLinks": [
+        "k8s-rbac",
+        "k8s-netpol",
+        "argocd",
+        "k8s-disruptions"
+      ],
+      "recap": {
+        "before": "One powerful cluster, no fences, tribal deploy habits, an upgrade cliff approaching.",
+        "after": "Declared tenancy with enforced standards, Git as reverting source of truth, rehearsed surge upgrades, quota-based cost showback.",
+        "newRisk": "Operational steady state: the YAML tax is real and permanent — the platform team's product is the paved road, and neglecting it re-creates the snowflakes one abstraction higher."
+      },
+      "traps": [
+        {
+          "trap": "Handing out cluster-admin because RBAC is tedious.",
+          "why": "Every laptop with cluster-admin is a cluster-wide blast radius — one wrong context and team A deletes team B's production.",
+          "instead": "Namespace-scoped roles by default, break-glass elevation that's audited and expires, and the platform team owning cluster scope."
+        },
+        {
+          "trap": "Skipping quotas on a 'trusted' cluster.",
+          "why": "The first runaway HPA or fork-bombing Job consumes the shared capacity; every other team's pods go Pending — trust is not an isolation mechanism.",
+          "instead": "ResourceQuotas per namespace sized to the team's budget, LimitRanges for defaults, and alerts on quota saturation."
+        },
+        {
+          "trap": "Deferring upgrades until forced.",
+          "why": "Falling out of the supported window turns a routine quarterly into a multi-version forced march with API removals and no rehearsal time.",
+          "instead": "Quarterly cadence, staging rehearsal, surge rollouts — treat 'boring upgrade' as a platform SLO."
+        }
+      ],
+      "flows": [
+        {
+          "name": "GitOps loop — merge, sync, drift reverted",
+          "note": "The same observe-diff-act loop, pointed at the cluster itself: Git is desired state, the cluster is observed state.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Dev"
+              },
+              {
+                "id": "Git"
+              },
+              {
+                "id": "CD",
+                "label": "GitOps controller"
+              },
+              {
+                "id": "CP",
+                "label": "cluster"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Dev",
+                "to": "Git",
+                "arrow": "->>",
+                "label": "merge PR (manifest change)"
+              },
+              {
+                "from": "CD",
+                "to": "Git",
+                "arrow": "->>",
+                "label": "poll/webhook: new desired state"
+              },
+              {
+                "from": "CD",
+                "to": "CP",
+                "arrow": "->>",
+                "label": "apply diff; health-check rollout"
+              },
+              {
+                "type": "alt",
+                "label": "manual drift detected",
+                "messages": [
+                  {
+                    "from": "CD",
+                    "to": "CP",
+                    "arrow": "->>",
+                    "label": "revert live change to match Git; flag OutOfSync event"
+                  }
+                ],
+                "else": {
+                  "label": "in sync",
+                  "messages": [
+                    {
+                      "from": "CD",
+                      "to": "Git",
+                      "arrow": "-->>",
+                      "label": "status: Synced + Healthy (audit = git log)"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "CD"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Enforced paved road vs. team autonomy",
+          "description": "Admission policies and quotas make the platform safe and uniform but genuinely constrain teams — the exotic-but-legitimate workload now needs a platform conversation instead of a YAML file.",
+          "chosen": "Strict defaults with a documented exception path: the paved road covers 95% by design, and the other 5% pays for review rather than everyone paying for incidents."
+        },
+        {
+          "name": "One cluster vs. cluster-per-team",
+          "description": "One shared cluster maximizes utilization and gives the platform team one thing to run; cluster-per-team is the ultimate isolation at multiplied cost, drift risk, and upgrade toil.",
+          "chosen": "One cluster with hard declarative fences at this size; per-team (or per-tier) clusters become the escape hatch at the scale where blast radius outweighs efficiency."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/07-platform.jpg"
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design — Kubernetes as the Runtime Platform",
+    "description": "One idea, stacked: desired state converged by reconciliation loops, from containers to company. Engineers ship by PR: Git holds every manifest, an Argo-style controller applies and reverts drift, and the Deployment machinery rolls digest-pinned images out behind readiness gates — a bad version stalls with the old one still serving. Pods are production-shaped by contract: readiness gates traffic, liveness catches only deadlocks, requests make bin-packing honest, limits bound blast radius, config and KMS-backed secrets inject at runtime. Capacity is three composed loops — HPA on service signals, KEDA on queue backlog (to zero overnight), cluster autoscaler on pending pods — with PodDisruptionBudgets making every voluntary disruption self-throttling. State follows rebuildability: operator-run Redis/Kafka-class infrastructure in-cluster, the money database managed outside on purpose. Batch runs as Jobs and CronJobs with parallelism, bounded retries, and Forbid concurrency, on spot capacity and tainted GPU pools that scale from zero. Four teams share the cluster behind declarative fences — namespaces, scoped RBAC, quotas, default-deny network policies, admission-enforced standards — and the platform upgrades itself quarterly with surge nodes and PDB-guarded drains. The boundary is stated, not implied: this is a platform for building platforms, worth its YAML tax at fleet shape (20 services, 4 teams, 30 deploys/day, GPUs at night) and beaten by a PaaS below it. Just use Kubernetes — when your problem is shaped like a fleet.",
+    "view": {
+      "nodes": [
+        "Dev",
+        "Client",
+        "LB",
+        "Ingress",
+        "Web",
+        "Workers",
+        "Batch",
+        "Stateful",
+        "CP",
+        "Nodes",
+        "Registry",
+        "Git",
+        "CD",
+        "Queue",
+        "DB",
+        "Obs"
+      ],
+      "links": [
+        "client-lb",
+        "lb-ingress",
+        "ingress-web",
+        "web-db",
+        "web-queue",
+        "workers-queue",
+        "workers-db",
+        "workers-stateful",
+        "batch-db",
+        "dev-git",
+        "cd-git",
+        "cd-cp",
+        "cp-web",
+        "cp-workers",
+        "cp-batch",
+        "cp-nodes",
+        "nodes-registry",
+        "web-obs",
+        "cp-obs",
+        "obs-cp"
+      ],
+      "caption": "Every workload class on one reconciled platform, fed from Git, scaled by composed loops, fenced by declarative tenancy — with truth-critical state deliberately outside.",
+      "groups": [
+        "workloads",
+        "platform",
+        "outside",
+        "ops"
+      ]
+    },
+    "flows": [
+      {
+        "name": "Ship to scale — one afternoon on the platform",
+        "note": "A deploy, a traffic spike, and a node failure — all absorbed by the same loops, no human in any path.",
+        "sequence": {
+          "participants": [
+            {
+              "id": "Dev"
+            },
+            {
+              "id": "CD",
+              "label": "GitOps"
+            },
+            {
+              "id": "CP",
+              "label": "control plane"
+            },
+            {
+              "id": "Web",
+              "label": "api pods"
+            },
+            {
+              "id": "Workers"
+            },
+            {
+              "id": "Nodes"
+            }
+          ],
+          "messages": [
+            {
+              "from": "Dev",
+              "to": "CD",
+              "arrow": "->>",
+              "label": "merge: api digest bump (via Git)"
+            },
+            {
+              "from": "CD",
+              "to": "CP",
+              "arrow": "->>",
+              "label": "apply; surge rollout, readiness-gated"
+            },
+            {
+              "from": "CP",
+              "to": "Web",
+              "arrow": "->>",
+              "label": "v2 live, zero downtime"
+            },
+            {
+              "from": "CP",
+              "to": "Workers",
+              "arrow": "->>",
+              "label": "15:00 queue spike: KEDA 2 -> 40"
+            },
+            {
+              "from": "CP",
+              "to": "Nodes",
+              "arrow": "->>",
+              "label": "pending pods -> +6 spot nodes"
+            },
+            {
+              "from": "Nodes",
+              "to": "CP",
+              "arrow": "->>",
+              "label": "16:10 node fails: pods reschedule (PDB-safe)"
+            },
+            {
+              "from": "CP",
+              "to": "Dev",
+              "arrow": "-->>",
+              "label": "nothing to do — the loops closed every gap"
+            }
+          ]
+        },
+        "highlight": [
+          "CP",
+          "CD"
+        ]
+      }
+    ],
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Zero-downtime deploys by PR merge, ~30/day",
+        "how": "GitOps applies digest bumps; rolling updates surge behind readiness gates; a bad version stalls safely; rollback is git revert.",
+        "steps": [
+          "contract",
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Scale services on load, workers on backlog, to zero",
+        "how": "HPA on CPU/custom metrics for request-driven fleets; KEDA on queue depth with scale-to-zero; cluster autoscaler adds nodes on pending pods.",
+        "steps": [
+          "autoscale"
+        ]
+      },
+      {
+        "requirement": "Scheduled and on-demand batch with retries, no overlap",
+        "how": "Jobs with parallelism/backoffLimit and idempotent handlers; CronJobs with concurrencyPolicy Forbid; spot and tainted GPU pools from zero.",
+        "steps": [
+          "batch"
+        ]
+      },
+      {
+        "requirement": "Four isolated, quota'd team slices",
+        "how": "Namespaces with scoped RBAC, ResourceQuotas, LimitRanges, default-deny NetworkPolicies, and admission-enforced standards.",
+        "steps": [
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Self-healing without humans",
+        "how": "Reconciliation at every level: ReplicaSets replace pods, the scheduler re-places on node death, operators fail over infrastructure state.",
+        "steps": [
+          "contract",
+          "stateful"
+        ]
+      },
+      {
+        "requirement": "Rollback anything as a revert",
+        "how": "Git is the single desired state for apps and platform config; the GitOps controller converges the cluster to any commit.",
+        "steps": [
+          "platform"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Declarative everything, drift reverted",
+        "how": "All change flows through Git; the GitOps controller applies and actively reverts manual drift; kubectl is read-only for humans.",
+        "steps": [
+          "contract",
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Disruptions never breach availability budgets",
+        "how": "PodDisruptionBudgets on every serving fleet make drains, scale-downs, and upgrades self-throttling.",
+        "steps": [
+          "autoscale",
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Efficiency by design",
+        "how": "Requests-based bin-packing at ~60% target, scale-to-zero workers, spot pools for batch, GPU pools that exist only under demand.",
+        "steps": [
+          "run-right",
+          "autoscale",
+          "batch"
+        ]
+      },
+      {
+        "requirement": "Boring quarterly upgrades",
+        "how": "Staging rehearsal, surge node pools, PDB-respecting drains — the platform's own safety rails applied to its own lifecycle.",
+        "steps": [
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Secure by default",
+        "how": "Least-privilege RBAC, default-deny netpol, digest-pinned images, no-privileged admission rules, KMS-backed secrets.",
+        "steps": [
+          "run-right",
+          "platform"
+        ]
+      },
+      {
+        "requirement": "Honest platform boundary",
+        "how": "The money database and broker live outside; the PaaS alternative is named for sub-fleet scale — the hammer is chosen, not assumed.",
+        "steps": [
+          "stateful",
+          "platform"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Frame it as the runtime platform for a fleet: 20 services, 4 teams, workers, nightly and GPU batch, 30 deploys a day.",
+        "State the twist: everything runs on Kubernetes, and the interview is really about one idea — desired state plus reconciliation — applied at every level, with honest boundaries."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 3 min",
+      "say": [
+        "Start from pet VMs and deploy.sh and name the pathologies precisely: snowflake drift, deploy fear, no self-healing, terrible utilization, tribal knowledge."
+      ]
+    },
+    {
+      "phase": "Capability tour",
+      "time": "next 15 min",
+      "say": [
+        "Establish the loop once (Deployment -> ReplicaSet -> Pods, Services over label selectors, readiness-gated rollouts), then show everything else is the same loop: production shape (probes/resources/config), three stacked autoscalers, operators for state, Jobs for batch.",
+        "Argue the database question explicitly — rebuildable state in-cluster via operators, source-of-truth state managed outside — it's where senior judgment shows.",
+        "Land tenancy and GitOps as reconciliation applied to teams and to operations itself: quotas and admission as physics, Git as reverting truth."
+      ]
+    },
+    {
+      "phase": "Make it real",
+      "time": "final 5 min",
+      "say": [
+        "Close operationally: PDB-guarded surge upgrades on a quarterly cadence, requests-based showback, spot/GPU pool economics.",
+        "End on the boundary: this platform earns its YAML tax at fleet shape and loses to a PaaS below it — pick the hammer for the nail you actually have."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Deploys a containerized service with a Deployment + Service, and can explain what happens when a pod dies.",
+        "Knows readiness vs. liveness at the definition level and that resources should be set."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Designs production-shaped workloads: correct probe semantics, requests/limits with QoS awareness, config/secrets injection, Ingress routing.",
+        "Wires HPA and KEDA to the right signals per workload and explains the pending-pods -> cluster-autoscaler chain.",
+        "Uses Jobs/CronJobs with explicit concurrency policy and idempotent handlers; knows why GPU pools are tainted."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Argues the state boundary from rebuildability and ownership of failure modes — operators vs. managed — and can name what flips the call.",
+        "Designs tenancy as enforced configuration (RBAC, quotas, netpol, admission) and operations as reconciliation (GitOps with drift reversion, break-glass that preserves truth).",
+        "Owns the platform lifecycle: PDB-guarded surge upgrades, disruption drills, requests-based cost governance — and judges Kubernetes against a PaaS honestly at the given scale."
+      ]
+    }
+  ],
+  "followUps": [
+    "Design multi-region: active-active clusters with global traffic management — what stays per-cluster, what becomes global state, and how do deploys stay atomic across regions?",
+    "Your smallest team runs one service and hates the YAML. Design the paved-road abstraction (score the options: Helm templates, an internal operator, an internal PaaS) without forking the platform.",
+    "Long-lived WebSocket connections meet node drains: design zero-disruption connection handling through upgrades (drain signaling, connection draining, PDB interplay).",
+    "The HPA and VPA fight over the same Deployment — explain the conflict and design a policy for when each owns which dimension.",
+    "etcd at 10x: which object counts and watch patterns hurt first, and what platform habits (CRD sprawl, event spam, config churn) drive them?",
+    "Design the secrets story end to end: KMS-backed external store, rotation without redeploys, and what happens when the secrets operator itself is down.",
+    "Supply-chain harden the pipeline: image signing, admission verification, SBOM policy — where does each check run and what does it block?",
+    "A spot-heavy batch fleet starts flapping the cluster autoscaler (scale-up/down oscillation). Diagnose the loop interaction and damp it without abandoning spot."
+  ],
+  "technologyChoices": [
+    {
+      "concern": "Kubernetes distribution and control plane",
+      "steps": [
+        "contract",
+        "platform"
+      ],
+      "selfHosted": [
+        {
+          "name": "Kubernetes",
+          "icon": "assets/tech-icons/kubernetes.png"
+        },
+        {
+          "name": "k3s",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Talos Linux",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "OpenShift",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "EKS",
+            "icon": "assets/tech-icons/Arch_Amazon-Elastic-Kubernetes-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "GKE",
+            "icon": "assets/tech-icons/Containers-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "AKS",
+            "icon": "assets/tech-icons/10023-icon-service-Kubernetes-Services.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Managed control planes remove etcd operations, API-server HA, and upgrade orchestration — the least differentiated toil in the stack.",
+        "Self-managed distributions matter on-prem, at the edge (k3s), or where the OS itself should be declarative (Talos).",
+        "The workload API is portable either way — the disciplines in this design transfer across every conformant distribution."
+      ],
+      "makesIrrelevant": "A managed control plane removes etcd backups, API-server scaling, and control-plane patching; node pools, workloads, and governance remain fully yours."
+    },
+    {
+      "concern": "Ingress and edge traffic",
+      "steps": [
+        "run-right"
+      ],
+      "selfHosted": [
+        {
+          "name": "Nginx",
+          "icon": "assets/tech-icons/nginx.png"
+        },
+        {
+          "name": "Envoy",
+          "icon": "assets/tech-icons/envoy.png"
+        },
+        {
+          "name": "HAProxy",
+          "icon": "assets/tech-icons/haproxy.png"
+        },
+        {
+          "name": "Traefik",
+          "icon": "assets/tech-icons/traefik.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ALB",
+            "icon": "assets/tech-icons/Arch_Elastic-Load-Balancing_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Load Balancing",
+            "icon": "assets/tech-icons/Networking-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Application Gateway",
+            "icon": "assets/tech-icons/10076-icon-service-Application-Gateways.svg"
+          },
+          {
+            "name": "Azure Front Door",
+            "icon": "assets/tech-icons/10073-icon-service-Front-Door-and-CDN-Profiles.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "In-cluster ingress controllers keep routing config declarative and portable; the cloud LB in front stays dumb and stable.",
+        "Cloud-native ingress integrations provision LBs straight from manifests at the price of provider coupling.",
+        "Gateway API is the forward-looking standard — prefer it for new route configuration over legacy Ingress annotations."
+      ],
+      "makesIrrelevant": "Declarative ingress removes hand-edited proxy configs on pet LBs; TLS and routing become reviewable objects like everything else."
+    },
+    {
+      "concern": "GitOps and continuous delivery",
+      "steps": [
+        "platform",
+        "contract"
+      ],
+      "selfHosted": [
+        {
+          "name": "Argo CD",
+          "icon": "assets/tech-icons/argocd.png"
+        },
+        {
+          "name": "Flux",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Jenkins",
+          "icon": "assets/tech-icons/jenkins.png"
+        },
+        {
+          "name": "GitHub Actions",
+          "icon": "assets/tech-icons/github-actions.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CodePipeline",
+            "icon": "assets/tech-icons/Arch_AWS-CodePipeline_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Build",
+            "icon": "assets/tech-icons/DevOps-512-color.png"
+          },
+          {
+            "name": "Cloud Deploy",
+            "icon": "assets/tech-icons/DevOps-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure DevOps",
+            "icon": "assets/tech-icons/03393-icon-service-Managed-DevOps-Pools.svg"
+          },
+          {
+            "name": "GitHub Actions",
+            "icon": "assets/tech-icons/github-actions.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Pull-based GitOps controllers (Argo/Flux) give drift reversion and cluster-side reconciliation — CI never needs cluster credentials.",
+        "Push-based pipelines are simpler to start and fit imperative steps (migrations) but leave drift undetected.",
+        "Most fleets land on CI building images and GitOps deploying manifests — build and deploy decoupled at the Git boundary."
+      ],
+      "makesIrrelevant": "A reconciling CD controller removes bespoke deploy scripts and kubectl-from-CI credentials; pipeline design and promotion policy remain yours."
+    },
+    {
+      "concern": "Autoscaling stack",
+      "steps": [
+        "autoscale"
+      ],
+      "selfHosted": [
+        {
+          "name": "KEDA",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Karpenter",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Cluster Autoscaler",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "EKS",
+            "icon": "assets/tech-icons/Arch_Amazon-Elastic-Kubernetes-Service_64.png"
+          },
+          {
+            "name": "EC2 Auto Scaling",
+            "icon": "assets/tech-icons/Arch_Amazon-EC2_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "GKE",
+            "icon": "assets/tech-icons/Containers-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "AKS",
+            "icon": "assets/tech-icons/10023-icon-service-Kubernetes-Services.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "HPA + KEDA + a node provisioner is the composable default; each loop stays simple and the composition does the work.",
+        "Karpenter-style provisioning picks instance shapes per pending set — better bin-packing than fixed node groups, more provider coupling.",
+        "Fully-managed autopilot modes remove node management entirely at the price of per-pod pricing and less pool control."
+      ],
+      "makesIrrelevant": "Node autoscaling removes capacity tickets and weekend scale-ups; choosing honest requests and scaling signals is still design work."
+    },
+    {
+      "concern": "In-cluster state and operators",
+      "steps": [
+        "stateful"
+      ],
+      "selfHosted": [
+        {
+          "name": "CloudNativePG",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Strimzi",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "Rook",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora (PostgreSQL)",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          },
+          {
+            "name": "MSK",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Streaming-for-Apache-Kafka_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          },
+          {
+            "name": "Event Hubs",
+            "icon": "assets/tech-icons/00039-icon-service-Event-Hubs.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Mature operators make in-cluster Redis/Kafka-class state genuinely operable: failover, backups, and upgrades as reconciled config.",
+        "Managed services buy the hardest guarantees (durability, PITR, failover SLAs) for the state you cannot afford to relearn.",
+        "The boundary follows rebuildability: cache and stream state in-cluster, source-of-truth data outside — flipped only by sovereignty or fleet economics."
+      ],
+      "makesIrrelevant": "A good operator removes hand-run failover and backup scripts for infrastructure state; it does not remove your ownership of drills and restores."
+    },
+    {
+      "concern": "Service networking and policy",
+      "steps": [
+        "platform",
+        "run-right"
+      ],
+      "selfHosted": [
+        {
+          "name": "Cilium",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Calico",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Istio",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Linkerd",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "VPC CNI",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Dataplane V2",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure CNI",
+            "icon": "assets/tech-icons/tech.png"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A NetworkPolicy-capable CNI (Cilium/Calico-class) is the floor — default-deny tenancy depends on it.",
+        "A mesh adds mTLS, retries, and traffic shifting at real operational and resource cost — adopt for a named need, not by default.",
+        "eBPF dataplanes collapse much of the proxy overhead and give network observability the paved road can expose."
+      ],
+      "makesIrrelevant": "A policy-capable CNI removes iptables folklore and per-app firewall tickets; a mesh, if adopted, removes per-service TLS and retry code."
+    },
+    {
+      "concern": "Observability",
+      "steps": [
+        "run-right",
+        "autoscale",
+        "platform"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "Loki",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Jaeger",
+          "icon": "assets/tech-icons/jaeger.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "Managed Service for Prometheus",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Service-for-Prometheus_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          },
+          {
+            "name": "Azure Managed Grafana",
+            "icon": "assets/tech-icons/02905-icon-service-Azure-Managed-Grafana.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "The Prometheus data model is the platform's lingua franca — kube-state metrics, autoscaler signals, and paved-road dashboards all speak it.",
+        "Managed offerings remove retention and scaling toil for the metrics backend; the alert and dashboard design stays yours.",
+        "Platform SLOs need platform metrics: throttling, OOMKills, pending pods, rollout stalls, drift events — not just app RED metrics."
+      ],
+      "makesIrrelevant": "Managed metric backends remove storage scaling for telemetry; deciding what a healthy platform looks like remains engineering."
+    },
+    {
+      "concern": "Registry and supply chain",
+      "steps": [
+        "contract",
+        "platform"
+      ],
+      "selfHosted": [
+        {
+          "name": "Harbor",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "GitLab",
+          "icon": "assets/tech-icons/gitlab.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "ECR",
+            "icon": "assets/tech-icons/Arch_Amazon-Elastic-Container-Registry_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Artifact Registry",
+            "icon": "assets/tech-icons/DevOps-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Container Registry",
+            "icon": "assets/tech-icons/10105-icon-service-Container-Registries.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A private OCI registry with digest-addressed images is the deploy artifact store — tags for humans, digests for machines.",
+        "Signing plus admission verification turns supply-chain policy into an enforced gate rather than a wiki page.",
+        "Registry availability is deploy availability: replicate or cache it like the tier-1 dependency it is."
+      ],
+      "makesIrrelevant": "Digest-pinned immutable images remove which-build-is-live archaeology; provenance policy and base-image hygiene remain yours."
+    },
+    {
+      "concern": "Secrets management",
+      "steps": [
+        "run-right",
+        "platform"
+      ],
+      "selfHosted": [
+        {
+          "name": "HashiCorp Vault",
+          "icon": "assets/tech-icons/hashicorp_vault.png"
+        },
+        {
+          "name": "External Secrets Operator",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "OpenBao",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Secrets Manager",
+            "icon": "assets/tech-icons/Arch_AWS-Secrets-Manager_64.png"
+          },
+          {
+            "name": "KMS",
+            "icon": "assets/tech-icons/Arch_AWS-Key-Management-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Secret Manager",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          },
+          {
+            "name": "Cloud KMS",
+            "icon": "assets/tech-icons/SecurityIdentity-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Key Vault",
+            "icon": "assets/tech-icons/10245-icon-service-Key-Vaults.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Kubernetes Secrets alone are base64 with RBAC — fine as a delivery surface, not as a vault; the source of truth belongs in a KMS-backed store.",
+        "External-secrets syncing keeps rotation out of deploys; workload identity removes long-lived credentials from pods entirely.",
+        "Self-hosted vaults trade managed convenience for sovereignty, at unseal/backup/audit operational cost."
+      ],
+      "makesIrrelevant": "KMS-backed external secrets remove credentials-in-manifests and rotation redeploys; classifying and scoping secrets is still yours."
+    }
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "k8s-controllers",
+        "group": "The Core Model",
+        "groupDescription": "The reconciliation idea and the objects it converges.",
+        "title": "Controllers",
+        "url": "https://kubernetes.io/docs/concepts/architecture/controller/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "The observe-diff-act loop stated plainly — the one idea the whole platform (and this whole design) repeats."
+      },
+      {
+        "id": "k8s-deployments",
+        "group": "The Core Model",
+        "groupDescription": "The reconciliation idea and the objects it converges.",
+        "title": "Deployments",
+        "url": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Rolling updates, surge/unavailable knobs, and rollback mechanics — the deploy machinery step 2 builds on."
+      },
+      {
+        "id": "k8s-services",
+        "group": "The Core Model",
+        "groupDescription": "The reconciliation idea and the objects it converges.",
+        "title": "Service",
+        "url": "https://kubernetes.io/docs/concepts/services-networking/service/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Stable virtual IPs over label-selected, readiness-gated endpoints — the indirection that makes pods cattle."
+      },
+      {
+        "id": "k8s-probes",
+        "group": "Production Shape",
+        "groupDescription": "The contracts that make a running pod a serving pod.",
+        "title": "Liveness, Readiness and Startup Probes",
+        "url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "The three probe semantics — and the configuration surface where the restart-storm trap lives."
+      },
+      {
+        "id": "k8s-resources",
+        "group": "Production Shape",
+        "groupDescription": "The contracts that make a running pod a serving pod.",
+        "title": "Resource Management for Pods and Containers",
+        "url": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Requests, limits, QoS classes, OOM behavior, and CPU throttling — the scheduling honesty the autoscalers depend on."
+      },
+      {
+        "id": "k8s-hpa",
+        "group": "Elasticity",
+        "groupDescription": "The three stacked scaling loops.",
+        "title": "Horizontal Pod Autoscaling",
+        "url": "https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Metrics sources, stabilization behavior, and the algorithm — the request-driven half of the pod-scaling story."
+      },
+      {
+        "id": "keda",
+        "group": "Elasticity",
+        "groupDescription": "The three stacked scaling loops.",
+        "title": "KEDA — Kubernetes Event-driven Autoscaling",
+        "url": "https://keda.sh/",
+        "source": "KEDA",
+        "type": "Docs",
+        "why": "Backlog-driven scaling with scale-to-zero and dozens of scalers — the queue-worker half."
+      },
+      {
+        "id": "karpenter",
+        "group": "Elasticity",
+        "groupDescription": "The three stacked scaling loops.",
+        "title": "Karpenter",
+        "url": "https://karpenter.sh/",
+        "source": "Karpenter",
+        "type": "Docs",
+        "why": "Shape-aware node provisioning from pending pods — the node layer that completes the composed loops."
+      },
+      {
+        "id": "k8s-disruptions",
+        "group": "Elasticity",
+        "groupDescription": "The three stacked scaling loops.",
+        "title": "Disruptions (and PodDisruptionBudgets)",
+        "url": "https://kubernetes.io/docs/concepts/workloads/pods/disruptions/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Voluntary vs. involuntary disruption and the budget mechanism that makes drains, reaping, and upgrades self-throttling."
+      },
+      {
+        "id": "k8s-statefulsets",
+        "group": "State & Batch",
+        "groupDescription": "Identity, storage, operators, and run-to-completion work.",
+        "title": "StatefulSets",
+        "url": "https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Stable identity, per-replica PVCs, and ordered operations — what state gets mechanically, and what it doesn't."
+      },
+      {
+        "id": "k8s-operator-pattern",
+        "group": "State & Batch",
+        "groupDescription": "Identity, storage, operators, and run-to-completion work.",
+        "title": "Operator pattern",
+        "url": "https://kubernetes.io/docs/concepts/extend-kubernetes/operator/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "CRDs plus custom controllers — the platform's own extension mechanism, and the basis of the in-cluster database option."
+      },
+      {
+        "id": "cloudnativepg",
+        "group": "State & Batch",
+        "groupDescription": "Identity, storage, operators, and run-to-completion work.",
+        "title": "CloudNativePG",
+        "url": "https://cloudnative-pg.io/",
+        "source": "CloudNativePG",
+        "type": "Docs",
+        "why": "The reference Postgres operator — read its failover and backup model before arguing either side of the database question."
+      },
+      {
+        "id": "k8s-jobs",
+        "group": "State & Batch",
+        "groupDescription": "Identity, storage, operators, and run-to-completion work.",
+        "title": "Jobs",
+        "url": "https://kubernetes.io/docs/concepts/workloads/controllers/job/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Completions, parallelism, backoff, and TTL — batch semantics as fields, retries as at-least-once."
+      },
+      {
+        "id": "k8s-cronjobs",
+        "group": "State & Batch",
+        "groupDescription": "Identity, storage, operators, and run-to-completion work.",
+        "title": "CronJob",
+        "url": "https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Schedules, concurrencyPolicy, and missed-run semantics — where the overlapping-runs trap is defused."
+      },
+      {
+        "id": "k8s-rbac",
+        "group": "Tenancy & Operations",
+        "groupDescription": "Fences, GitOps, and the platform's own lifecycle.",
+        "title": "Using RBAC Authorization",
+        "url": "https://kubernetes.io/docs/reference/access-authn-authz/rbac/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Roles, bindings, and scoping — the least-privilege machinery behind namespace tenancy."
+      },
+      {
+        "id": "k8s-netpol",
+        "group": "Tenancy & Operations",
+        "groupDescription": "Fences, GitOps, and the platform's own lifecycle.",
+        "title": "Network Policies",
+        "url": "https://kubernetes.io/docs/concepts/services-networking/network-policies/",
+        "source": "Kubernetes",
+        "type": "Docs",
+        "why": "Default-deny and selective allow — the network half of the tenancy fences."
+      },
+      {
+        "id": "argocd",
+        "group": "Tenancy & Operations",
+        "groupDescription": "Fences, GitOps, and the platform's own lifecycle.",
+        "title": "Argo CD",
+        "url": "https://argo-cd.readthedocs.io/",
+        "source": "Argo",
+        "type": "Docs",
+        "why": "Sync, health, and drift semantics for the GitOps loop — reconciliation pointed at the cluster itself."
+      },
+      {
+        "id": "borg-paper",
+        "group": "Lineage & Perspective",
+        "groupDescription": "Where the ideas came from and how to hold them honestly.",
+        "title": "Borg, Omega, and Kubernetes",
+        "url": "https://queue.acm.org/detail.cfm?id=2898444",
+        "source": "ACM Queue",
+        "type": "Paper",
+        "year": "2016",
+        "why": "The lineage of the reconciliation model from Google's internal orchestrators — why the API looks the way it does."
+      },
+      {
+        "id": "k8s-hard-way",
+        "group": "Lineage & Perspective",
+        "groupDescription": "Where the ideas came from and how to hold them honestly.",
+        "title": "Kubernetes The Hard Way",
+        "url": "https://github.com/kelseyhightower/kubernetes-the-hard-way",
+        "source": "Kelsey Hightower",
+        "type": "Repository",
+        "why": "Building the control plane by hand once is the fastest cure for treating it as magic — and the best argument for paying someone to run it."
+      }
+    ]
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg",
+  "assets": {
+    "icon": "icon.png"
+  }
+}

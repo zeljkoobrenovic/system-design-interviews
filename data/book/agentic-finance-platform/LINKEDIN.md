@@ -11,12 +11,12 @@ The technology choices make the trade-offs concrete: Textract, Document AI, Azur
 The tools can change. The invariant does not: the model can help prepare the decision, but it must not become the unchecked authority for the ledger or the bank account.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-finance-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-finance-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AgenticAI #FinTech

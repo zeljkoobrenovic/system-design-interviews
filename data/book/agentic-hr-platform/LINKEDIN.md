@@ -11,12 +11,12 @@ Modern choices include API gateways and WAFs for admission control; pgvector, Op
 In HR, autonomy needs explainable, auditable, legally defensible boundaries.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-hr-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-hr-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AgenticAI #HRTech

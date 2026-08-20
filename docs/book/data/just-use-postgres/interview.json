@@ -1,0 +1,2939 @@
+{
+  "title": "Just Use Postgres — Postgres-Centric Systems Design",
+  "description": "Design a local-services marketplace (accounts, listings with flexible attributes, keyword/geo/semantic search, bookings, background jobs, live updates, and dashboards) where one PostgreSQL cluster is deliberately the entire data platform. The organizing idea: before adding a document store, a search engine, a queue, a pub/sub bus, and a warehouse, check whether Postgres already does it — JSONB for documents, tsvector/GIN for search, FOR UPDATE SKIP LOCKED for queues, LISTEN/NOTIFY for pub/sub, rollups and materialized views for analytics, and PostGIS + pgvector for geo and semantic search — all sharing one set of ACID transactions, one backup story, and one system to operate.",
+  "highLevelArchitecture": {
+    "nodes": [
+      {
+        "id": "Client",
+        "label": "Web / Mobile App",
+        "type": "client",
+        "category": "boundary",
+        "traits": [],
+        "description": "Buyer's or provider's browser/app: browse, search, book, chat, watch live updates."
+      },
+      {
+        "id": "LB",
+        "label": "API Gateway / LB",
+        "type": "edge",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Terminates TLS, authenticates, and routes to the stateless app tier."
+      },
+      {
+        "id": "App",
+        "label": "Application Service",
+        "type": "service",
+        "category": "compute",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Stateless business logic; issues SQL for every capability and relays live events to WebSockets."
+      },
+      {
+        "id": "Pool",
+        "label": "PgBouncer / Connection Pooler",
+        "type": "gateway",
+        "category": "traffic",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Multiplexes thousands of client connections onto a few dozen Postgres server connections (transaction pooling)."
+      },
+      {
+        "id": "Core",
+        "label": "Postgres — Relational Core",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "System of record: users, listings, orders/bookings with FKs, unique/check/exclusion constraints, and ACID transactions."
+      },
+      {
+        "id": "Docs",
+        "label": "Postgres — JSONB Documents",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Per-category custom attributes as a JSONB column with a GIN index — the document store inside the relational row."
+      },
+      {
+        "id": "Search",
+        "label": "Postgres — Full-Text Search (tsvector/GIN)",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Generated tsvector column + GIN index; websearch_to_tsquery, ts_rank_cd, and pg_trgm for typo tolerance — updated in the same commit as the row."
+      },
+      {
+        "id": "GeoVec",
+        "label": "Postgres — PostGIS + pgvector",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "GiST index on a geography column for 'near me'; HNSW index on an embedding column for semantic search."
+      },
+      {
+        "id": "Jobs",
+        "label": "Postgres — Job Queue (SKIP LOCKED)",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "A jobs table claimed with FOR UPDATE SKIP LOCKED; enqueued in the same transaction as the business write, so queue and record can never drift."
+      },
+      {
+        "id": "PubSub",
+        "label": "Postgres — LISTEN/NOTIFY",
+        "type": "stream",
+        "category": "async",
+        "traits": [],
+        "description": "Transactional pub/sub signal: NOTIFY fires only on commit, waking workers and pushing live events. A doorbell, not a delivery guarantee."
+      },
+      {
+        "id": "Rollups",
+        "label": "Postgres — Rollups & Materialized Views",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Incrementally maintained rollup tables and scheduled materialized views that serve dashboards without scanning fact tables."
+      },
+      {
+        "id": "Replica",
+        "label": "Streaming Read Replica",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "WAL-streamed replica: the failover target and the home for reporting and heavy ad-hoc reads (lag-aware)."
+      },
+      {
+        "id": "Worker",
+        "label": "Job Workers",
+        "type": "worker",
+        "category": "async",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Claims job batches with SKIP LOCKED and runs emails, thumbnails, payouts; idempotent per job id."
+      },
+      {
+        "id": "Metrics",
+        "label": "Metrics & Alerting",
+        "type": "observability",
+        "category": "ops",
+        "traits": [
+          "stateless"
+        ],
+        "description": "Watches p99, pg_stat_statements, queue depth and oldest-job age, replication lag, bloat, and vacuum health."
+      },
+      {
+        "id": "ZooDoc",
+        "label": "Document DB (MongoDB)",
+        "type": "database",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Naive baseline: a separate document store for flexible listing attributes."
+      },
+      {
+        "id": "ZooSearch",
+        "label": "Search Engine (Elasticsearch)",
+        "type": "index",
+        "category": "state",
+        "traits": [
+          "stateful",
+          "derived"
+        ],
+        "description": "Naive baseline: a separate search cluster fed by a reindex pipeline — and the legitimate graduation target when search outgrows Postgres."
+      },
+      {
+        "id": "ZooCache",
+        "label": "Cache + Queue (Redis)",
+        "type": "cache",
+        "category": "state",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Naive baseline: a cache doubling as a job queue."
+      },
+      {
+        "id": "ZooBroker",
+        "label": "Message Broker (RabbitMQ)",
+        "type": "queue",
+        "category": "async",
+        "traits": [
+          "stateful"
+        ],
+        "description": "Naive baseline: a separate broker for events — and the graduation target when job volume outgrows a queue table."
+      }
+    ],
+    "links": [
+      {
+        "id": "client-lb",
+        "from": "Client",
+        "to": "LB",
+        "label": "HTTPS"
+      },
+      {
+        "id": "lb-app",
+        "from": "LB",
+        "to": "App",
+        "label": "route request"
+      },
+      {
+        "id": "app-core",
+        "from": "App",
+        "to": "Core",
+        "label": "ACID TX: users/listings/orders"
+      },
+      {
+        "id": "app-docs",
+        "from": "App",
+        "to": "Docs",
+        "label": "JSONB @> filter, jsonb_set"
+      },
+      {
+        "id": "app-search",
+        "from": "App",
+        "to": "Search",
+        "label": "websearch_to_tsquery + ts_rank"
+      },
+      {
+        "id": "app-geovec",
+        "from": "App",
+        "to": "GeoVec",
+        "label": "ST_DWithin / embedding <=>"
+      },
+      {
+        "id": "app-jobs",
+        "from": "App",
+        "to": "Jobs",
+        "label": "INSERT job (same TX as order)"
+      },
+      {
+        "id": "app-pubsub",
+        "from": "App",
+        "to": "PubSub",
+        "label": "NOTIFY on commit"
+      },
+      {
+        "id": "pubsub-worker",
+        "from": "PubSub",
+        "to": "Worker",
+        "label": "wake: jobs channel"
+      },
+      {
+        "id": "pubsub-app",
+        "from": "PubSub",
+        "to": "App",
+        "label": "live events -> WebSocket"
+      },
+      {
+        "id": "worker-jobs",
+        "from": "Worker",
+        "to": "Jobs",
+        "label": "claim: FOR UPDATE SKIP LOCKED"
+      },
+      {
+        "id": "worker-core",
+        "from": "Worker",
+        "to": "Core",
+        "label": "commit job results"
+      },
+      {
+        "id": "core-rollups",
+        "from": "Core",
+        "to": "Rollups",
+        "label": "upsert rollup / REFRESH matview"
+      },
+      {
+        "id": "app-rollups",
+        "from": "App",
+        "to": "Rollups",
+        "label": "dashboard reads"
+      },
+      {
+        "id": "core-replica",
+        "from": "Core",
+        "to": "Replica",
+        "label": "streaming WAL replication"
+      },
+      {
+        "id": "app-replica",
+        "from": "App",
+        "to": "Replica",
+        "label": "reporting / ad-hoc reads"
+      },
+      {
+        "id": "app-pool",
+        "from": "App",
+        "to": "Pool",
+        "label": "thousands of client conns"
+      },
+      {
+        "id": "pool-core",
+        "from": "Pool",
+        "to": "Core",
+        "label": "a few dozen server conns"
+      },
+      {
+        "id": "core-metrics",
+        "from": "Core",
+        "to": "Metrics",
+        "label": "pg_stat_*, lag, bloat"
+      },
+      {
+        "id": "jobs-metrics",
+        "from": "Jobs",
+        "to": "Metrics",
+        "label": "queue depth, oldest-job age"
+      },
+      {
+        "id": "app-metrics",
+        "from": "App",
+        "to": "Metrics",
+        "label": "p99, error rate"
+      },
+      {
+        "id": "app-zoodoc",
+        "from": "App",
+        "to": "ZooDoc",
+        "label": "listing docs"
+      },
+      {
+        "id": "app-zoosearch",
+        "from": "App",
+        "to": "ZooSearch",
+        "label": "search queries"
+      },
+      {
+        "id": "app-zoocache",
+        "from": "App",
+        "to": "ZooCache",
+        "label": "cache + job queue"
+      },
+      {
+        "id": "app-zoobroker",
+        "from": "App",
+        "to": "ZooBroker",
+        "label": "publish events"
+      },
+      {
+        "id": "worker-zoobroker",
+        "from": "Worker",
+        "to": "ZooBroker",
+        "label": "consume + ack"
+      },
+      {
+        "id": "core-zoosearch",
+        "from": "Core",
+        "to": "ZooSearch",
+        "label": "reindex glue job"
+      }
+    ],
+    "types": [
+      {
+        "id": "pg-tier",
+        "label": "PostgreSQL Data Platform",
+        "nodes": [
+          "Core",
+          "Docs",
+          "Search",
+          "GeoVec",
+          "Jobs",
+          "PubSub",
+          "Rollups"
+        ]
+      },
+      {
+        "id": "async",
+        "label": "Async Processing",
+        "nodes": [
+          "Jobs",
+          "PubSub",
+          "Worker"
+        ]
+      },
+      {
+        "id": "ops",
+        "label": "Scale & Ops",
+        "nodes": [
+          "Pool",
+          "Replica",
+          "Metrics"
+        ]
+      },
+      {
+        "id": "zoo",
+        "label": "The Polyglot Zoo",
+        "nodes": [
+          "ZooDoc",
+          "ZooSearch",
+          "ZooCache",
+          "ZooBroker"
+        ]
+      }
+    ]
+  },
+  "requirementsDiagram": [
+    "graph LR",
+    "  User[Buyer / Provider]",
+    "  Listings[Listings + custom attributes]",
+    "  Search[Keyword / geo / semantic search]",
+    "  Booking[Book + pay]",
+    "  Jobs[Background jobs]",
+    "  Live[Live updates]",
+    "  Dash[Dashboards]",
+    "  User --> Listings",
+    "  User --> Search",
+    "  Search --> Booking",
+    "  Booking --> Jobs",
+    "  Booking --> Live",
+    "  User --> Dash"
+  ],
+  "capacityDiagram": [
+    "graph LR",
+    "  R[API reads ~10k/s]",
+    "  W[Writes ~1.5k/s]",
+    "  PG[Postgres ~30k queries/s]",
+    "  Box[1 primary + 2 replicas]",
+    "  R --> PG",
+    "  W --> PG",
+    "  PG --> Box"
+  ],
+  "requirements": {
+    "functional": [
+      "Create accounts and listings with structured fields plus per-category custom attributes.",
+      "Search listings by keyword with ranking and typo tolerance.",
+      "Filter and rank by location ('plumbers within 5 km') and by semantic similarity ('fix my fence' finds handymen).",
+      "Book a provider's time slot transactionally — no double-booking, no lost orders.",
+      "Run background jobs (confirmation emails, image thumbnails, payouts) reliably, with retries and a dead-letter path.",
+      "Push live updates (booking status, new message) to connected clients.",
+      "Serve an analytics dashboard (GMV, conversion, DAU) without hurting production traffic."
+    ],
+    "nonFunctional": [
+      "One data platform: minimize the operational surface for a small team — every extra stateful system needs its own HA, backup, upgrade, and on-call story.",
+      "Strong consistency for money and booking state: ACID transactions, constraint-enforced invariants.",
+      "p99 read latency under ~100 ms at ~10k requests/s.",
+      "Jobs are at-least-once and never lost: enqueue commits atomically with the business write; workers are idempotent.",
+      "Durable with point-in-time recovery: WAL archiving, restore drills, RPO near zero for committed transactions.",
+      "Honest graduation criteria: know the signals that a workload has genuinely outgrown Postgres and carve out only that workload."
+    ]
+  },
+  "capacity": [
+    {
+      "label": "Peak API requests/sec",
+      "value": "~10,000",
+      "note": "Browse, search, booking, dashboards. Read-heavy: bookings and edits are a small fraction."
+    },
+    {
+      "label": "Postgres queries/sec",
+      "value": "~30,000",
+      "note": "A few queries per request. Index-served OLTP at this rate fits comfortably on one modern server (dozens of cores, NVMe, 256 GB RAM)."
+    },
+    {
+      "label": "Write transactions/sec",
+      "value": "~1,500",
+      "note": "Listing edits, bookings, job inserts, rollup upserts. Well inside a single primary's envelope; WAL throughput, not CPU, is the thing to watch."
+    },
+    {
+      "label": "Data volume",
+      "value": "~0.5 TB",
+      "note": "50M listings × ~2 KB (row + JSONB) ≈ 100 GB, plus orders, jobs history, and indexes. The hot working set fits in RAM."
+    },
+    {
+      "label": "Search indexes",
+      "value": "~50–80 GB",
+      "note": "GIN over tsvector plus trigram, GiST geography, and HNSW vector indexes. Every listing write updates several indexes — that write amplification is the price of transactionally fresh search."
+    },
+    {
+      "label": "Job throughput",
+      "value": "~500/s (2k peak)",
+      "note": "A SKIP LOCKED queue table handles thousands of jobs/s if claimed in batches and completed rows are pruned; MVCC churn makes autovacuum tuning part of the design."
+    },
+    {
+      "label": "Connections",
+      "value": "~2,000 clients -> ~60 server conns",
+      "note": "Each Postgres connection is an OS process with real memory. PgBouncer transaction pooling multiplexes app connections down to a few dozen; LISTEN needs dedicated session connections outside the transaction pool."
+    },
+    {
+      "label": "NOTIFY limits",
+      "value": "payload <= ~8 KB",
+      "note": "Notifications are dropped for disconnected listeners and carry small payloads — send ids, not documents; the queue table stays the source of truth."
+    },
+    {
+      "label": "Replicas",
+      "value": "1 primary + 2 streaming replicas",
+      "note": "One synchronous-capable failover target, one lag-tolerant reporting replica. Replication lag budget: seconds; route read-your-writes traffic to the primary."
+    },
+    {
+      "label": "The ceiling",
+      "value": "single-writer limits",
+      "note": "One big primary goes far (hundreds of GB hot data, tens of thousands of TPS), but a search corpus at 10× this, an event firehose, or heavy ad-hoc analytics are the workloads that graduate to specialized systems first."
+    }
+  ],
+  "api": [
+    {
+      "method": "POST",
+      "path": "/v1/listings",
+      "description": "Create a listing: structured columns plus per-category JSONB attributes. The tsvector, geography, and embedding columns are updated in the same transaction, so search is fresh at commit.",
+      "request": "{ \"title\": \"Licensed plumber\", \"category\": \"plumbing\", \"lat\": 52.1, \"lon\": 4.3, \"attributes\": { \"emergency\": true, \"van\": true } }",
+      "response": "{ \"id\": 84211, \"status\": \"active\" }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/search",
+      "description": "One SQL statement combines full-text match + rank, trigram fuzziness, JSONB attribute filters, PostGIS distance, and optional pgvector similarity — with ACL filters joined in, no sync pipeline.",
+      "request": "?q=fix+my+fence&near=52.1,4.3&radius=5km&attrs={\"emergency\":true}",
+      "response": "{ \"results\": [ { \"id\": 84211, \"rank\": 0.92, \"distanceM\": 1240 } ] }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/listings/{id}",
+      "description": "Fetch one listing; columns and JSONB attributes come back from the same row.",
+      "request": "(id in path)",
+      "response": "{ \"id\": 84211, \"title\": \"...\", \"attributes\": { ... } }"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/orders",
+      "description": "Book a slot. One transaction inserts the idempotency row (unique key), the order, the confirmation job, and the rollup upsert; an exclusion constraint rejects overlapping bookings. NOTIFY fires on commit to wake workers and push live status.",
+      "request": "Idempotency-Key: <uuid>; { \"listingId\": 84211, \"slot\": \"2026-08-14T09:00/10:00\" }",
+      "response": "{ \"orderId\": 553201, \"status\": \"confirmed\" }  // same body on retry",
+      "sequence": {
+        "participants": [
+          {
+            "id": "App"
+          },
+          {
+            "id": "Core",
+            "label": "Postgres (one TX)"
+          },
+          {
+            "id": "Jobs",
+            "label": "jobs table"
+          },
+          {
+            "id": "PubSub",
+            "label": "NOTIFY"
+          },
+          {
+            "id": "Worker"
+          }
+        ],
+        "messages": [
+          {
+            "from": "App",
+            "to": "Core",
+            "arrow": "->>",
+            "label": "BEGIN: idempotency(uniq) + order (EXCLUDE overlap) + rollup upsert"
+          },
+          {
+            "from": "App",
+            "to": "Jobs",
+            "arrow": "->>",
+            "label": "INSERT job('send_confirmation') — same TX"
+          },
+          {
+            "from": "Core",
+            "to": "App",
+            "arrow": "-->>",
+            "label": "COMMIT — all rows or none"
+          },
+          {
+            "from": "Core",
+            "to": "PubSub",
+            "arrow": "->>",
+            "label": "on commit: NOTIFY jobs_channel, order_events"
+          },
+          {
+            "from": "PubSub",
+            "to": "Worker",
+            "arrow": "->>",
+            "label": "wake"
+          },
+          {
+            "from": "Worker",
+            "to": "Jobs",
+            "arrow": "->>",
+            "label": "claim FOR UPDATE SKIP LOCKED"
+          }
+        ]
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/v1/admin/dashboard",
+      "description": "KPIs from the rollup tables and materialized views — never from the fact tables on the primary.",
+      "request": "?window=30d (admin token)",
+      "response": "{ \"gmv\": 1250000, \"conversion\": 0.031, \"dau\": 84210 }"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/events (WebSocket)",
+      "description": "Live updates: app servers LISTEN on order_events and relay id-sized payloads to the client's socket; the client refetches details over the API.",
+      "request": "(upgrade; sid cookie)",
+      "response": "{ \"type\": \"order_status\", \"orderId\": 553201 }"
+    }
+  ],
+  "dataModel": [
+    {
+      "name": "users",
+      "note": "Accounts for buyers and providers. Plain relational: constraints do the work.",
+      "fields": [
+        {
+          "name": "user_id",
+          "type": "bigint PK"
+        },
+        {
+          "name": "email",
+          "type": "citext UNIQUE"
+        },
+        {
+          "name": "role",
+          "type": "enum(buyer, provider, admin)"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamptz"
+        }
+      ]
+    },
+    {
+      "name": "listings",
+      "note": "One row carries every capability: relational columns for shared fields, JSONB for the per-category long tail, a generated tsvector for search, geography for PostGIS, and an embedding for pgvector. Indexes: GIN(search_vector), GIN(attributes jsonb_path_ops), GiST(geom), HNSW(embedding), trigram on title.",
+      "fields": [
+        {
+          "name": "listing_id",
+          "type": "bigint PK"
+        },
+        {
+          "name": "provider_id",
+          "type": "bigint FK -> users"
+        },
+        {
+          "name": "category_id",
+          "type": "int FK (constrained column, not JSON)"
+        },
+        {
+          "name": "title / description",
+          "type": "text"
+        },
+        {
+          "name": "price_cents",
+          "type": "int (money never lives in JSONB)"
+        },
+        {
+          "name": "attributes",
+          "type": "jsonb (per-category custom fields)"
+        },
+        {
+          "name": "search_vector",
+          "type": "tsvector GENERATED (title A, description B, keywords C)"
+        },
+        {
+          "name": "geom",
+          "type": "geography(Point) (PostGIS)"
+        },
+        {
+          "name": "embedding",
+          "type": "vector(1536) (pgvector)"
+        },
+        {
+          "name": "status",
+          "type": "enum(draft, active, paused, removed)"
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "note": "Bookings with slot ranges. EXCLUDE USING gist (listing_id WITH =, slot WITH &&) makes double-booking impossible even under concurrency — the constraint, not app code, is the invariant. PRIMARY KEY (order_id); UNIQUE (idempotency_key).",
+      "fields": [
+        {
+          "name": "order_id",
+          "type": "bigint PK"
+        },
+        {
+          "name": "listing_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "buyer_id",
+          "type": "bigint FK"
+        },
+        {
+          "name": "slot",
+          "type": "tstzrange (exclusion-constrained)"
+        },
+        {
+          "name": "status",
+          "type": "enum(confirmed, completed, cancelled)"
+        },
+        {
+          "name": "idempotency_key",
+          "type": "uuid UNIQUE (retry-safe create)"
+        },
+        {
+          "name": "amount_cents",
+          "type": "int (snapshotted)"
+        }
+      ]
+    },
+    {
+      "name": "jobs",
+      "note": "The queue is a table. Enqueued in the same transaction as the business write; claimed with FOR UPDATE SKIP LOCKED; a reaper requeues stale running rows; state='dead' rows are the dead-letter queue you can SELECT. Completed rows are pruned/archived promptly — this table is MVCC-hot. Index (state, run_at, id).",
+      "fields": [
+        {
+          "name": "job_id",
+          "type": "bigint PK (bigserial)"
+        },
+        {
+          "name": "type",
+          "type": "enum(send_email, thumbnail, payout, reindex_embedding)"
+        },
+        {
+          "name": "payload",
+          "type": "jsonb (ids, not documents)"
+        },
+        {
+          "name": "state",
+          "type": "enum(queued, running, done, dead)"
+        },
+        {
+          "name": "run_at",
+          "type": "timestamptz (scheduling is a column)"
+        },
+        {
+          "name": "attempts / max_attempts",
+          "type": "int (retry policy is a column)"
+        },
+        {
+          "name": "locked_at",
+          "type": "timestamptz NULL (lease for the reaper)"
+        }
+      ]
+    },
+    {
+      "name": "daily_metrics",
+      "note": "Incremental rollups fed transactionally (INSERT ... ON CONFLICT DO UPDATE) by the order path or the job worker. Dashboards read this, never the fact tables. PRIMARY KEY (day, bucket) — a few buckets per day spread the hot row.",
+      "fields": [
+        {
+          "name": "day",
+          "type": "date"
+        },
+        {
+          "name": "bucket",
+          "type": "smallint (spreads hot-row contention)"
+        },
+        {
+          "name": "gmv_cents",
+          "type": "bigint"
+        },
+        {
+          "name": "orders",
+          "type": "int"
+        },
+        {
+          "name": "searches",
+          "type": "int"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "naive",
+      "title": "1. Naive: A Specialized System per Workload (the baseline)",
+      "description": [
+        "Follow every tutorial and you get the default startup stack: Postgres for orders, MongoDB for flexible listing documents, Elasticsearch for search, Redis for caching and a job queue, RabbitMQ for events. Each choice is individually reasonable — best tool for the job.",
+        "Together they are the problem. That is five stateful systems for a team of six: five HA stories, five backup-and-restore drills, five upgrade cadences, five monitoring dashboards, five ways to get paged. Worse, nothing ties them together: when a booking commits in Postgres, the search index, the cache, and the event stream learn about it later (or never) via glue code and reindex jobs — there is no transaction across stores, so every cross-store invariant is eventually-maybe-consistent by construction.",
+        "The fix is not more infrastructure. Modern Postgres covers documents (JSONB), search (tsvector, pg_trgm), queues (SKIP LOCKED), pub/sub (LISTEN/NOTIFY), analytics (rollups, materialized views), geo (PostGIS), and vectors (pgvector) well enough at this scale — inside one set of ACID transactions and one operational story. The next steps rebuild each capability in the cluster, and the last step says honestly when a workload has outgrown it."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Core",
+          "ZooDoc",
+          "ZooSearch",
+          "ZooCache",
+          "ZooBroker"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-core",
+          "app-zoodoc",
+          "app-zoosearch",
+          "app-zoocache",
+          "app-zoobroker",
+          "core-zoosearch"
+        ],
+        "caption": "Five stateful systems on day one: each feature got its own store, and glue jobs try to keep them agreeing.",
+        "highlight": [
+          "ZooDoc",
+          "ZooSearch",
+          "ZooCache",
+          "ZooBroker"
+        ],
+        "groups": [
+          "zoo"
+        ]
+      },
+      "decisionPrompt": "Count the stateful systems. How many backup, failover, upgrade, and on-call stories has this six-person team signed up for — and what enforces consistency between the stores when a booking commits?",
+      "whyNow": [
+        "Starting from the polyglot zoo makes every later step land as removing a system, not adding a feature — the core argument of a Postgres-centric design."
+      ],
+      "probeLinks": [
+        "amazingcto",
+        "pg-json"
+      ],
+      "recap": {
+        "before": "Nothing.",
+        "after": "All features work — each on its own specialized store.",
+        "newRisk": "Five stateful systems with no shared transaction: operational load dominates the roadmap, and search, cache, and events silently drift from the record."
+      },
+      "traps": [
+        {
+          "trap": "Shipping the zoo because each piece is 'best of breed'.",
+          "why": "Per-system excellence is irrelevant if the team drowns in operations and no invariant holds across stores; most day-one workloads are nowhere near any single store's limits.",
+          "instead": "Consolidate on Postgres first; carve out a workload only when it demonstrably outgrows it (Step 7's graduation criteria)."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Best-of-breed vs. operational surface",
+          "description": "Specialized stores each beat Postgres at their one thing, but every added stateful system multiplies HA, backup, upgrade, security, and on-call work — and adds a consistency seam that glue code must patrol forever.",
+          "chosen": "The design trades peak per-workload performance for one platform whose capabilities are good enough at this scale, and defers specialization until a workload proves it needs it."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/01-naive.jpg"
+    },
+    {
+      "id": "relational-core",
+      "title": "2. Relational Core — Constraints, Transactions, Indexes",
+      "description": [
+        "Consolidation starts with the boring part done well: users, listings, and orders as normalized tables, with the database — not app code — enforcing the invariants. Foreign keys guarantee referential integrity; UNIQUE backs idempotency keys; CHECK keeps enums and ranges sane; NOT NULL is the cheapest data-quality tool there is.",
+        "The showpiece constraint is exclusion: EXCLUDE USING gist (listing_id WITH =, slot WITH &&) on orders makes double-booking a constraint violation, not a code path. Two concurrent requests for the same slot both pass any app-level check; only one survives the constraint. Money and booking state change inside ACID transactions with an idempotency row (unique key) inserted in the same transaction, so a retried request returns the existing order.",
+        "Performance is a discipline, not a mystery: B-tree indexes for the hot predicates, EXPLAIN ANALYZE on anything slow, and pg_stat_statements as the always-on profiler that tells you which queries actually cost you. This core is why the rest of the tour works — every capability that follows (documents, search, queue, rollups) joins these same transactions, which is exactly what the zoo could not do."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Core",
+          "Metrics"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-core",
+          "core-metrics"
+        ],
+        "caption": "The zoo collapses into one system of record: constraints enforce the invariants, transactions define the correctness boundary.",
+        "highlight": [
+          "Core"
+        ]
+      },
+      "decisionPrompt": "Two requests book the same slot in the same millisecond. Where exactly is the invariant that stops them — app code, a lock, or a constraint — and what happens to the loser?",
+      "concepts": [
+        {
+          "term": "Exclusion constraint",
+          "definition": "A generalized UNIQUE: no two rows may have values that 'overlap' under a given operator (e.g. && on time ranges).",
+          "whyItMatters": "Turns double-booking from a race you must out-code into an error the database throws for you.",
+          "example": "EXCLUDE USING gist (listing_id WITH =, slot WITH &&)"
+        },
+        {
+          "term": "Idempotency row",
+          "definition": "A unique-keyed row inserted in the same transaction as the mutation it guards.",
+          "whyItMatters": "A retried request violates the unique key and returns the original result — retry-safe writes with no distributed machinery.",
+          "example": "INSERT INTO orders (..., idempotency_key) — UNIQUE (idempotency_key)"
+        },
+        {
+          "term": "pg_stat_statements",
+          "definition": "An extension that aggregates execution stats per normalized query.",
+          "whyItMatters": "The always-on answer to 'what is actually slow' — the tuning loop starts here, not with guessing.",
+          "example": "SELECT query, mean_exec_time, calls FROM pg_stat_statements ORDER BY total_exec_time DESC"
+        }
+      ],
+      "whyNow": [
+        "Every later capability piggybacks on this transaction and constraint machinery; establishing the record first is what makes 'the queue commits with the order' possible at all."
+      ],
+      "probeLinks": [
+        "pg-constraints",
+        "pg-stat-statements"
+      ],
+      "recap": {
+        "before": "Five stores, invariants enforced by hope and glue jobs.",
+        "after": "One ACID system of record where constraints — FK, UNIQUE, CHECK, EXCLUDE — enforce the invariants under concurrency.",
+        "newRisk": "Rigid columns fight reality: every listing category wants different fields, and a migration per category is a treadmill."
+      },
+      "traps": [
+        {
+          "trap": "Enforcing invariants only in application code.",
+          "why": "Two racing requests both read 'slot free' and both insert; app-level checks cannot see concurrent uncommitted work.",
+          "instead": "Let constraints be the last line of defense: unique keys for idempotency, exclusion constraints for overlap, FKs for existence."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Booking — constraint-enforced, idempotent",
+          "note": "The exclusion constraint decides the race; the unique idempotency key makes retries return the original order.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Core",
+                "label": "Postgres"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "POST /orders (Idempotency-Key)"
+              },
+              {
+                "from": "App",
+                "to": "Core",
+                "arrow": "->>",
+                "label": "BEGIN: INSERT idempotency + order (slot tstzrange)"
+              },
+              {
+                "type": "alt",
+                "label": "slot free, key new",
+                "messages": [
+                  {
+                    "from": "Core",
+                    "to": "App",
+                    "arrow": "-->>",
+                    "label": "COMMIT ok"
+                  },
+                  {
+                    "from": "App",
+                    "to": "Client",
+                    "arrow": "-->>",
+                    "label": "201 { orderId }"
+                  }
+                ],
+                "else": {
+                  "label": "overlap (EXCLUDE) or key seen",
+                  "messages": [
+                    {
+                      "from": "Core",
+                      "to": "App",
+                      "arrow": "-->>",
+                      "label": "constraint violation / existing row"
+                    },
+                    {
+                      "from": "App",
+                      "to": "Client",
+                      "arrow": "-->>",
+                      "label": "409 slot taken / 200 original order"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Core"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "DB-enforced vs. app-enforced invariants",
+          "description": "Constraints are unbypassable and race-proof but rigid and harder to evolve (dropping or altering them is a migration); app-level checks are flexible and give friendlier errors but evaporate under concurrency and under the second code path that forgets them.",
+          "chosen": "The design puts every correctness-critical invariant in a constraint and treats app checks as UX pre-validation, never as the enforcement."
+        },
+        {
+          "name": "Normalization vs. read convenience",
+          "description": "Normalized tables keep one fact in one place and make updates cheap and consistent, but hot read paths pay for joins; denormalized copies read fast and drift unless something owns their maintenance.",
+          "chosen": "The core stays normalized; the derived shapes that reads want (rollups, search vectors) are declared derived and maintained transactionally in later steps."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/02-relational-core.jpg"
+    },
+    {
+      "id": "jsonb",
+      "title": "3. JSONB — The Document Store Inside the Row",
+      "description": [
+        "A plumber's listing wants emergency_service and van; a photographer's wants drone and studio. Modeling that relationally gives you either a migration per category or an EAV table nobody can query. This is the workload that sent the naive design to MongoDB — and Postgres absorbs it with one column.",
+        "attributes JSONB holds the per-category long tail on the same row as the relational fields. JSONB is parsed binary (not stored text): keys are deduplicated, access is fast, and it indexes. A GIN index with jsonb_path_ops makes containment queries cheap: WHERE attributes @> '{\"emergency\": true}' uses the index, no schema change needed when a category adds a field. Read a field with ->>, patch one key with jsonb_set — no whole-document rewrite in app code.",
+        "The discipline is the hybrid rule: fields that are shared, constrained, joined, or sorted stay columns (price_cents, status, category_id, geom); the long tail lives in JSONB; and a JSONB field gets promoted to a column the day it needs a constraint, an FK, or heavy sorting. Never bury money or state machines in a document blob — CHECK (attributes ? 'headline')-style guards can demand required keys, but real invariants want real columns.",
+        "Know the costs: no foreign keys into JSON, no per-key statistics (the planner can misestimate selective JSONB predicates), and MVCC rewrites the whole row value on update, so very wide documents with hot single fields TOAST and churn. JSONB is a document store you already operate — not an excuse to stop doing schema design."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Core",
+          "Docs"
+        ],
+        "links": [
+          "app-core",
+          "app-docs"
+        ],
+        "caption": "One listing row: constrained relational columns for the shared core, a GIN-indexed JSONB column for the per-category long tail.",
+        "highlight": [
+          "Docs"
+        ]
+      },
+      "decisionPrompt": "Which listing fields go in columns and which in JSONB — and what event forces a field to migrate from the document into a column?",
+      "concepts": [
+        {
+          "term": "JSONB vs JSON",
+          "definition": "JSONB stores parsed binary with deduplicated keys; JSON stores the original text.",
+          "whyItMatters": "Only JSONB supports fast operators and GIN indexing — for queryable documents there is no contest.",
+          "example": "attributes JSONB + GIN (attributes jsonb_path_ops)"
+        },
+        {
+          "term": "Containment (@>)",
+          "definition": "jsonb @> jsonb: does the left document contain the right one?",
+          "whyItMatters": "The idiomatic, index-accelerated way to filter on document fields.",
+          "example": "WHERE attributes @> '{\"van\": true}'"
+        },
+        {
+          "term": "Column-promotion rule",
+          "definition": "A JSONB field moves to a real column when it needs constraints, FKs, joins, or sorting.",
+          "whyItMatters": "Keeps the schema honest: flexibility for the long tail, rigor for whatever the business starts depending on.",
+          "example": "'emergency' starts in JSONB; when pricing depends on it, it becomes a boolean column."
+        }
+      ],
+      "whyNow": [
+        "Flexible attributes are the first 'we need another database' moment a marketplace hits; solving it in-row removes the document store and its sync seam."
+      ],
+      "probeLinks": [
+        "pg-json",
+        "amazingcto"
+      ],
+      "recap": {
+        "before": "Custom attributes meant a migration treadmill or a separate document DB.",
+        "after": "One GIN-indexed JSONB column carries the long tail; constrained columns keep the invariants.",
+        "newRisk": "Keyword search is still ILIKE '%plumber%' — a sequential scan with no ranking, getting slower with every listing."
+      },
+      "traps": [
+        {
+          "trap": "The one-big-JSONB-column data model.",
+          "why": "Money, status, and relationships buried in a document lose constraints, FKs, statistics, and cheap updates — you've rebuilt schemaless chaos inside Postgres.",
+          "instead": "Hybrid modeling: columns for the constrained core, JSONB for the genuinely variable tail, promotion when a field graduates."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Schema flexibility vs. constraint strength",
+          "description": "JSONB lets categories add fields with zero migrations, but JSON fields have no FKs, weak stats, and only bolt-on validation; columns are rigid but carry the full constraint machinery.",
+          "chosen": "The design spends flexibility only on the long tail and keeps every business-critical field in a constrained column."
+        },
+        {
+          "name": "In-row documents vs. separate document store",
+          "description": "A dedicated document DB offers richer document APIs, but it reintroduces the sync seam and second ops story; in-row JSONB joins with everything and commits with everything.",
+          "chosen": "Documents live in the row: transactional consistency with orders and search outweighs a fancier document API at this scale."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/03-jsonb.jpg"
+    },
+    {
+      "id": "search",
+      "title": "4. Search — Full-Text, Fuzzy, Geo, and Semantic",
+      "description": [
+        "Discovery is four query shapes, and Postgres has an index type for each — all updated in the same commit as the listing row, so search is never stale and there is no reindex pipeline to babysit.",
+        "Full-text: a generated column search_vector tsvector GENERATED ALWAYS AS (setweight(to_tsvector('english', title), 'A') || setweight(to_tsvector('english', description), 'B')) with a GIN index. Query with websearch_to_tsquery('fence repair') — it parses quoted phrases and OR like a search box should — rank with ts_rank_cd, snippet with ts_headline. Stemming means 'repairs' matches 'repairing'.",
+        "Fuzzy: pg_trgm's GIN index makes similarity search ('plumer' ~ 'plumber') and even LIKE '%term%' index-served — typo tolerance without an external engine.",
+        "Geo: PostGIS. geom geography(Point) plus a GiST index turns 'within 5 km' into ST_DWithin(geom, :point, 5000) with an index scan, and 'nearest first' into ORDER BY geom <-> :point.",
+        "Semantic: pgvector. Store an embedding vector(1536) per listing (computed by a background job — the queue from the next step), index with HNSW, and ORDER BY embedding <=> :query_embedding finds handymen for 'fix my fence' with no keyword overlap. Hybrid ranking is a CTE: combine FTS rank, vector distance, and geo decay with reciprocal rank fusion — one SQL statement joins search, attribute filters, ACLs, and the listing rows themselves.",
+        "The honest limits: no BM25 out of the box, analyzers/synonyms are DIY, heavy faceting costs, and a huge corpus at high QPS competes with OLTP for buffer cache. That is the graduation trigger — not day one."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Search",
+          "GeoVec",
+          "Core"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-search",
+          "app-geovec",
+          "app-core"
+        ],
+        "caption": "Four index types — GIN (tsvector), trigram, GiST (geography), HNSW (vectors) — serve keyword, fuzzy, geo, and semantic search, transactionally fresh.",
+        "highlight": [
+          "Search",
+          "GeoVec"
+        ]
+      },
+      "options": [
+        {
+          "name": "Postgres-native search (recommended at this scale)",
+          "description": "tsvector/GIN + pg_trgm + PostGIS + pgvector inside the cluster: search updates commit with the row.",
+          "pros": [
+            "Transactionally fresh: the index updates in the same commit as the listing — no pipeline, no lag, no drift.",
+            "One SQL statement joins text rank, vector similarity, geo distance, JSONB filters, and ACLs.",
+            "Zero new infrastructure: the search tier is an index, not a system."
+          ],
+          "cons": [
+            "Relevance tooling is shallower than a dedicated engine: no BM25 default, analyzers/synonym maps are hand-built.",
+            "Heavy faceting and aggregations over large result sets get expensive.",
+            "A very large corpus at high query rates competes with OLTP for cache and CPU."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Search",
+              "GeoVec",
+              "Core"
+            ],
+            "links": [
+              "app-search",
+              "app-geovec",
+              "app-core"
+            ],
+            "caption": "Search as indexes inside the cluster: fresh at commit, joined with everything.",
+            "highlight": [
+              "Search",
+              "GeoVec"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-search-opt1.jpg"
+        },
+        {
+          "name": "External search engine (the graduation path)",
+          "description": "Elasticsearch/OpenSearch/Meilisearch fed by a change-data pipeline — the right call when relevance depth or corpus scale outgrows Postgres.",
+          "pros": [
+            "BM25, analyzers, synonyms, facets, and keyword+vector hybrid search are built in.",
+            "Search load moves off the OLTP primary entirely.",
+            "Purpose-built horizontal scaling for huge corpora."
+          ],
+          "cons": [
+            "Reintroduces the sync pipeline and its drift — the exact failure mode the naive design had.",
+            "Another stateful system: HA, upgrades, capacity, on-call.",
+            "ACL and attribute filters must be duplicated into the engine's documents."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Core",
+              "ZooSearch"
+            ],
+            "links": [
+              "app-zoosearch",
+              "core-zoosearch",
+              "app-core"
+            ],
+            "caption": "The graduation path: a dedicated engine fed by a reindex/CDC pipeline — worth it only when its strengths are actually needed.",
+            "highlight": [
+              "ZooSearch"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/04-search-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "The search box needs typo tolerance, 'near me', and semantic matching. What does bolting on Elasticsearch on day one cost you that four Postgres indexes do not — and what future signal justifies paying that cost?",
+      "concepts": [
+        {
+          "term": "tsvector / tsquery",
+          "definition": "Normalized (stemmed, weighted) document and query representations for full-text search.",
+          "whyItMatters": "Turns ILIKE scans into ranked, index-served search with phrase and boolean support.",
+          "example": "search_vector @@ websearch_to_tsquery('\"fence repair\" -concrete')"
+        },
+        {
+          "term": "HNSW index (pgvector)",
+          "definition": "An approximate-nearest-neighbor graph index over embedding vectors.",
+          "whyItMatters": "Millisecond semantic search over millions of embeddings — recall/latency tunable via ef_search.",
+          "example": "ORDER BY embedding <=> :query LIMIT 20"
+        },
+        {
+          "term": "Hybrid rank fusion",
+          "definition": "Combining keyword rank, vector distance, and business signals into one ordering.",
+          "whyItMatters": "Neither keywords nor embeddings alone rank a marketplace well; fusing them in SQL keeps it one query.",
+          "example": "Reciprocal rank fusion over the FTS CTE and the vector CTE."
+        }
+      ],
+      "whyNow": [
+        "Search is the naive stack's biggest justification for a second system; replacing it in-cluster removes the largest consistency seam and the ILIKE scans in one move."
+      ],
+      "probeLinks": [
+        "pg-fts",
+        "pg-trgm",
+        "postgis",
+        "pgvector"
+      ],
+      "recap": {
+        "before": "Keyword search was an unranked ILIKE sequential scan; geo and semantic search didn't exist.",
+        "after": "GIN, trigram, GiST, and HNSW indexes serve ranked keyword, fuzzy, geo, and semantic search — fresh at commit.",
+        "newRisk": "Slow side effects — confirmation emails, thumbnails, embedding computation — still run inline in request handlers."
+      },
+      "traps": [
+        {
+          "trap": "LIKE '%term%' as the search implementation.",
+          "why": "Sequential scan on every search, no ranking, no stemming — it quietly becomes the slowest and most-run query in the system.",
+          "instead": "A generated tsvector column with a GIN index, websearch_to_tsquery, and ts_rank; pg_trgm for the fuzzy edge."
+        },
+        {
+          "trap": "Adopting a search engine before the relevance need exists.",
+          "why": "You inherit the reindex pipeline, drift, and a second stateful system to run — the naive design's costs — for BM25 nobody asked for yet.",
+          "instead": "Exhaust the four in-cluster index types first; graduate when relevance depth or corpus×QPS genuinely demands it."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Search — one statement, four indexes",
+          "note": "In reality this is a single SQL statement with CTEs; the diagram splits it by index family to show what contributes to the ranking.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Search",
+                "label": "tsvector/GIN + trgm"
+              },
+              {
+                "id": "GeoVec",
+                "label": "PostGIS + pgvector"
+              },
+              {
+                "id": "Core",
+                "label": "listings + ACL"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "GET /search?q=fix my fence&near=..."
+              },
+              {
+                "from": "App",
+                "to": "Search",
+                "arrow": "->>",
+                "label": "CTE: websearch_to_tsquery + ts_rank_cd"
+              },
+              {
+                "from": "App",
+                "to": "GeoVec",
+                "arrow": "->>",
+                "label": "CTE: ST_DWithin filter + embedding <=> rank"
+              },
+              {
+                "from": "App",
+                "to": "Core",
+                "arrow": "->>",
+                "label": "join listings + attributes @> + ACL"
+              },
+              {
+                "from": "Core",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "fused ranking (RRF), one round trip"
+              },
+              {
+                "from": "App",
+                "to": "Client",
+                "arrow": "-->>",
+                "label": "ranked results"
+              }
+            ]
+          },
+          "highlight": [
+            "Search",
+            "GeoVec"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Transactional freshness vs. relevance depth",
+          "description": "In-cluster search is correct at commit with zero pipeline, but its relevance toolbox (no default BM25, DIY analyzers) is shallower than a dedicated engine's; the engine wins on ranking sophistication and loses on freshness, drift, and ops.",
+          "chosen": "The design takes freshness and one-system ops now, and names the graduation signals (relevance ceiling, corpus×QPS) rather than pretending they don't exist."
+        },
+        {
+          "name": "Write amplification vs. read speed",
+          "description": "Every listing write updates GIN, trigram, GiST, and HNSW indexes — several extra index writes per UPDATE — in exchange for every discovery query being index-served.",
+          "chosen": "The design pays at write time: listings change rarely relative to how often they are searched."
+        }
+      ]
+    },
+    {
+      "id": "queue",
+      "title": "5. Job Queue — FOR UPDATE SKIP LOCKED",
+      "description": [
+        "Emails, thumbnails, payouts, and embedding computation don't belong in request handlers. The naive stack reached for Redis or RabbitMQ; Postgres does it with a table — and does one thing no external broker can.",
+        "The killer feature is the transactional enqueue: INSERT INTO jobs(...) runs in the same transaction as the booking. Commit, and the order and its confirmation job exist together; roll back, and neither does. There is no crash window between 'order committed' and 'job enqueued', no outbox pattern, no dual-write drift — the queue and the record share one WAL. With an external broker you must rebuild exactly this with an outbox table... which is a jobs table.",
+        "Claiming is where SKIP LOCKED earns its name: UPDATE jobs SET state='running', locked_at=now() WHERE id IN (SELECT id FROM jobs WHERE state='queued' AND run_at <= now() ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED) RETURNING *. Plain FOR UPDATE would make every worker queue up behind the first one's locked rows — a lock convoy. SKIP LOCKED makes each worker skip claimed rows and take the next free batch: workers scale linearly, claims never block.",
+        "Delivery is at-least-once, engineered with columns: a reaper flips stale running rows (locked_at older than the lease) back to queued with attempts+1; attempts > max_attempts moves the row to state='dead' — a dead-letter queue you can inspect, count, and requeue with SELECT and UPDATE. Scheduling (run_at), priority, and retry policy are just columns. Workers are idempotent per job_id.",
+        "Respect the physics: this table is MVCC-hot — every state flip is a new row version. Keep it small (prune/archive done rows promptly), tune autovacuum aggressively for it (low scale factor), use a partial index WHERE state='queued', and don't hold the claim transaction open while the job runs — claim-and-commit, work, then finish-and-commit, with the reaper covering crashes."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Core",
+          "Jobs",
+          "Worker",
+          "Metrics"
+        ],
+        "links": [
+          "app-core",
+          "app-jobs",
+          "worker-jobs",
+          "worker-core",
+          "jobs-metrics"
+        ],
+        "caption": "The queue is a table: enqueued atomically with the business write, claimed with SKIP LOCKED, dead-lettered with an UPDATE.",
+        "highlight": [
+          "Jobs",
+          "Worker"
+        ],
+        "groups": [
+          "async"
+        ]
+      },
+      "options": [
+        {
+          "name": "Jobs table + SKIP LOCKED (recommended)",
+          "description": "The queue lives in the database and joins its transactions — the default until job volume genuinely outgrows it.",
+          "pros": [
+            "Transactional enqueue: job and business write commit atomically — no outbox, no drift, no crash window.",
+            "The queue is SQL-visible: depth, age, retries, and the dead-letter set are all one SELECT away.",
+            "Retries, scheduling, and priority are columns; no new infrastructure or delivery semantics to learn."
+          ],
+          "cons": [
+            "MVCC churn: every state flip writes a row version — vacuum tuning and pruning are part of the design.",
+            "Throughput ceiling of roughly thousands of jobs/s per queue table; a firehose needs a real broker.",
+            "Workers poll (until LISTEN/NOTIFY, next step) and hold connections while claiming."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Core",
+              "Jobs",
+              "Worker"
+            ],
+            "links": [
+              "app-core",
+              "app-jobs",
+              "worker-jobs",
+              "worker-core"
+            ],
+            "caption": "Order and job commit in one transaction; workers claim in batches with SKIP LOCKED.",
+            "highlight": [
+              "Jobs"
+            ],
+            "groups": [
+              "async"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-queue-opt1.jpg"
+        },
+        {
+          "name": "External broker (the graduation path)",
+          "description": "SQS/RabbitMQ/Kafka when job volume, fan-out, or consumer ecosystems outgrow a table.",
+          "pros": [
+            "Much higher throughput and native fan-out/consumer-group semantics.",
+            "Built-in visibility timeouts, DLQs, and consumer autoscaling hooks.",
+            "Queue load leaves the OLTP database entirely."
+          ],
+          "cons": [
+            "Loses the atomic enqueue: you must add an outbox table + relay (rebuilding the jobs table) or accept dual-write drift.",
+            "Another stateful system to run, secure, and page on.",
+            "Debugging moves from SELECT to broker-specific tooling."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Core",
+              "ZooBroker",
+              "Worker"
+            ],
+            "links": [
+              "app-core",
+              "app-zoobroker",
+              "worker-zoobroker",
+              "worker-core"
+            ],
+            "caption": "The broker returns — along with the outbox pattern needed to feed it atomically.",
+            "highlight": [
+              "ZooBroker"
+            ],
+            "groups": []
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/05-queue-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "A booking commits but the process crashes a millisecond later. With a broker, where did the confirmation-email job go? With a jobs table in the same transaction, why can that question not even arise?",
+      "concepts": [
+        {
+          "term": "FOR UPDATE SKIP LOCKED",
+          "definition": "Row-lock what you select, but silently skip rows another transaction already locked.",
+          "whyItMatters": "Turns a table into a multi-consumer queue with non-blocking claims — no lock convoy, linear worker scaling.",
+          "example": "SELECT id FROM jobs WHERE state='queued' ORDER BY id LIMIT 10 FOR UPDATE SKIP LOCKED"
+        },
+        {
+          "term": "Transactional enqueue",
+          "definition": "Inserting the job in the same database transaction as the business write it belongs to.",
+          "whyItMatters": "Atomicity between record and queue is the guarantee every outbox pattern exists to approximate — here it's free.",
+          "example": "BEGIN; INSERT INTO orders ...; INSERT INTO jobs ...; COMMIT;"
+        },
+        {
+          "term": "At-least-once + idempotent worker",
+          "definition": "Delivery may repeat (crash between work and ack); workers make the side effect safe to repeat.",
+          "whyItMatters": "The only honest contract any queue gives you; dedupe on job_id at the side-effect boundary.",
+          "example": "Email send keyed on job_id — a redelivered job is a no-op."
+        }
+      ],
+      "whyNow": [
+        "With the record and search consolidated, inline side effects are the remaining latency and reliability hole — and the queue that fixes them can join the transactions the earlier steps built."
+      ],
+      "probeLinks": [
+        "pg-skip-locked",
+        "2ndq-skip-locked",
+        "brandur-job-drain"
+      ],
+      "recap": {
+        "before": "Side effects ran inline in requests, or through a broker that could drift from the record.",
+        "after": "A SKIP LOCKED jobs table: enqueue commits with the order, workers claim without blocking, retries and the DLQ are columns.",
+        "newRisk": "Workers discover jobs by polling — tight loops burn queries, slow loops add latency; and clients still refresh to see status change."
+      },
+      "traps": [
+        {
+          "trap": "FOR UPDATE without SKIP LOCKED.",
+          "why": "Every worker blocks behind the first claimant's locked rows — a lock convoy that serializes the whole worker pool onto one consumer's pace.",
+          "instead": "SKIP LOCKED so each worker claims disjoint rows without waiting; batch claims to amortize round trips."
+        },
+        {
+          "trap": "Running the job inside the claiming transaction.",
+          "why": "A long-running transaction holds row locks and — worse — pins the xmin horizon, blocking vacuum for the whole database while an email server dawdles.",
+          "instead": "Claim and commit, do the work, then finish and commit; let the locked_at lease + reaper handle crashes in between."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Order + job — one transaction, then claim",
+          "note": "The order and its job commit atomically; a crashed worker's claim expires via the lease and the reaper requeues it (attempts+1).",
+          "sequence": {
+            "participants": [
+              {
+                "id": "Client"
+              },
+              {
+                "id": "App"
+              },
+              {
+                "id": "Core",
+                "label": "Postgres (one TX)"
+              },
+              {
+                "id": "Jobs",
+                "label": "jobs table"
+              },
+              {
+                "id": "Worker"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Client",
+                "to": "App",
+                "arrow": "->>",
+                "label": "POST /orders"
+              },
+              {
+                "from": "App",
+                "to": "Core",
+                "arrow": "->>",
+                "label": "BEGIN: INSERT order"
+              },
+              {
+                "from": "App",
+                "to": "Jobs",
+                "arrow": "->>",
+                "label": "INSERT job (same TX)"
+              },
+              {
+                "from": "Core",
+                "to": "App",
+                "arrow": "-->>",
+                "label": "COMMIT — both or neither"
+              },
+              {
+                "from": "Worker",
+                "to": "Jobs",
+                "arrow": "->>",
+                "label": "claim batch: FOR UPDATE SKIP LOCKED"
+              },
+              {
+                "type": "alt",
+                "label": "worker finishes",
+                "messages": [
+                  {
+                    "from": "Worker",
+                    "to": "Core",
+                    "arrow": "->>",
+                    "label": "send email; UPDATE job SET state='done'"
+                  }
+                ],
+                "else": {
+                  "label": "worker crashes",
+                  "messages": [
+                    {
+                      "from": "Worker",
+                      "to": "Jobs",
+                      "arrow": "->>",
+                      "label": "reaper: stale lease -> state='queued', attempts+1"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "highlight": [
+            "Jobs",
+            "Worker"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Atomic enqueue vs. queue throughput",
+          "description": "A jobs table gives atomicity with the business write and SQL-grade observability but tops out around thousands of jobs/s and adds MVCC churn to the database; a broker scales far higher but forces the outbox pattern to regain the atomicity the table had natively.",
+          "chosen": "At ~500 jobs/s the design keeps the queue in Postgres — the atomicity is worth more than headroom it doesn't need yet."
+        },
+        {
+          "name": "Poll simplicity vs. delivery latency",
+          "description": "Polling is trivial and robust but wastes queries when idle and adds up to a poll interval of latency; push (LISTEN/NOTIFY) is near-instant but adds connection and reconnection machinery.",
+          "chosen": "The design layers NOTIFY as a wake-up over a slow fallback poll — the next step."
+        }
+      ]
+    },
+    {
+      "id": "notify",
+      "parent": "queue",
+      "title": "5a. LISTEN/NOTIFY — Wake-ups and Live Updates",
+      "description": [
+        "Polling every 500 ms burns queries all night; polling every 30 s makes 'instant' emails take half a minute. LISTEN/NOTIFY closes the gap: workers LISTEN jobs_channel; the enqueue path (an AFTER INSERT trigger, or the app right after commit) sends NOTIFY. Crucially, NOTIFY is transactional — it fires only if the transaction commits, so a rolled-back order never wakes anyone.",
+        "The pattern is doorbell, not delivery: the notification says 'something changed', the queue table remains the truth. A worker that was disconnected while a NOTIFY fired misses it — and that's fine, because the fallback poll (every 30 s) and the SKIP LOCKED claim find the work anyway. Never put the job in the payload: payloads cap at ~8 KB, and listeners can miss them. Send ids at most.",
+        "The same doorbell powers live UX. App servers LISTEN order_events; when a booking's status changes, the committing transaction NOTIFYs with the order id; the app server pushes over the client's WebSocket and the client refetches. Sub-second updates with zero new infrastructure.",
+        "Operational fine print: LISTEN is session state, so it does not work through PgBouncer's transaction pooling — listeners hold dedicated direct connections. Keep them few (one or two per app node, fanning out in-process to sockets), and remember each LISTEN pins a real server connection from the budget Step 7 manages."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "App",
+          "Core",
+          "PubSub",
+          "Jobs",
+          "Worker"
+        ],
+        "links": [
+          "app-core",
+          "app-pubsub",
+          "pubsub-worker",
+          "pubsub-app",
+          "worker-jobs"
+        ],
+        "caption": "NOTIFY on commit wakes workers and pushes live events; the queue table stays the source of truth.",
+        "highlight": [
+          "PubSub"
+        ],
+        "groups": [
+          "async"
+        ]
+      },
+      "decisionPrompt": "A worker's connection dropped for 10 seconds and three NOTIFYs fired meanwhile. What did it miss, why doesn't it matter, and what would break if the payload had carried the job itself?",
+      "concepts": [
+        {
+          "term": "NOTIFY-on-commit",
+          "definition": "Notifications queue inside the transaction and deliver only when it commits.",
+          "whyItMatters": "Listeners can never observe work from a transaction that rolled back — the signal inherits ACID.",
+          "example": "AFTER INSERT ON jobs -> pg_notify('jobs_channel', NEW.id::text)"
+        },
+        {
+          "term": "Doorbell, not delivery",
+          "definition": "Use pub/sub only to wake consumers; durable state lives in a table they re-check.",
+          "whyItMatters": "Missed notifications become a latency blip (next poll catches up) instead of lost work.",
+          "example": "LISTEN + SKIP LOCKED claim + 30 s fallback poll."
+        }
+      ],
+      "whyNow": [
+        "It completes the queue: push latency without giving up the table-as-truth, and it hands the product live updates for free."
+      ],
+      "probeLinks": [
+        "pg-notify"
+      ],
+      "recap": {
+        "before": "Workers polled on a timer; clients refreshed to see status changes.",
+        "after": "Commit-time NOTIFY wakes workers in milliseconds and drives WebSocket pushes; a slow poll remains as the safety net.",
+        "newRisk": "Dashboards still aggregate over fact tables — on the primary, at query time."
+      },
+      "traps": [
+        {
+          "trap": "Treating NOTIFY as a message queue.",
+          "why": "Payloads cap at ~8 KB, disconnected listeners miss messages, and there is no replay — as a delivery mechanism it loses work by design.",
+          "instead": "Doorbell pattern: NOTIFY carries at most an id; the jobs table plus SKIP LOCKED claims are the delivery mechanism."
+        },
+        {
+          "trap": "LISTENing through PgBouncer transaction pooling.",
+          "why": "LISTEN is per-session state; a transaction-pooled connection is swapped between clients, so notifications silently vanish.",
+          "instead": "Give listeners dedicated direct (or session-pooled) connections, and keep the listener count small."
+        }
+      ],
+      "flows": [
+        {
+          "name": "Commit → doorbell → claim → live update",
+          "note": "One commit fans out: the worker wakes and claims via SKIP LOCKED; the app server relays the event to the client's WebSocket.",
+          "sequence": {
+            "participants": [
+              {
+                "id": "App"
+              },
+              {
+                "id": "Core",
+                "label": "Postgres"
+              },
+              {
+                "id": "PubSub",
+                "label": "LISTEN/NOTIFY"
+              },
+              {
+                "id": "Worker"
+              },
+              {
+                "id": "Jobs",
+                "label": "jobs table"
+              },
+              {
+                "id": "Client"
+              }
+            ],
+            "messages": [
+              {
+                "from": "Worker",
+                "to": "PubSub",
+                "arrow": "->>",
+                "label": "LISTEN jobs_channel (dedicated conn)"
+              },
+              {
+                "from": "App",
+                "to": "Core",
+                "arrow": "->>",
+                "label": "COMMIT (order + job)"
+              },
+              {
+                "from": "Core",
+                "to": "PubSub",
+                "arrow": "->>",
+                "label": "NOTIFY jobs_channel, order_events {id}"
+              },
+              {
+                "from": "PubSub",
+                "to": "Worker",
+                "arrow": "->>",
+                "label": "wake"
+              },
+              {
+                "from": "Worker",
+                "to": "Jobs",
+                "arrow": "->>",
+                "label": "claim FOR UPDATE SKIP LOCKED"
+              },
+              {
+                "from": "PubSub",
+                "to": "App",
+                "arrow": "->>",
+                "label": "order_events {orderId}"
+              },
+              {
+                "from": "App",
+                "to": "Client",
+                "arrow": "-->>",
+                "label": "WebSocket push (client refetches)"
+              }
+            ]
+          },
+          "highlight": [
+            "PubSub"
+          ]
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Push latency vs. connection budget",
+          "description": "Every LISTEN pins a dedicated server connection outside the transaction pool, so naive per-request listeners would exhaust the connection budget; a few listeners per node fanning out in-process keep latency low and connections bounded.",
+          "chosen": "The design centralizes listening — one or two sessions per app node — and fans out in memory, spending connections on throughput instead of signaling."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/06-notify.jpg"
+    },
+    {
+      "id": "analytics",
+      "title": "6. Analytics — Rollups, Materialized Views, Replicas",
+      "description": [
+        "The GMV dashboard must not scan the orders table on the primary every time an exec opens it. Postgres gives three tools, in order of freshness.",
+        "Incremental rollups — the transactional trick one more time: the order path (or the job worker) upserts INSERT INTO daily_metrics(day, bucket, gmv_cents, orders) VALUES (...) ON CONFLICT (day, bucket) DO UPDATE SET gmv_cents = daily_metrics.gmv_cents + EXCLUDED.gmv_cents. Dashboards read a tiny, always-current table. The cost is a write per order and a hot daily row — which is why the key includes a small bucket column: writers spread across a few buckets, readers SUM them.",
+        "Materialized views for the heavy shapes: conversion funnels and cohort joins as REFRESH MATERIALIZED VIEW CONCURRENTLY on a schedule (CONCURRENTLY needs a unique index, and lets readers keep the old copy during refresh). Staleness equals the refresh interval — fine for a funnel, wrong for a wallet.",
+        "The long tail of ad-hoc questions — window functions, GROUPING SETS, percentile_cont — runs on the streaming replica, where an analyst's 40-second scan costs the primary nothing. Mind the replica's two knobs: hot_standby_feedback (protects long replica queries, at the price of primary bloat) and lag (route read-your-writes traffic to the primary).",
+        "Graduation signals: years of raw events, high-cardinality ad-hoc slicing, or analysts saturating the replica mean it's time for ClickHouse or a warehouse — fed by an export pipeline you can now afford, because it carries derived analytics, not correctness."
+      ],
+      "view": {
+        "nodes": [
+          "App",
+          "Core",
+          "Rollups",
+          "Replica",
+          "Metrics"
+        ],
+        "links": [
+          "app-core",
+          "core-rollups",
+          "app-rollups",
+          "core-replica",
+          "app-replica",
+          "core-metrics"
+        ],
+        "caption": "Known KPIs read transactional rollups; heavy joins read scheduled matviews; ad-hoc analysis runs on the replica.",
+        "highlight": [
+          "Rollups",
+          "Replica"
+        ]
+      },
+      "options": [
+        {
+          "name": "Incremental rollup tables (for the known KPIs)",
+          "description": "Upsert aggregates in the transaction (or from the job worker) so dashboards are exact and always current.",
+          "pros": [
+            "Exact and fresh at commit — the dashboard agrees with the ledger by construction.",
+            "Dashboard reads are O(days), not O(orders).",
+            "No scheduler, no refresh window, no staleness to explain."
+          ],
+          "cons": [
+            "Write amplification: every order also writes a rollup row.",
+            "A single daily row is a contention hotspot — hence the bucket column.",
+            "Each new metric is a schema + write-path change, not just a query."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Core",
+              "Rollups"
+            ],
+            "links": [
+              "app-core",
+              "core-rollups",
+              "app-rollups"
+            ],
+            "caption": "The order transaction upserts the day's bucketed rollup row; dashboards SUM a handful of rows.",
+            "highlight": [
+              "Rollups"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-analytics-opt1.jpg"
+        },
+        {
+          "name": "Materialized views (for the heavy shapes)",
+          "description": "Precomputed joins/funnels refreshed on a schedule; readers never pay the join cost.",
+          "pros": [
+            "Arbitrary SQL complexity precomputed once, read many times.",
+            "REFRESH CONCURRENTLY keeps the old copy readable during recompute.",
+            "Zero cost on the write path."
+          ],
+          "cons": [
+            "Stale by the refresh interval, and refresh recomputes the whole view.",
+            "Refreshes are load spikes to schedule off-peak or onto the replica's source.",
+            "CONCURRENTLY requires a unique index and roughly doubles peak space during refresh."
+          ],
+          "view": {
+            "nodes": [
+              "App",
+              "Core",
+              "Rollups",
+              "Replica"
+            ],
+            "links": [
+              "app-core",
+              "core-rollups",
+              "app-rollups",
+              "core-replica"
+            ],
+            "caption": "Scheduled REFRESH CONCURRENTLY rebuilds the heavy shapes while readers keep the previous copy.",
+            "highlight": [
+              "Rollups"
+            ]
+          },
+          "aiVisual": "assets/generated/ai-visuals/steps/07-analytics-opt2.jpg"
+        }
+      ],
+      "decisionPrompt": "GMV must match finance to the cent, the funnel can be an hour old, and an analyst wants to scan two years of orders. Which of the three tools serves each — and what breaks if you swap them?",
+      "concepts": [
+        {
+          "term": "ON CONFLICT DO UPDATE (upsert rollup)",
+          "definition": "Insert-or-increment an aggregate row atomically within the writing transaction.",
+          "whyItMatters": "Makes derived metrics exactly as durable and consistent as the facts they summarize.",
+          "example": "ON CONFLICT (day, bucket) DO UPDATE SET gmv_cents = daily_metrics.gmv_cents + EXCLUDED.gmv_cents"
+        },
+        {
+          "term": "REFRESH MATERIALIZED VIEW CONCURRENTLY",
+          "definition": "Rebuild a matview without blocking readers, diffing against the old copy via a unique index.",
+          "whyItMatters": "Turns precomputation into an operational routine instead of an outage.",
+          "example": "Nightly funnel refresh; readers see yesterday's copy until it swaps."
+        },
+        {
+          "term": "hot_standby_feedback",
+          "definition": "The replica tells the primary which old row versions its queries still need.",
+          "whyItMatters": "Stops long replica queries from being cancelled — by making the primary retain bloat; a deliberate trade, not a free lunch.",
+          "example": "On for the reporting replica, off for the failover target."
+        }
+      ],
+      "whyNow": [
+        "Every earlier step generates the facts; this one keeps reading them from becoming the load problem — and it reuses the same transactional machinery instead of adding a warehouse."
+      ],
+      "probeLinks": [
+        "pg-matviews",
+        "pg-warm-standby"
+      ],
+      "recap": {
+        "before": "Dashboards aggregated fact tables on the primary at query time.",
+        "after": "Exact transactional rollups for KPIs, scheduled matviews for heavy shapes, and a replica for ad-hoc scans.",
+        "newRisk": "Everything now rides one primary: its connection limits, failover story, and single-writer ceiling are the remaining risks."
+      },
+      "traps": [
+        {
+          "trap": "Letting the dashboard query fact tables on the primary.",
+          "why": "An exec opening a dashboard becomes a seq scan competing with checkouts; it works in the demo and melts on Black Friday.",
+          "instead": "Rollups for the known questions, matviews for the heavy ones, the replica for the open-ended ones."
+        },
+        {
+          "trap": "One unbucketed daily rollup row.",
+          "why": "Every order serializes on the same row lock — you've rebuilt the naive counter hot-row inside your analytics.",
+          "instead": "Key rollups by (day, bucket) with a handful of buckets; readers SUM, writers spread."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Freshness vs. write-path cost",
+          "description": "Transactional rollups are exact and current but tax every write and pre-commit to known questions; matviews cost writes nothing and answer arbitrary shapes but are stale by their refresh interval.",
+          "chosen": "The design splits by question: money-grade KPIs pay the write tax, exploratory shapes accept staleness."
+        },
+        {
+          "name": "Replica offload vs. bloat and lag",
+          "description": "Routing analysts to the replica shields the primary, but hot_standby_feedback makes their long queries retain bloat on the primary, and lag means the replica is seconds behind — wrong for read-your-writes.",
+          "chosen": "The design uses a dedicated reporting replica with feedback on, keeps the failover replica clean, and routes freshly-writing users to the primary."
+        }
+      ]
+    },
+    {
+      "id": "scale-ha",
+      "title": "7. Scale & Survive — Pooling, Replication, Partitioning",
+      "description": [
+        "One cluster carrying documents, search, queue, pub/sub, and analytics is now load-bearing infrastructure. Four moves make it production-grade — and the fifth is knowing when to stop.",
+        "Connections: every Postgres connection is an OS process with real memory; 2,000 app connections would drown the box in context switching before the first slow query. PgBouncer in transaction-pooling mode multiplexes them onto a few dozen server connections. The exceptions are exactly the session-state features — LISTEN, advisory locks, prepared statements — which get small dedicated pools (Step 5a already lives this).",
+        "Durability and HA: streaming replication with a failover target and automated promotion (Patroni or a managed service). Choose durability per transaction class with synchronous_commit: bookings and payouts wait for the synchronous replica (RPO 0); rollup upserts and embedding jobs can run async. Backups are base backup + WAL archiving — which buys point-in-time recovery, the tool that undoes 'DELETE without WHERE' — and a backup that has never been restore-drilled does not exist.",
+        "Growth: partition the append-mostly giants (orders, done jobs, events) by month — queries prune to live partitions, and retention becomes DROP PARTITION instead of a week-long DELETE storm. Read replicas take read scale, with lag-aware routing for read-your-writes. Zero-downtime schema changes are a discipline of their own: CREATE INDEX CONCURRENTLY, add-nullable-then-backfill, never a long ACCESS EXCLUSIVE lock at noon.",
+        "The ceiling, stated honestly: one well-tuned primary serves hundreds of GB of hot data and tens of thousands of TPS — years of runway for this marketplace. The graduation rule from Step 1 still applies at the top end: when a single workload outgrows the cluster (search corpus ×10, an event firehose, warehouse-scale analytics, or multi-tenant write scale-out via Citus-style sharding), carve out that workload onto the specialized system — now with a team that can afford the pipeline, and a blast radius of one capability instead of five systems on day one. 'Just use Postgres' is a default, not a dogma."
+      ],
+      "view": {
+        "nodes": [
+          "Client",
+          "LB",
+          "App",
+          "Pool",
+          "Core",
+          "Docs",
+          "Search",
+          "GeoVec",
+          "Jobs",
+          "PubSub",
+          "Rollups",
+          "Replica",
+          "Worker",
+          "Metrics"
+        ],
+        "links": [
+          "client-lb",
+          "lb-app",
+          "app-pool",
+          "pool-core",
+          "app-core",
+          "app-docs",
+          "app-search",
+          "app-geovec",
+          "app-jobs",
+          "app-pubsub",
+          "pubsub-worker",
+          "pubsub-app",
+          "worker-jobs",
+          "worker-core",
+          "core-rollups",
+          "app-rollups",
+          "core-replica",
+          "app-replica",
+          "core-metrics",
+          "jobs-metrics",
+          "app-metrics"
+        ],
+        "caption": "The full platform: pooled connections, a replicated and PITR-protected cluster, partitioned giants, and every capability still inside one transaction boundary.",
+        "highlight": [
+          "Pool",
+          "Replica"
+        ],
+        "groups": [
+          "pg-tier",
+          "async",
+          "ops"
+        ]
+      },
+      "decisionPrompt": "Which single workload in this design would outgrow the cluster first at 10× — and what is the minimum you'd carve out to a specialized system, keeping everything else in Postgres?",
+      "concepts": [
+        {
+          "term": "Transaction pooling",
+          "definition": "The pooler assigns a server connection per transaction, not per client session.",
+          "whyItMatters": "Collapses thousands of app connections to dozens of processes — but breaks session state (LISTEN, prepared statements), which needs bypass pools.",
+          "example": "2,000 client conns -> PgBouncer -> 60 server conns."
+        },
+        {
+          "term": "Point-in-time recovery (PITR)",
+          "definition": "Restore a base backup, then replay archived WAL to any moment.",
+          "whyItMatters": "The only defense against 'bad transaction at 14:32' — replication happily replicates your mistake.",
+          "example": "Restore to 14:31:59; rehearse quarterly."
+        },
+        {
+          "term": "Declarative partitioning",
+          "definition": "One logical table split into range/list partitions the planner prunes.",
+          "whyItMatters": "Keeps indexes shallow on append-mostly giants and turns retention into DROP PARTITION.",
+          "example": "orders PARTITION BY RANGE (created_at), monthly."
+        },
+        {
+          "term": "Read-your-writes routing",
+          "definition": "Send a user who just wrote to the primary (or a caught-up replica) for subsequent reads.",
+          "whyItMatters": "Async replicas lag by seconds; without routing, a user's own booking vanishes on refresh.",
+          "example": "Session stickiness to primary for N seconds after a write, or LSN tracking."
+        }
+      ],
+      "whyNow": [
+        "Consolidation concentrated all the risk in one system; pooling, replication, PITR, and partitioning are what make that concentration safe to operate."
+      ],
+      "probeLinks": [
+        "pgbouncer",
+        "pg-warm-standby",
+        "pg-backup",
+        "pg-partitioning",
+        "patroni",
+        "instagram-sharding"
+      ],
+      "recap": {
+        "before": "One unpooled, unreplicated primary quietly carrying the whole company.",
+        "after": "Pooled connections, replicated HA with per-class durability, PITR with drills, partitioned giants, replica read scale — and explicit graduation criteria.",
+        "newRisk": "Operational: replication lag, vacuum/bloat, failover drills, and the discipline to make graduation calls on evidence rather than fashion."
+      },
+      "traps": [
+        {
+          "trap": "Cranking max_connections instead of pooling.",
+          "why": "Each connection is a process with per-backend memory; thousands of them thrash the scheduler and shared buffers long before CPUs saturate.",
+          "instead": "PgBouncer transaction pooling with a small server pool sized near ~2–4× cores, plus dedicated session pools for LISTEN."
+        },
+        {
+          "trap": "Backups without restore drills.",
+          "why": "WAL archiving fails silently in a dozen ways — discovering them during the incident converts an outage into a company-ending event.",
+          "instead": "Scheduled restore-to-point-in-time rehearsals with a measured RTO, alarmed archive lag, and a documented runbook."
+        }
+      ],
+      "tradeoffs": [
+        {
+          "name": "Synchronous durability vs. write latency",
+          "description": "synchronous_commit=on to a replica gives RPO 0 at the cost of a network round trip per commit; async commit is faster but a failover can lose the last transactions — unacceptable for bookings, fine for rollups.",
+          "chosen": "The design sets durability per transaction class: money waits for the synchronous replica, derived writes don't."
+        },
+        {
+          "name": "One big box vs. sharding",
+          "description": "Scaling the primary up keeps transactions local, operations simple, and the whole tour's atomicity intact; sharding scales writes horizontally but reintroduces cross-shard coordination — the very complexity consolidation removed.",
+          "chosen": "The design rides vertical scale plus replicas to the ceiling, and treats sharding/Citus as a named graduation path, not a default."
+        }
+      ],
+      "aiVisual": "assets/generated/ai-visuals/steps/08-scale-ha.jpg"
+    }
+  ],
+  "finalDesign": {
+    "title": "Final Design — Postgres as the Data Platform",
+    "description": "Stateless app servers and job workers front a single PostgreSQL cluster that is deliberately the whole data platform: relational core with constraint-enforced invariants (FK/UNIQUE/CHECK/EXCLUDE), JSONB documents with GIN containment for per-category attributes, transactionally fresh search across four index families (tsvector/GIN, pg_trgm, PostGIS GiST, pgvector HNSW), a SKIP LOCKED jobs table whose enqueue commits atomically with the business write, LISTEN/NOTIFY as a commit-time doorbell for worker wake-ups and WebSocket live updates, and analytics served from transactional rollups, scheduled materialized views, and a reporting replica. PgBouncer transaction pooling collapses thousands of app connections to dozens of server processes (with dedicated session connections for LISTEN); streaming replication plus automated failover and per-class synchronous_commit give bookings RPO 0 while derived writes stay fast; base backups + WAL archiving give point-in-time recovery, rehearsed; the append-mostly giants are range-partitioned so retention is DROP PARTITION. One system of record, one transaction boundary, one backup story, one system to page on. The zoo isn't banished — it's deferred: explicit graduation criteria (relevance depth or corpus×QPS for search, job firehose for the queue, warehouse-scale ad-hoc analytics, multi-tenant write scale-out) name the evidence that moves a single workload out, with the rest staying put. Just use Postgres — until the data says otherwise.",
+    "view": {
+      "nodes": [
+        "Client",
+        "LB",
+        "App",
+        "Pool",
+        "Core",
+        "Docs",
+        "Search",
+        "GeoVec",
+        "Jobs",
+        "PubSub",
+        "Rollups",
+        "Replica",
+        "Worker",
+        "Metrics"
+      ],
+      "links": [
+        "client-lb",
+        "lb-app",
+        "app-pool",
+        "pool-core",
+        "app-core",
+        "app-docs",
+        "app-search",
+        "app-geovec",
+        "app-jobs",
+        "app-pubsub",
+        "pubsub-worker",
+        "pubsub-app",
+        "worker-jobs",
+        "worker-core",
+        "core-rollups",
+        "app-rollups",
+        "core-replica",
+        "app-replica",
+        "core-metrics",
+        "jobs-metrics",
+        "app-metrics"
+      ],
+      "caption": "Every capability of the naive five-system zoo, rebuilt as features of one PostgreSQL cluster.",
+      "groups": [
+        "pg-tier",
+        "async",
+        "ops"
+      ]
+    },
+    "flows": [
+      {
+        "name": "Booking — end to end in one platform",
+        "note": "One commit atomically writes the order (exclusion-constrained), the idempotency row, the job, and the rollup — then NOTIFY fans out to the worker and the client's live view.",
+        "sequence": {
+          "participants": [
+            {
+              "id": "Client"
+            },
+            {
+              "id": "App"
+            },
+            {
+              "id": "Core",
+              "label": "Postgres (one TX)"
+            },
+            {
+              "id": "Jobs",
+              "label": "jobs table"
+            },
+            {
+              "id": "PubSub",
+              "label": "NOTIFY"
+            },
+            {
+              "id": "Worker"
+            }
+          ],
+          "messages": [
+            {
+              "from": "Client",
+              "to": "App",
+              "arrow": "->>",
+              "label": "POST /orders (Idempotency-Key)"
+            },
+            {
+              "from": "App",
+              "to": "Core",
+              "arrow": "->>",
+              "label": "BEGIN: idempotency + order (EXCLUDE &&) + rollup upsert"
+            },
+            {
+              "from": "App",
+              "to": "Jobs",
+              "arrow": "->>",
+              "label": "INSERT job — same TX"
+            },
+            {
+              "from": "Core",
+              "to": "App",
+              "arrow": "-->>",
+              "label": "COMMIT (sync replica ack)"
+            },
+            {
+              "from": "Core",
+              "to": "PubSub",
+              "arrow": "->>",
+              "label": "NOTIFY jobs_channel, order_events"
+            },
+            {
+              "from": "PubSub",
+              "to": "Worker",
+              "arrow": "->>",
+              "label": "wake -> claim SKIP LOCKED"
+            },
+            {
+              "from": "PubSub",
+              "to": "App",
+              "arrow": "->>",
+              "label": "order_events {id}"
+            },
+            {
+              "from": "App",
+              "to": "Client",
+              "arrow": "-->>",
+              "label": "201 + WebSocket status push"
+            }
+          ]
+        },
+        "highlight": [
+          "Core",
+          "Jobs",
+          "PubSub"
+        ]
+      }
+    ],
+    "aiVisual": "assets/generated/ai-visuals/final-design.jpg"
+  },
+  "satisfies": {
+    "functional": [
+      {
+        "requirement": "Listings with per-category custom attributes",
+        "how": "Hybrid rows: constrained columns for the shared core, GIN-indexed JSONB for the long tail, promotion rule for graduating fields.",
+        "steps": [
+          "relational-core",
+          "jsonb"
+        ]
+      },
+      {
+        "requirement": "Ranked keyword search with typo tolerance",
+        "how": "Generated tsvector + GIN with websearch_to_tsquery and ts_rank_cd; pg_trgm for fuzzy matching — fresh at commit.",
+        "steps": [
+          "search"
+        ]
+      },
+      {
+        "requirement": "Geo and semantic search",
+        "how": "PostGIS geography + GiST for 'near me'; pgvector HNSW over embeddings for semantic matches; hybrid rank fusion in one SQL statement.",
+        "steps": [
+          "search"
+        ]
+      },
+      {
+        "requirement": "Transactional booking without double-booking",
+        "how": "Exclusion constraint on (listing_id, slot range) decides races; unique idempotency key makes retries safe.",
+        "steps": [
+          "relational-core"
+        ]
+      },
+      {
+        "requirement": "Reliable background jobs with retries and DLQ",
+        "how": "Jobs table enqueued in the business transaction, claimed FOR UPDATE SKIP LOCKED, leased + reaped, dead-lettered as a queryable state.",
+        "steps": [
+          "queue"
+        ]
+      },
+      {
+        "requirement": "Live updates to connected clients",
+        "how": "Commit-time NOTIFY on order_events relayed to WebSockets; ids only, clients refetch.",
+        "steps": [
+          "notify"
+        ]
+      },
+      {
+        "requirement": "Dashboards without hurting production",
+        "how": "Transactional bucketed rollups for KPIs, REFRESH CONCURRENTLY matviews for heavy shapes, ad-hoc scans on the reporting replica.",
+        "steps": [
+          "analytics"
+        ]
+      }
+    ],
+    "nonFunctional": [
+      {
+        "requirement": "Minimal operational surface for a small team",
+        "how": "One stateful platform replaces five: one HA, backup, upgrade, monitoring, and on-call story.",
+        "steps": [
+          "naive",
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Strong consistency for money and bookings",
+        "how": "ACID transactions with constraint-enforced invariants; synchronous_commit for money-class transactions (RPO 0).",
+        "steps": [
+          "relational-core",
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "p99 under ~100 ms at ~10k req/s",
+        "how": "Index-served OLTP with a RAM-resident hot set, pooled connections, and read offload to replicas.",
+        "steps": [
+          "search",
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Jobs never lost, at-least-once",
+        "how": "Transactional enqueue removes the commit/enqueue crash window; lease + reaper + idempotent workers cover crashes after claim.",
+        "steps": [
+          "queue"
+        ]
+      },
+      {
+        "requirement": "Durable with point-in-time recovery",
+        "how": "Base backups + WAL archiving with rehearsed PITR restores; streaming replication with automated failover.",
+        "steps": [
+          "scale-ha"
+        ]
+      },
+      {
+        "requirement": "Honest graduation criteria",
+        "how": "Named per-workload signals (relevance depth, corpus×QPS, job firehose, warehouse-scale analytics) trigger carving out one capability at a time.",
+        "steps": [
+          "naive",
+          "search",
+          "queue",
+          "scale-ha"
+        ]
+      }
+    ]
+  },
+  "interviewScript": [
+    {
+      "phase": "Scope",
+      "time": "first 5 min",
+      "say": [
+        "Frame it as a local-services marketplace: listings with flexible attributes, keyword/geo/semantic search, transactional bookings, background jobs, live updates, dashboards.",
+        "State the twist explicitly: one PostgreSQL cluster is deliberately the entire data platform — the interview is about knowing the features that make that credible, and the limits where it stops."
+      ]
+    },
+    {
+      "phase": "Baseline",
+      "time": "next 3 min",
+      "say": [
+        "Start from the polyglot zoo — Postgres + Mongo + Elasticsearch + Redis + RabbitMQ — and name its real costs: five ops stories and no transaction across stores, so search, cache, and events drift from the record by construction."
+      ]
+    },
+    {
+      "phase": "Capability tour",
+      "time": "next 15 min",
+      "say": [
+        "Walk each capability onto the Postgres feature that serves it: constraints/exclusion for invariants, JSONB+GIN for documents, tsvector+trgm+PostGIS+pgvector for search, SKIP LOCKED for the queue, LISTEN/NOTIFY as the doorbell, rollups/matviews/replica for analytics.",
+        "For each, say the actual SQL and the one property that matters — e.g. the enqueue commits with the order; NOTIFY fires only on commit; SKIP LOCKED claims never block."
+      ]
+    },
+    {
+      "phase": "Make it real",
+      "time": "final 5 min",
+      "say": [
+        "Close on operations: PgBouncer transaction pooling (and the LISTEN exception), streaming replication with per-class synchronous_commit, PITR with restore drills, partitioning the append-mostly giants.",
+        "End with graduation criteria: name the evidence that moves search, the queue, or analytics out — and that everything else stays. Default, not dogma."
+      ]
+    }
+  ],
+  "levelVariants": [
+    {
+      "level": "Junior",
+      "expectations": [
+        "Designs the relational schema with sensible indexes and knows JSONB exists for flexible fields.",
+        "Can explain why background work leaves the request path, even if the queue is hand-wavy."
+      ]
+    },
+    {
+      "level": "Mid",
+      "expectations": [
+        "Correct SKIP LOCKED claim loop with retries and a dead-letter state; knows the enqueue can share the business transaction.",
+        "Builds real full-text search (tsvector/GIN, ranking) instead of LIKE; knows LISTEN/NOTIFY limits (commit-time, ~8 KB, missed when disconnected).",
+        "Knows why a connection pooler is mandatory and what transaction pooling breaks."
+      ]
+    },
+    {
+      "level": "Senior",
+      "expectations": [
+        "Argues the consolidation trade-off itself: operational surface vs. best-of-breed, with explicit per-workload graduation criteria.",
+        "Anticipates MVCC consequences — queue-table bloat, autovacuum tuning, long transactions pinning xmin, hot_standby_feedback bloat — and designs around them.",
+        "Sets durability per transaction class (synchronous_commit), designs read-your-writes routing over lagging replicas, partitions for retention, and demands restore drills."
+      ]
+    }
+  ],
+  "followUps": [
+    "The jobs table hits sustained bloat despite tuning — walk through the MVCC mechanics (row versions, xmin horizon, HOT updates) and your remediation order before you'd reach for a broker.",
+    "PgBouncer transaction pooling breaks LISTEN, prepared statements, and advisory locks — how do you architect around each without giving up pooling?",
+    "How do you guarantee read-your-writes for a user whose reads hit a lagging replica — session stickiness, LSN tracking, or something else, and at what cost?",
+    "At what corpus size and query rate does Postgres FTS genuinely lose to Elasticsearch, and how would you migrate search without a big-bang cutover?",
+    "Serializable isolation vs. explicit locking vs. exclusion constraints for the double-booking invariant — compare anomaly coverage, retry burden, and throughput.",
+    "How do you run a zero-downtime schema migration on the orders table at 1,500 writes/s — lock levels, CONCURRENTLY variants, backfill batching?",
+    "HNSW vs. IVFFlat in pgvector: recall/latency/build-time trade-offs, and what re-embedding a model upgrade does to your operational plan.",
+    "When multi-tenant write volume finally outgrows one primary, compare Citus-style sharding against carving out services — what does each do to the transactional guarantees this design leans on?"
+  ],
+  "technologyChoices": [
+    {
+      "concern": "Postgres hosting, HA, and backups",
+      "steps": [
+        "relational-core",
+        "scale-ha"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "Patroni",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "pgBackRest",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "WAL-G",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          },
+          {
+            "name": "Aurora (PostgreSQL)",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Self-hosting with Patroni + pgBackRest gives full control over versions, extensions, and failover behavior, but the team owns every drill.",
+        "Managed Postgres removes node replacement, failover automation, and backup plumbing; you still own schema, vacuum health, and query performance.",
+        "Extension support varies by provider — PostGIS and pgvector are widely available, but check before committing the design to a platform."
+      ],
+      "makesIrrelevant": "A managed multi-AZ Postgres with PITR removes most Patroni/pgBackRest operations — not the need for restore drills or per-class durability decisions."
+    },
+    {
+      "concern": "Connection pooling",
+      "steps": [
+        "scale-ha",
+        "notify"
+      ],
+      "selfHosted": [
+        {
+          "name": "PgBouncer",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Odyssey",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "PgCat",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "RDS Proxy",
+            "icon": "assets/tech-icons/Arch_Amazon-RDS_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud SQL",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Database for PostgreSQL",
+            "icon": "assets/tech-icons/02827-icon-service-Azure-Database-PostgreSQL-Server-Group.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Transaction pooling collapses thousands of client connections to dozens of server processes — the single highest-leverage operational move for app-facing Postgres.",
+        "Session-state features (LISTEN, prepared statements, advisory locks) need dedicated session pools or direct connections.",
+        "Managed poolers integrate failover handling; self-hosted poolers are one more (light) component to run."
+      ],
+      "makesIrrelevant": "A built-in or managed pooler removes the separate PgBouncer deployment, but not the session-state design work."
+    },
+    {
+      "concern": "Search: full-text, fuzzy, and the graduation path",
+      "steps": [
+        "search"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "Elasticsearch",
+          "icon": "assets/tech-icons/elasticsearch.png"
+        },
+        {
+          "name": "OpenSearch",
+          "icon": "assets/tech-icons/opensearch.png"
+        },
+        {
+          "name": "Meilisearch",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Typesense",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "OpenSearch Service",
+            "icon": "assets/tech-icons/Arch_Amazon-OpenSearch-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Vertex AI Search",
+            "icon": "assets/tech-icons/AIMachineLearning-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure AI Search",
+            "icon": "assets/tech-icons/10044-icon-service-Cognitive-Search.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "In-cluster FTS is transactionally fresh with zero pipeline; its ceiling is relevance tooling and corpus×QPS competing with OLTP.",
+        "A dedicated engine buys BM25, analyzers, and facets at the price of a sync pipeline, drift management, and a second stateful system.",
+        "Migrating later is tractable: the tsvector design maps cleanly onto engine documents, and the CDC feed carries derived data only."
+      ],
+      "makesIrrelevant": "Postgres FTS + pg_trgm makes a day-one search cluster unnecessary; the engine returns only when relevance depth or scale demands it."
+    },
+    {
+      "concern": "Job queue",
+      "steps": [
+        "queue"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "RabbitMQ",
+          "icon": "assets/tech-icons/rabbitmq.png"
+        },
+        {
+          "name": "Apache Kafka",
+          "icon": "assets/tech-icons/kafka.png"
+        },
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "SQS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Queue-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Tasks",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          },
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "A SKIP LOCKED jobs table gives transactional enqueue and SQL-grade observability up to thousands of jobs/s.",
+        "Brokers scale far higher with native visibility timeouts and DLQs, but need an outbox to regain atomicity with the record.",
+        "Framework-level queues (Sidekiq-style on Redis, or Postgres-native job libraries) package these patterns — the semantics underneath are the same."
+      ],
+      "makesIrrelevant": "Transactional enqueue makes the outbox pattern unnecessary while the queue lives in Postgres — the outbox returns exactly when a broker does."
+    },
+    {
+      "concern": "Realtime pub/sub and live updates",
+      "steps": [
+        "notify"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "Redis",
+          "icon": "assets/tech-icons/redis.png"
+        },
+        {
+          "name": "NATS (JetStream)",
+          "icon": "assets/tech-icons/nats.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "API Gateway",
+            "icon": "assets/tech-icons/Arch_Amazon-API-Gateway_64.png"
+          },
+          {
+            "name": "SNS",
+            "icon": "assets/tech-icons/Arch_Amazon-Simple-Notification-Service_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Pub/Sub",
+            "icon": "assets/tech-icons/IntegrationServices-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Web PubSub",
+            "icon": "assets/tech-icons/tech.png"
+          },
+          {
+            "name": "Service Bus",
+            "icon": "assets/tech-icons/10836-icon-service-Azure-Service-Bus.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "LISTEN/NOTIFY is commit-transactional and free, but best-effort: no replay, ~8 KB payloads, and it costs dedicated session connections.",
+        "Dedicated pub/sub systems add replay, huge fan-out, and cross-region delivery — worth it when live features outgrow a doorbell.",
+        "Either way the durable state lives in tables; pub/sub should carry ids, not truth."
+      ],
+      "makesIrrelevant": "Commit-time NOTIFY removes a day-one message bus for wake-ups and modest live UX; a bus returns for massive fan-out or replayable event feeds."
+    },
+    {
+      "concern": "Analytics and reporting",
+      "steps": [
+        "analytics"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostgreSQL",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "ClickHouse",
+          "icon": "assets/tech-icons/clickhouse.png"
+        },
+        {
+          "name": "DuckDB",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "Redshift",
+            "icon": "assets/tech-icons/Arch_Amazon-Redshift_64.png"
+          },
+          {
+            "name": "Athena",
+            "icon": "assets/tech-icons/Arch_Amazon-Athena_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "BigQuery",
+            "icon": "assets/tech-icons/DataAnalytics-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Synapse Analytics",
+            "icon": "assets/tech-icons/00606-icon-service-Azure-Synapse-Analytics.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "Rollups, matviews, and a reporting replica answer the known dashboards exactly and cheaply inside the cluster.",
+        "A columnar store or warehouse wins on ad-hoc scans over long histories and high-cardinality slicing — fed by an export that carries derived data, not correctness.",
+        "Keeping money KPIs computed transactionally in Postgres avoids the classic 'dashboard disagrees with the ledger' failure."
+      ],
+      "makesIrrelevant": "Transactional rollups plus a replica defer the warehouse for years at this scale; the export pipeline arrives with the analyst headcount that needs it."
+    },
+    {
+      "concern": "Geo and vector workloads",
+      "steps": [
+        "search"
+      ],
+      "selfHosted": [
+        {
+          "name": "PostGIS",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "pgvector",
+          "icon": "assets/tech-icons/postgresql.png"
+        },
+        {
+          "name": "Qdrant",
+          "icon": "assets/tech-icons/tech.png"
+        },
+        {
+          "name": "Milvus",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "OpenSearch Service",
+            "icon": "assets/tech-icons/Arch_Amazon-OpenSearch-Service_64.png"
+          },
+          {
+            "name": "Aurora (PostgreSQL)",
+            "icon": "assets/tech-icons/Arch_Amazon-Aurora_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "AlloyDB",
+            "icon": "assets/tech-icons/Databases-512-color.png"
+          },
+          {
+            "name": "Vertex AI",
+            "icon": "assets/tech-icons/AIMachineLearning-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure AI Search",
+            "icon": "assets/tech-icons/10044-icon-service-Cognitive-Search.svg"
+          },
+          {
+            "name": "Cosmos DB",
+            "icon": "assets/tech-icons/10121-icon-service-Azure-Cosmos-DB.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "PostGIS is best-in-class regardless of scale; there is rarely a graduation argument for geo.",
+        "pgvector with HNSW serves millions of embeddings well; dedicated vector DBs add sharded ANN, richer filtering DSLs, and index rebuild tooling at the cost of the usual sync seam.",
+        "Embedding computation belongs in the job queue either way — the store choice doesn't change the pipeline."
+      ],
+      "makesIrrelevant": "pgvector makes a separate vector database unnecessary until embedding count or QPS forces sharded ANN serving."
+    },
+    {
+      "concern": "Observability for one load-bearing cluster",
+      "steps": [
+        "scale-ha",
+        "queue",
+        "analytics"
+      ],
+      "selfHosted": [
+        {
+          "name": "Prometheus",
+          "icon": "assets/tech-icons/prometheus.png"
+        },
+        {
+          "name": "Grafana",
+          "icon": "assets/tech-icons/grafana.png"
+        },
+        {
+          "name": "pgwatch",
+          "icon": "assets/tech-icons/tech.png"
+        }
+      ],
+      "cloud": {
+        "aws": [
+          {
+            "name": "CloudWatch",
+            "icon": "assets/tech-icons/Arch_Amazon-CloudWatch_64.png"
+          },
+          {
+            "name": "Managed Grafana",
+            "icon": "assets/tech-icons/Arch_Amazon-Managed-Grafana_64.png"
+          }
+        ],
+        "gcp": [
+          {
+            "name": "Cloud Monitoring",
+            "icon": "assets/tech-icons/Operations-512-color.png"
+          }
+        ],
+        "azure": [
+          {
+            "name": "Azure Monitor",
+            "icon": "assets/tech-icons/00001-icon-service-Monitor.svg"
+          }
+        ]
+      },
+      "tradeoff": [
+        "The signals are Postgres-specific: pg_stat_statements top queries, queue depth and oldest-job age, replication lag, bloat/vacuum progress, connection saturation, WAL archive lag.",
+        "Managed monitoring integrates quickly with managed Postgres; self-hosted stacks need an exporter but keep retention and dashboards under your control.",
+        "Alert on symptoms tied to this design: oldest queued job age, replica lag vs. read-routing budget, archive failures, autovacuum falling behind on the jobs table."
+      ],
+      "makesIrrelevant": "Managed telemetry removes exporter and dashboard plumbing — not the duty to define the queue-age and archive-lag alerts this design depends on."
+    }
+  ],
+  "toProbeFurther": {
+    "links": [
+      {
+        "id": "pg-constraints",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "Constraints (incl. exclusion constraints)",
+        "url": "https://www.postgresql.org/docs/current/ddl-constraints.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "FK, UNIQUE, CHECK, and EXCLUDE — the machinery that turns invariants like 'no double-booking' into database-enforced guarantees."
+      },
+      {
+        "id": "pg-json",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "JSON Types (jsonb)",
+        "url": "https://www.postgresql.org/docs/current/datatype-json.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "JSONB storage, operators, indexing, and the jsonb_path_ops GIN option behind the in-row document store."
+      },
+      {
+        "id": "pg-fts",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "Full Text Search",
+        "url": "https://www.postgresql.org/docs/current/textsearch.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "tsvector/tsquery, ranking, headline, and weights — the complete reference for the search step."
+      },
+      {
+        "id": "pg-trgm",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "pg_trgm — trigram matching",
+        "url": "https://www.postgresql.org/docs/current/pgtrgm.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "Similarity search and index-accelerated LIKE — the typo-tolerance half of in-cluster search."
+      },
+      {
+        "id": "pg-skip-locked",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "SELECT ... FOR UPDATE SKIP LOCKED",
+        "url": "https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "The locking-clause semantics that make a table a non-blocking multi-consumer queue."
+      },
+      {
+        "id": "pg-notify",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "NOTIFY",
+        "url": "https://www.postgresql.org/docs/current/sql-notify.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "Commit-time delivery, payload limits, and listener semantics — the fine print behind the doorbell pattern."
+      },
+      {
+        "id": "pg-matviews",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "Materialized Views",
+        "url": "https://www.postgresql.org/docs/current/rules-materializedviews.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "REFRESH semantics including CONCURRENTLY and its unique-index requirement, used by the analytics step."
+      },
+      {
+        "id": "pg-stat-statements",
+        "group": "PostgreSQL Features",
+        "groupDescription": "Official documentation for the features the walkthrough builds on.",
+        "title": "pg_stat_statements",
+        "url": "https://www.postgresql.org/docs/current/pgstatstatements.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "The always-on query profiler that anchors the tuning loop from step 2 onward."
+      },
+      {
+        "id": "postgis",
+        "group": "Extensions & Ecosystem",
+        "groupDescription": "The extensions and companion tools that stretch one cluster across many workloads.",
+        "title": "PostGIS",
+        "url": "https://postgis.net/",
+        "source": "PostGIS",
+        "type": "Docs",
+        "why": "Geography types, GiST indexing, and the spatial functions behind 'plumbers within 5 km'."
+      },
+      {
+        "id": "pgvector",
+        "group": "Extensions & Ecosystem",
+        "groupDescription": "The extensions and companion tools that stretch one cluster across many workloads.",
+        "title": "pgvector",
+        "url": "https://github.com/pgvector/pgvector",
+        "source": "GitHub",
+        "type": "Repository",
+        "why": "Vector types, HNSW/IVFFlat indexes, and distance operators for the semantic-search leg of the design."
+      },
+      {
+        "id": "pgbouncer",
+        "group": "Extensions & Ecosystem",
+        "groupDescription": "The extensions and companion tools that stretch one cluster across many workloads.",
+        "title": "PgBouncer",
+        "url": "https://www.pgbouncer.org/",
+        "source": "PgBouncer",
+        "type": "Docs",
+        "why": "Transaction pooling modes and their session-state caveats — the connection story the scale step depends on."
+      },
+      {
+        "id": "patroni",
+        "group": "Extensions & Ecosystem",
+        "groupDescription": "The extensions and companion tools that stretch one cluster across many workloads.",
+        "title": "Patroni",
+        "url": "https://github.com/patroni/patroni",
+        "source": "GitHub",
+        "type": "Repository",
+        "why": "The de facto self-hosted HA/automatic-failover template for the replication topology in step 7."
+      },
+      {
+        "id": "pg-warm-standby",
+        "group": "Operations at Scale",
+        "groupDescription": "Operational references for running one load-bearing cluster safely.",
+        "title": "High Availability & Streaming Replication",
+        "url": "https://www.postgresql.org/docs/current/warm-standby.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "Streaming replication, synchronous commit, and standby behavior — the durability and failover mechanics."
+      },
+      {
+        "id": "pg-backup",
+        "group": "Operations at Scale",
+        "groupDescription": "Operational references for running one load-bearing cluster safely.",
+        "title": "Continuous Archiving and PITR",
+        "url": "https://www.postgresql.org/docs/current/continuous-archiving.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "Base backups plus WAL archiving — the point-in-time recovery story that undoes bad transactions, not just lost disks."
+      },
+      {
+        "id": "pg-partitioning",
+        "group": "Operations at Scale",
+        "groupDescription": "Operational references for running one load-bearing cluster safely.",
+        "title": "Table Partitioning",
+        "url": "https://www.postgresql.org/docs/current/ddl-partitioning.html",
+        "source": "PostgreSQL",
+        "type": "Docs",
+        "why": "Declarative range partitioning and pruning — how orders, jobs history, and events stay manageable as they grow."
+      },
+      {
+        "id": "amazingcto",
+        "group": "The Argument & Production Practice",
+        "groupDescription": "The 'just use Postgres' argument and real-world accounts of Postgres carrying whole platforms.",
+        "title": "Just Use Postgres for Everything",
+        "url": "https://www.amazingcto.com/postgres-for-everything/",
+        "source": "Stephan Schmidt",
+        "type": "Essay",
+        "year": "2022",
+        "why": "The essay that crystallized the thesis: collapse the day-one stack into Postgres and spend the saved complexity on product."
+      },
+      {
+        "id": "2ndq-skip-locked",
+        "group": "The Argument & Production Practice",
+        "groupDescription": "The 'just use Postgres' argument and real-world accounts of Postgres carrying whole platforms.",
+        "title": "What is SELECT SKIP LOCKED for?",
+        "url": "https://www.2ndquadrant.com/en/blog/what-is-select-skip-locked-for-in-postgresql-9-5/",
+        "source": "2ndQuadrant (Craig Ringer)",
+        "type": "Explainer",
+        "year": "2016",
+        "why": "The canonical explanation of queue workloads on Postgres and why SKIP LOCKED removes the lock convoy."
+      },
+      {
+        "id": "brandur-job-drain",
+        "group": "The Argument & Production Practice",
+        "groupDescription": "The 'just use Postgres' argument and real-world accounts of Postgres carrying whole platforms.",
+        "title": "Transactionally Staged Job Drains in Postgres",
+        "url": "https://brandur.org/job-drain",
+        "source": "Brandur Leach",
+        "type": "Explainer",
+        "year": "2017",
+        "why": "Why enqueueing inside the transaction is the property that matters, and how to keep job systems honest about it."
+      },
+      {
+        "id": "instagram-sharding",
+        "group": "The Argument & Production Practice",
+        "groupDescription": "The 'just use Postgres' argument and real-world accounts of Postgres carrying whole platforms.",
+        "title": "Sharding & IDs at Instagram",
+        "url": "https://instagram-engineering.com/sharding-ids-at-instagram-1cf5a71e5a5c",
+        "source": "Instagram Engineering",
+        "type": "Case study",
+        "year": "2012",
+        "why": "A famous account of how far plain Postgres carried a hypergrowth product — and what principled graduation (sharding in Postgres itself) looked like."
+      }
+    ]
+  },
+  "aiVisuals": {
+    "requirements": "assets/generated/ai-visuals/requirements.jpg",
+    "capacity": "assets/generated/ai-visuals/capacity.jpg"
+  },
+  "explainerComic": "assets/generated/comic/interview-comic.jpg"
+}

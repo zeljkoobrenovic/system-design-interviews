@@ -13,12 +13,12 @@ The technology choices make the trade-offs concrete: API gateways and WAFs for a
 The tools can change. The invariant should not: public benefits automation must make the record clearer, not make power harder to challenge.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-public-benefits-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-public-benefits-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AgenticAI #GovTech

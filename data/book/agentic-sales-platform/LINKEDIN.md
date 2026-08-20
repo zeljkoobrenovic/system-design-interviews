@@ -11,12 +11,12 @@ The systems lesson: the send queue is a policy boundary, not just a buffer. Appr
 The technology choices make the trade-offs concrete: Temporal or managed workflows for orchestration; Redis, DynamoDB, or ElastiCache for hot suppression lookups; SQS, Pub/Sub, or Service Bus for durable queues; Bedrock, Vertex AI, or Azure OpenAI for model routing and guardrails; SES or SendGrid for feedback loops. None of those replace the architecture rule: keep untrusted enrichment and generated text away from privileged send authority.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-sales-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-sales-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AIEngineering

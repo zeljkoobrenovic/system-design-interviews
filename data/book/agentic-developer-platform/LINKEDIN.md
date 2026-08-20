@@ -9,12 +9,12 @@ The core lesson: autonomy needs a ceiling. In this design, the agent can open a 
 The technology choices make the trade-offs concrete. You can model the control plane with PostgreSQL, CockroachDB, Aurora, Spanner, or DynamoDB. You can run task history and retries with Temporal, Kafka, SQS, Step Functions, Pub/Sub, or Cloud Tasks. Sandboxes might use Firecracker, gVisor, Kubernetes, Fargate, or Cloud Run. Repo grounding may combine Tree-sitter, Zoekt, OpenSearch, Elasticsearch, pgvector, or managed vector/search services. Guardrails still need task-scoped tokens, allowlisted tools, and egress control.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-developer-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-developer-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AgenticAI #DeveloperTools

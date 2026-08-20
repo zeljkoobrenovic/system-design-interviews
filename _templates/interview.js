@@ -2917,7 +2917,11 @@
             lines.push(`  ${name} {`);
             for (const rawF of t.fields || []) {
                 const f = normalizeField(rawF);
-                const fname = safeIdent(f.name || "field");
+                let fname = safeIdent(f.name || "field");
+                // PK/FK/UK are key-constraint keywords in erDiagram; an
+                // attribute *name* that sanitizes to one (e.g. "_pk" -> "pk")
+                // breaks the parse. Suffix it so it stays a plain word.
+                if (/^(pk|fk|uk)$/i.test(fname)) fname += "_";
                 const ftype = safeType(f.type);
                 // Mark PK heuristically: type mentions 'PK' or field name is 'id'/ends in '_id PK'
                 const isPk = /PK\b/.test(f.type || "") || /^(id|short_code|event_id|user_id)$/i.test(fname);

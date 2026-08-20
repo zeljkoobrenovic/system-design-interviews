@@ -9,12 +9,12 @@ That makes the case useful system design practice because the constraints force 
 Modern implementations can map those fundamentals to managed edges with WAF and identity, search/RAG stacks such as OpenSearch or Azure AI Search, durable workflow engines like Temporal or Step Functions, managed queues, relational draft/review stores, model gateways, and caches/circuit breakers around citation providers. Managed services help, but the core gates remain: retrieval boundaries, citation verification, auditability, and licensed attorney approval.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-legal-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-legal-platform
 
 Explore the book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #LegalTech #AI

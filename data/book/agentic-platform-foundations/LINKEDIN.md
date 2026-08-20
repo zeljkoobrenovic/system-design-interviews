@@ -13,12 +13,12 @@ The technology choices make the trade-offs concrete: Firecracker, gVisor, Kata, 
 Managed services help. They do not remove act-as tokens, no-bypass guardrails, hard budgets, evidence records, or eval gates.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-platform-foundations
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-platform-foundations
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AIEngineering #AgenticAI

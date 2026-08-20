@@ -11,12 +11,12 @@ The technology trade-offs are deliberately modern. You can discuss hybrid retrie
 But none of those replace the core design rule: the LLM drafts, deterministic systems validate, and accountable humans authorize physical experiments.
 
 Try the interactive walkthrough:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/interview.html#agentic-research-platform
+https://zeljkoobrenovic.github.io/system-design-interviews/book/interview.html#agentic-research-platform
 
 Explore the project/book catalog:
-https://zeljkoobrenovic.github.io/spec-driven-system-design-interviews/book/index.html
+https://zeljkoobrenovic.github.io/system-design-interviews/book/index.html
 
 Free source code:
-https://github.com/zeljkoobrenovic/spec-driven-system-design-interviews
+https://github.com/zeljkoobrenovic/system-design-interviews
 
 #SystemDesign #SystemDesignInterview #SoftwareArchitecture #AIEngineering
